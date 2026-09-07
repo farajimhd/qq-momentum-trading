@@ -7950,7 +7950,7 @@ def _parameters_with_action_policies(
     confirmation = dict(resolved.get("entry_candle_confirmation") or {})
     if (
         str(profile.get("definition_id") or "") == STRATEGY_ID
-        and bool(confirmation.get("enabled"))
+        and (bool(confirmation.get("enabled")) or bool(resolved.get("local_swing_management")))
         and (bool(confirmation.get("require_closed_bar"))
              or resolved.get("macd_histogram_entry_gate_bps") is not None)
         and str(confirmation.get("timeframe") or "") == "1s"

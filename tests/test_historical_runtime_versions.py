@@ -69,6 +69,19 @@ class HistoricalRuntimeVersionsTests(unittest.TestCase):
         self.assertTrue(resolved['entry_candle_confirmation']['evaluate_macd_intrabar'])
         self.assertEqual(strategy_rule_timeframes(resolved), {'1s'})
 
+    def test_local_swing_entry_keeps_one_second_veto_dependencies(self):
+        from copy import deepcopy
+        from src.backend.trading_configuration_service import _parameters_with_action_policies, _default_draft
+        from src.trading_runtime.strategy_engine import strategy_rule_timeframes
+        model = _default_draft()
+        profile = deepcopy(next(row for row in model['strategy']['profiles']
+                                if row['profile_id'] == 'long-momentum-balanced'))
+        profile['parameters'].update(local_swing_management=True,
+                                     macd_histogram_gate_bps=5, macd_histogram_entry_gate_bps=.5)
+        resolved = _parameters_with_action_policies(profile, model['market_discovery']['rule_sets'], [])
+        self.assertFalse(resolved['entry_candle_confirmation']['enabled'])
+        self.assertEqual(strategy_rule_timeframes(resolved), {'1s'})
+
 
 class BoundedStructurePrefetchTests(unittest.IsolatedAsyncioTestCase):
     async def test_batches_bound_work_without_losing_competing_ticker_boundaries(self):

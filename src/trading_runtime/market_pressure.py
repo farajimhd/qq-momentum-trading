@@ -32,7 +32,7 @@ class PressureTracker:
         while self.buckets and self.buckets[0]["index"] < index - 30:
             self.buckets.popleft()
         if not self.buckets or self.buckets[-1]["index"] != index:
-            self.buckets.append(dict(index=index, first=None, last=None, high=0., count=0,
+            self.buckets.append(dict(index=index, first=None, last=None, high=0., low=None, count=0,
                                      total=0., buy=0., sell=0., ofi=0., depth=0.))
         b = self.buckets[-1]
         if isinstance(event, QuoteEvent):
@@ -54,6 +54,7 @@ class PressureTracker:
             b["first"] = event.price if b["first"] is None else b["first"]
             b["last"] = event.price
             b["high"] = max(b["high"], event.price)
+            b["low"] = min(b["low"], event.price) if b.get("low") is not None else event.price
             b["count"] += 1
             b["total"] += event.size
             q = self.quote
@@ -70,6 +71,10 @@ class PressureTracker:
         result = dict(contract=CONTRACT, observed_at=at.isoformat(), ready=False, rejected_out_of_order=self.rejected)
         if not q or not 0 <= now - q["time"] <= 1 or self.last_time > now:
             return result
+        prior = [b for b in self.buckets if now-1 <= b["index"]/10 < int(now*10)/10 and b["count"]]
+        if prior:
+            result["micro"] = dict(high=max(b["high"] for b in prior), low=min(b.get("low") or b["first"] for b in prior),
+                trades=sum(b["count"] for b in prior), span_ms=(prior[-1]["index"]-prior[0]["index"])*100)
         spread = q["ask"] - q["bid"]
         result.update(quote_age_ms=(now-q["time"])*1000, spread=spread)
         for name, seconds in (("fast", 1), ("slow", 3)):

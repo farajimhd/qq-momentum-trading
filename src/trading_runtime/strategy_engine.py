@@ -3,7 +3,7 @@ from __future__ import annotations
 from src.trading_runtime import breakout_confirmation
 
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
-from src.trading_runtime import histogram_slope, market_pressure
+from src.trading_runtime import histogram_slope, market_pressure, local_swing
 
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, time as clock_time, timedelta, timezone
@@ -836,6 +836,12 @@ def resolve_long_momentum_parameters(
             section[key] = value
     if revision >= 45:
         parameters["protection"]["stop"]["cap_initial_stop_distance"] = True
+    if parameters.get("local_swing_management"):
+        parameters.update(require_completed_entry_candle=False, completed_macd_setup=False)
+        parameters["protection"]["trailing"].update(enabled=False, mode="qualified_support")
+        parameters["protection"]["stop"]["method"] = "local_swing_low"
+        parameters["protection"]["profit_ladder"].update(enabled=False, minimum_entry_target_gap_bps=0)
+        parameters["structural_entry"].update(accept_live_price_above_entry_level=True, micro_breakout_acceptance=True)
     if parameters["protection"]["trailing"].get("mode") == "fixed_support_distance":
         if parameters["protection"]["stop"].get("method") != "ordinal_qualified_support":
             raise ValueError("Fixed support-distance trailing requires a qualified support stop")
@@ -847,6 +853,9 @@ def resolve_long_momentum_parameters(
           and parameters.get("macd_histogram_entry_gate_bps") is not None):
         parameters["entry_candle_confirmation"].update(require_closed_bar=False, evaluate_macd_intrabar=True)
         parameters["structural_entry"]["intrabar_after_completed_r3"] = False
+    if parameters.get("local_swing_management"):
+        parameters["entry_candle_confirmation"].update(enabled=False, reject_bearish_close=False,
+                                                       require_closed_bar=False, evaluate_macd_intrabar=True)
     execution = dict(parameters.get("execution") or {})
     slope_policy = parameters["momentum_management"].get("histogram_slope_exit")
     if slope_policy is not None:
@@ -916,7 +925,7 @@ def resolve_long_momentum_parameters(
         "volatility",
         "hybrid",
         "ordinal_qualified_support",
-        "last_red_candle_close",
+        "last_red_candle_close", "local_swing_low",
         "third_resistance_below_session_high", "first_resistance_below_session_high",
     }:
         raise ValueError("Unsupported protective stop method")
@@ -2432,6 +2441,8 @@ def _prior_completed_frame_resistance_trigger(
         above = boundary is not None and boundary > 0 and observation.price > boundary
         non_red = bool(observation.bar_open is not None and observation.bar_open > 0
                        and observation.price >= observation.bar_open)
+        if policy.get("micro_breakout_acceptance"):
+            non_red = bool(state.get("micro_entry", {}).get("passed"))
         accepted = state.get(acceptance_key)
         same_level = bool(
             isinstance(accepted, Mapping) and r3
@@ -2718,6 +2729,8 @@ class LongMomentumStrategyEngine:
         state["last_price"] = observation.price
         if parameters.get("market_pressure", {}).get("enabled"):
             state["market_pressure"] = market_pressure.evaluate(parameters["market_pressure"], state, observation)
+        if parameters.get("local_swing_management"):
+            state["micro_entry"] = local_swing.entry(observation, state, float(parameters["execution"]["tick_size"]))
         _record_macd_histogram_history(state, observation)
         if (parameters.get("entry_candle_confirmation", {}).get("slope_reentry_break_previous_high")
                 or parameters["protection"]["stop"]["method"] == "last_red_candle_close"):
@@ -2784,10 +2797,16 @@ class LongMomentumStrategyEngine:
                 state, assignment.status,
             )
         pressure = state.get("market_pressure", {})
-        if parameters.get("market_pressure", {}).get("enabled"):
+        if parameters.get("market_pressure", {}).get("enabled") and not parameters.get("local_swing_management"):
             reason = ("entry_pressure_unavailable" if not pressure.get("usable") else
                       "entry_adverse_pressure" if pressure.get("adverse") else
                       "reentry_pressure_not_recovered" if state.get("pressure_exit_latched") and not pressure.get("recovered") else "")
+            if reason:
+                state.pop("pending_capital_request", None)
+                return self._result(assignment, observation, "wait", reason, 0., 1., state, AssignmentStatus.WATCHING)
+        if parameters.get("local_swing_management"):
+            reason = ("entry_adverse_pressure" if pressure.get("adverse") else
+                      "waiting_for_fresh_local_breakout" if not state.get("micro_entry", {}).get("passed") else "")
             if reason:
                 state.pop("pending_capital_request", None)
                 return self._result(assignment, observation, "wait", reason, 0., 1., state, AssignmentStatus.WATCHING)
@@ -3452,12 +3471,12 @@ class LongMomentumStrategyEngine:
         )
         if profit_targets:
             target = profit_targets[0]
-        elif self.revision >= 37 and not parameters.get("broken_level_stop_only"):
+        elif self.revision >= 37 and not parameters.get("broken_level_stop_only") and not parameters.get("local_swing_management"):
             return self._result(
                 assignment, observation, "wait", "qualified_target_unavailable", 0.0, 1.0,
                 state, assignment.status, metadata={"profit_target_selection": profit_target_selection},
             )
-        if parameters.get("broken_level_stop_only"):
+        if parameters.get("broken_level_stop_only") or parameters.get("local_swing_management"):
             target = None
             profit_targets = []
         profit_policy = dict(parameters["protection"].get("profit_ladder") or {})
@@ -3787,6 +3806,10 @@ class LongMomentumStrategyEngine:
                 or state.get("initial_stop")
                 or _initial_stop(observation, parameters, observation.price, side=side, entry_placement=False)
             )
+        if parameters.get("local_swing_management") and side == "long":
+            swing = local_swing.update(observation, state, float(parameters["execution"]["tick_size"]))
+            if manage_automatic:
+                state["active_stop"] = max(float(state["active_stop"]), float(swing.get("stop") or 0))
         stop = float(state["active_stop"])
         breakout_level = float(state.get("breakout_level") or 0)
         breakout_buffer = observation.price * float(state.get("breakout_buffer_bps") or 0) / 10_000
@@ -3862,6 +3885,11 @@ class LongMomentumStrategyEngine:
             }
         elif parameters.get("broken_level_stop_only"):
             exit_route = None
+        elif exit_automatic and parameters.get("local_swing_management"):
+            swing = state.get("local_swing", {})
+            exit_route = ({"route_id": "local-high-retest-failed", "name": "Local high retest failed",
+                           "mechanism": "local_high_retest_failed", "position_fraction": 1., "evidence": dict(swing)}
+                          if swing.get("exit") else None)
         elif exit_automatic:
             exit_route = _matching_momentum_management_route(
                 parameters,
@@ -4000,9 +4028,9 @@ class LongMomentumStrategyEngine:
 
         stop_replacement = None
         if (self.revision >= 37 and stop > previous_stop > 0
-                and parameters["protection"]["trailing"].get("mode") in {"qualified_support", "fixed_support_distance", "third_resistance_below_session_high", "first_resistance_below_session_high"}):
+                and (parameters["protection"]["trailing"].get("mode") in {"qualified_support", "fixed_support_distance", "third_resistance_below_session_high", "first_resistance_below_session_high"} or parameters.get("local_swing_management"))):
             stop_replacement = self._result(
-                assignment, observation, "replace_protective_stop", ("fixed_support_distance_advanced" if parameters["protection"]["trailing"].get("mode") == "fixed_support_distance" else "highest_broken_level_advanced" if parameters.get("broken_level_stop_only") else "first_resistance_advanced" if parameters["protection"]["trailing"].get("mode") == "first_resistance_below_session_high" else "third_resistance_advanced" if parameters["protection"]["trailing"].get("mode") == "third_resistance_below_session_high" else "qualified_support_advanced"),
+                assignment, observation, "replace_protective_stop", ("local_higher_low_confirmed" if parameters.get("local_swing_management") else "fixed_support_distance_advanced" if parameters["protection"]["trailing"].get("mode") == "fixed_support_distance" else "highest_broken_level_advanced" if parameters.get("broken_level_stop_only") else "first_resistance_advanced" if parameters["protection"]["trailing"].get("mode") == "first_resistance_below_session_high" else "third_resistance_advanced" if parameters["protection"]["trailing"].get("mode") == "third_resistance_below_session_high" else "qualified_support_advanced"),
                 observation.qmd_score, 1.0, state, AssignmentStatus.MANAGING,
                 quantity=observation.position_quantity, invalidation_price=stop,
                 metadata={"previous_stop": previous_stop,
@@ -4045,7 +4073,7 @@ class LongMomentumStrategyEngine:
         if structural_add is not None:
             return structural_add
 
-        target_replacement = None if parameters.get("broken_level_stop_only") else self._structural_target_replacement_result(
+        target_replacement = None if parameters.get("broken_level_stop_only") or parameters.get("local_swing_management") else self._structural_target_replacement_result(
             assignment,
             observation,
             parameters,
@@ -4986,6 +5014,9 @@ class LongMomentumStrategyEngine:
     ) -> StrategyEngineResult:
         event_id = str(uuid4())
         resolved_metadata = dict(metadata or {})
+        if assignment.parameters.get("local_swing_management"):
+            resolved_metadata["micro_entry"] = dict(state.get("micro_entry") or {})
+            resolved_metadata["local_swing"] = dict(state.get("local_swing") or {})
         if assignment.parameters.get("market_pressure", {}).get("enabled"):
             resolved_metadata["market_pressure"] = dict(state.get("market_pressure") or {})
             if action == "exit" and reason == "market_pressure_rejection":
@@ -7544,6 +7575,13 @@ def _initial_stop(
 ) -> float:
     stop = parameters["protection"]["stop"]
     method = str(stop.get("method") or "hybrid")
+    if method == "local_swing_low":
+        micro = local_swing.context(observation)
+        low = float(micro.get("low") or 0)
+        selected = local_swing.below(low, float(parameters["execution"]["tick_size"])) if low > 0 else 0.
+        if selection_evidence is not None:
+            selection_evidence.update(selection_mode=method, local_range=micro, selected_stop=selected)
+        return selected if side == "long" and 0 < selected < observation.price else 0.
     if method == "last_red_candle_close":
         candle = dict((candle_state or {}).get("last_red_entry_candle") or {})
         close, opening, stamp = (candle.get(k) for k in ("close", "open", "timestamp"))
@@ -7962,6 +8000,8 @@ def _structural_profit_targets(
     qualified_levels_out: list[dict[str, Any]] | None = None,
 ) -> list[float]:
     """Build causal targets from level-book resistance/support evidence."""
+    if parameters.get("local_swing_management"):
+        return []
     policy = dict(parameters["protection"].get("profit_ladder") or {})
     if not bool(policy.get("enabled", True)):
         return [luld_target] if luld_target is not None else []
