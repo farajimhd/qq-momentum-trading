@@ -3,7 +3,7 @@ from __future__ import annotations
 from src.trading_runtime import breakout_confirmation
 
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
-from src.trading_runtime import histogram_slope, market_pressure, local_swing, swing_evidence
+from src.trading_runtime import histogram_slope, market_pressure, local_swing, swing_evidence, swing_momentum
 
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, time as clock_time, timedelta, timezone
@@ -858,6 +858,8 @@ def resolve_long_momentum_parameters(
                                                        require_closed_bar=False, evaluate_macd_intrabar=True)
     if parameters.get("swing_evidence_contract"):
         swing_evidence.apply(parameters)
+    if parameters.get("swing_momentum_contract"):
+        swing_momentum.configure(parameters)
     execution = dict(parameters.get("execution") or {})
     slope_policy = parameters["momentum_management"].get("histogram_slope_exit")
     if slope_policy is not None:
@@ -2667,6 +2669,8 @@ class LongMomentumStrategyEngine:
         )
         if parameters.get("completed_macd_setup"):
             closed = "bar_close" in observation.evaluation_events and observation.source_timeframe in {"", "1s"}
+            if closed and parameters.get("swing_momentum_contract"):
+                swing_momentum.update_progress(state,observation.observed_at.timestamp(),observation.price)
             if closed:
                 state["completed_entry_macd"] = {
                     "observed_at": observation.observed_at.isoformat(),
@@ -3451,6 +3455,16 @@ class LongMomentumStrategyEngine:
             parameters,
             stop=stop,
         )
+        if parameters.get("swing_momentum_contract"):
+            ctx=swing_momentum.observation_context(observation,parameters)
+            spread_bps=_spread_bps(observation)
+            reason=swing_momentum.entry(ctx,observation.price,float(observation.bar_open or 0),stop,
+                parameters['swing_momentum'],progress=state.get('swing_price_progress'),
+                spread=spread_bps*observation.price/10000 if spread_bps is not None else None)
+            if reason:
+                state.pop('pending_capital_request',None)
+                return self._result(assignment,observation,'wait',reason,0.,1.,state,AssignmentStatus.WATCHING,
+                    metadata={'swing_context':ctx,'stop':stop,'progress':state.get('swing_price_progress')})
         capital_request = _phase_capital_request(
             parameters,
             phase_name,
@@ -7065,6 +7079,10 @@ def _matching_momentum_management_route(
     gain_pct: float,
     side: str,
 ) -> dict[str, Any] | None:
+    if parameters.get('swing_momentum_contract') and state.get('swing_resistance_exit'):
+        return {'route_id':'swing-resistance-rejection','name':'Failed v4 resistance test',
+                'mechanism':'swing_resistance_rejected','position_fraction':1.,
+                'evidence':dict(state.get('swing_management') or {})}
     if parameters.get("swing_evidence_contract"):
         line = _numeric_source_value(observation, "indicator.macd.line", "1s")
         signal = _numeric_source_value(observation, "indicator.macd.signal", "1s")
@@ -7620,6 +7638,12 @@ def _initial_stop(
         tick = Decimal(str(parameters["execution"]["tick_size"]))
         selected = float(((Decimal(str(close)) - tick) / tick).to_integral_value(rounding=ROUND_FLOOR) * tick) if valid else 0.0
         valid = valid and 0 < selected < observation.price
+        if parameters.get('swing_momentum_contract') and side=='long':
+            ctx=swing_momentum.observation_context(observation,parameters)
+            selected=swing_momentum.initial_stop(ctx,observation.price,float(close) if valid else 0.,float(tick))
+            valid=0<selected<observation.price
+            if selection_evidence is not None:
+                selection_evidence['swing_context']=ctx
         if selection_evidence is not None:
             selection_evidence.update(selection_mode=method, candle=candle, tick_size=float(tick),
                 selected_stop=selected if valid else 0.0,
@@ -7853,6 +7877,17 @@ def _ratcheted_stop(
         else (entry / observation.price - 1) * 100
     ) if entry > 0 else 0
     trailing = parameters["protection"]["trailing"]
+    if parameters.get('swing_momentum_contract') and side=='long':
+        at=_optional_aware_datetime(state.get('entry_at'))
+        if at is None:
+            return current
+        management=dict(state.get('swing_management') or {})
+        selected,reason=swing_momentum.manage(swing_momentum.observation_context(observation,parameters),
+            observation.price,observation.observed_at.timestamp(),at.timestamp(),current,
+            float(parameters['execution']['tick_size']),management,parameters['swing_momentum'])
+        state['swing_management']=management
+        state['swing_resistance_exit']=reason
+        return selected
     if parameters.get("broken_level_stop_only") and side == "long":
         previous = state.get("previous_observed_price")
         if previous is None:

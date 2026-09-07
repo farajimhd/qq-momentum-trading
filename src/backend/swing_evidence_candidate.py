@@ -9,7 +9,8 @@ PLAN_ID = "momentum-swing-evidence-v1-replay"
 LABEL = "MACD open - selling veto - completed MACD exit"
 
 
-def prepare(configuration, source_profile_id, source_plan_id, *, source_configuration=None):
+def prepare(configuration, source_profile_id, source_plan_id, *, source_configuration=None, profile_id=PROFILE_ID,
+            plan_id=PLAN_ID, label=LABEL, parameter_updates=None):
     model = deepcopy(configuration)
     source = source_configuration or configuration
     if source_configuration is not None:
@@ -20,11 +21,14 @@ def prepare(configuration, source_profile_id, source_plan_id, *, source_configur
         existing_ids = {p["profile_id"] for p in model["strategy"]["profiles"]}
         model["strategy"]["profiles"].extend(deepcopy(p) for p in source["strategy"]["profiles"] if p["profile_id"] not in existing_ids)
     profile = deepcopy(next(p for p in source["strategy"]["profiles"] if p["profile_id"] == source_profile_id))
-    profile.update(profile_id=PROFILE_ID, name=LABEL, revision=1, publication_status="draft",
+    profile.update(profile_id=profile_id, name=label, revision=1, publication_status="draft",
                    editable=True, protected=False, origin="user", derived_from_profile_id=source_profile_id,
                    description="Completed 1s MACD > signal at either sign; usable selling imbalance below -0.3 vetoes entry. Missing pressure is neutral. Last-red-close protective stop and completed MACD closure; no structural/VWAP entry gate or early-top exit.")
     p = deepcopy(profile["parameters"])
     p.update(swing_evidence_contract=CONTRACT, local_swing_management=False)
+    p.update(parameter_updates or {})
+    if p.get('swing_momentum_contract'):
+        profile['description']='Research only: causal v4 levels at p_norm >= 0.20, green completed 1s MACD-open entry, spread-relative progress and room-to-risk gate; new-support protection and failed-resistance/MACD exits. Discovery replay is not profitable; not approved for Live.'
     profile["parameters"] = resolve_long_momentum_parameters(p, revision=int(profile["definition_revision"]))
     stages = entry_rules()
     new_rules = {}
@@ -44,18 +48,18 @@ def prepare(configuration, source_profile_id, source_plan_id, *, source_configur
     lifecycle["reentry"]["pullback_reclaim"]["enabled"] = False
     for route in lifecycle["exit"]["rule_sets"]:
         route["enabled"] = False
-    model["strategy"]["profiles"] = [p for p in model["strategy"]["profiles"] if p["profile_id"] != PROFILE_ID] + [profile]
-    model["strategy"]["active_profile_id"] = PROFILE_ID
+    model["strategy"]["profiles"] = [p for p in model["strategy"]["profiles"] if p["profile_id"] != profile_id] + [profile]
+    model["strategy"]["active_profile_id"] = profile_id
     plan = deepcopy(next(p for p in source["run_plans"]["plans"] if p["run_plan_id"] == source_plan_id))
-    plan.update(run_plan_id=PLAN_ID, name=LABEL, profile_id=PROFILE_ID)
+    plan.update(run_plan_id=plan_id, name=label, profile_id=profile_id)
     mandate_ids = []
     for original in source["portfolio"]["mandates"]:
         if original.get("run_plan_id") != source_plan_id:
             continue
         mandate = deepcopy(original)
         for key in ("mandate_id", "principal_id"):
-            mandate[key] = mandate[key].replace(source_plan_id, PLAN_ID)
-        mandate["run_plan_id"] = PLAN_ID
+            mandate[key] = mandate[key].replace(source_plan_id, plan_id)
+        mandate["run_plan_id"] = plan_id
         mandate_ids.append(mandate["mandate_id"])
         model["portfolio"]["mandates"] = [m for m in model["portfolio"]["mandates"] if m["mandate_id"] != mandate["mandate_id"]] + [mandate]
     plan["mandate_ids"] = mandate_ids
@@ -63,8 +67,8 @@ def prepare(configuration, source_profile_id, source_plan_id, *, source_configur
         if original.get("run_plan_id") != source_plan_id:
             continue
         deployment = deepcopy(original)
-        deployment.update(run_plan_id=PLAN_ID, name=LABEL, portfolio_mandate_ids=mandate_ids,
-                          strategy_deployment_id=original["strategy_deployment_id"].replace(source_plan_id, PLAN_ID))
+        deployment.update(run_plan_id=plan_id, name=label, portfolio_mandate_ids=mandate_ids,
+                          strategy_deployment_id=original["strategy_deployment_id"].replace(source_plan_id, plan_id))
         model["sessions"]["strategy_deployments"] = [d for d in model["sessions"]["strategy_deployments"] if d["strategy_deployment_id"] != deployment["strategy_deployment_id"]] + [deployment]
-    model["run_plans"]["plans"] = [p for p in model["run_plans"]["plans"] if p["run_plan_id"] != PLAN_ID] + [plan]
+    model["run_plans"]["plans"] = [p for p in model["run_plans"]["plans"] if p["run_plan_id"] != plan_id] + [plan]
     return model
