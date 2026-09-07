@@ -3,7 +3,7 @@ from __future__ import annotations
 from src.trading_runtime import breakout_confirmation
 
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
-from src.trading_runtime import histogram_slope, market_pressure, local_swing
+from src.trading_runtime import histogram_slope, market_pressure, local_swing, swing_evidence
 
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, time as clock_time, timedelta, timezone
@@ -856,6 +856,8 @@ def resolve_long_momentum_parameters(
     if parameters.get("local_swing_management"):
         parameters["entry_candle_confirmation"].update(enabled=False, reject_bearish_close=False,
                                                        require_closed_bar=False, evaluate_macd_intrabar=True)
+    if parameters.get("swing_evidence_contract"):
+        swing_evidence.apply(parameters)
     execution = dict(parameters.get("execution") or {})
     slope_policy = parameters["momentum_management"].get("histogram_slope_exit")
     if slope_policy is not None:
@@ -2797,7 +2799,13 @@ class LongMomentumStrategyEngine:
                 state, assignment.status,
             )
         pressure = state.get("market_pressure", {})
-        if parameters.get("market_pressure", {}).get("enabled") and not parameters.get("local_swing_management"):
+        if parameters.get("swing_evidence_contract"):
+            state.pop("pressure_exit_latched", None)
+            if swing_evidence.selling_veto(pressure):
+                state.pop("pending_capital_request", None)
+                return self._result(assignment, observation, "wait", "entry_selling_pressure_veto",
+                                    0., 1., state, AssignmentStatus.WATCHING)
+        elif parameters.get("market_pressure", {}).get("enabled") and not parameters.get("local_swing_management"):
             reason = ("entry_pressure_unavailable" if not pressure.get("usable") else
                       "entry_adverse_pressure" if pressure.get("adverse") else
                       "reentry_pressure_not_recovered" if state.get("pressure_exit_latched") and not pressure.get("recovered") else "")
@@ -2994,7 +3002,7 @@ class LongMomentumStrategyEngine:
                 parameters,
                 state,
             )
-        if self.revision >= 41 and pending_capital:
+        if self.revision >= 41 and pending_capital and not parameters.get("swing_evidence_contract"):
             witness = dict(pending_capital.get("trigger") or {})
             identity = str(dict(witness.get("level") or {}).get("unified_level_id") or "")
             current = next((dict(row) for row in
@@ -3065,6 +3073,8 @@ class LongMomentumStrategyEngine:
             if reentries
             else dict(parameters.get("entry_rules") or {})
         )
+        if parameters.get("swing_evidence_contract"):
+            phase_rules = parameters["entry_rules"]
         if state.get("liquidity_admitted_at"):
             confirmation_stage = entry_stage_without_rule_set(
                 dict(phase_rules.get("confirmation") or {}),
@@ -3252,6 +3262,9 @@ class LongMomentumStrategyEngine:
             entry_macd_open = entry_macd_open or bypass_gap
             if parameters.get("macd_histogram_gate_bps") is not None:
                 entry_macd_open = normalized_macd["entry_confirmed"]
+        if parameters.get("swing_evidence_contract"):
+            line, signal = entry_macd_evidence["macd_line"], entry_macd_evidence["macd_signal"]
+            entry_macd_open = line is not None and signal is not None and line > signal
         if not entry_macd_open and not observation.force_entry:
             return self._result(
                 assignment,
@@ -3471,12 +3484,12 @@ class LongMomentumStrategyEngine:
         )
         if profit_targets:
             target = profit_targets[0]
-        elif self.revision >= 37 and not parameters.get("broken_level_stop_only") and not parameters.get("local_swing_management"):
+        elif self.revision >= 37 and not parameters.get("broken_level_stop_only") and not parameters.get("local_swing_management") and not parameters.get("swing_evidence_contract"):
             return self._result(
                 assignment, observation, "wait", "qualified_target_unavailable", 0.0, 1.0,
                 state, assignment.status, metadata={"profit_target_selection": profit_target_selection},
             )
-        if parameters.get("broken_level_stop_only") or parameters.get("local_swing_management"):
+        if parameters.get("broken_level_stop_only") or parameters.get("local_swing_management") or parameters.get("swing_evidence_contract"):
             target = None
             profit_targets = []
         profit_policy = dict(parameters["protection"].get("profit_ladder") or {})
@@ -5014,6 +5027,8 @@ class LongMomentumStrategyEngine:
     ) -> StrategyEngineResult:
         event_id = str(uuid4())
         resolved_metadata = dict(metadata or {})
+        if assignment.parameters.get("swing_evidence_contract"):
+            resolved_metadata["swing_evidence_contract"] = assignment.parameters["swing_evidence_contract"]
         if assignment.parameters.get("local_swing_management"):
             resolved_metadata["micro_entry"] = dict(state.get("micro_entry") or {})
             resolved_metadata["local_swing"] = dict(state.get("local_swing") or {})
@@ -7050,6 +7065,17 @@ def _matching_momentum_management_route(
     gain_pct: float,
     side: str,
 ) -> dict[str, Any] | None:
+    if parameters.get("swing_evidence_contract"):
+        line = _numeric_source_value(observation, "indicator.macd.line", "1s")
+        signal = _numeric_source_value(observation, "indicator.macd.signal", "1s")
+        if (side == "long" and "bar_close" in observation.evaluation_events
+                and observation.source_timeframe in {"", "1s"}
+                and line is not None and signal is not None and line <= signal):
+            return {"route_id": "evidence-completed-macd-close", "name": "Completed 1s MACD closed",
+                    "mechanism": "completed_macd_closed", "position_fraction": 1.,
+                    "evidence": {"macd_line": line, "macd_signal": signal,
+                                 "contract": swing_evidence.CONTRACT}}
+        return None
     settings = dict(parameters.get("momentum_management") or {})
     if side == "long" and parameters.get("market_pressure", {}).get("enabled") and state.get("market_pressure", {}).get("exit_confirmed"):
         return {"route_id": "market-pressure-rejection", "name": "Selling pressure / absorbed breakout",
@@ -7587,7 +7613,9 @@ def _initial_stop(
         close, opening, stamp = (candle.get(k) for k in ("close", "open", "timestamp"))
         valid = (side == "long" and all(isinstance(v, (int, float)) and isfinite(v)
                  for v in (close, opening, stamp)) and 0 < close < opening
-                 and 0 < stamp < observation.observed_at.timestamp()
+                 and 0 < stamp and (stamp < observation.observed_at.timestamp()
+                     or (parameters.get("swing_evidence_contract") and stamp == observation.observed_at.timestamp()
+                         and observation.source_timeframe == "1s" and "bar_close" in observation.evaluation_events))
                  and datetime.fromtimestamp(stamp, NEW_YORK).date() == observation.observed_at.astimezone(NEW_YORK).date())
         tick = Decimal(str(parameters["execution"]["tick_size"]))
         selected = float(((Decimal(str(close)) - tick) / tick).to_integral_value(rounding=ROUND_FLOOR) * tick) if valid else 0.0
