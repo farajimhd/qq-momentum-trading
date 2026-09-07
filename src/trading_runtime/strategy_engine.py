@@ -3,7 +3,7 @@ from __future__ import annotations
 from src.trading_runtime import breakout_confirmation
 
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
-from src.trading_runtime import histogram_slope
+from src.trading_runtime import histogram_slope, market_pressure
 
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, time as clock_time, timedelta, timezone
@@ -357,6 +357,7 @@ class StrategyObservation:
     changed_source_ids: tuple[str, ...] = ()
     source_signal_ids: tuple[str, ...] = ()
     source_timeframe: str = ""
+    market_pressure: dict[str, Any] = field(default_factory=dict)
     source_values: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -775,6 +776,16 @@ def resolve_long_momentum_parameters(
         default_long_momentum_parameters(revision=revision),
         dict(overrides or {}),
     )
+    if parameters.get("market_pressure", {}).get("enabled"):
+        policy = {**market_pressure.DEFAULT_POLICY, **parameters["market_pressure"]}
+        for key, low, high in (("minimum_trades", 1, 1000), ("minimum_classified_fraction", .01, 1),
+                               ("trade_imbalance", .01, 1), ("quote_imbalance", .01, 1),
+                               ("retreat_spreads", .01, 100), ("confirmation_ms", 0, 5000)):
+            value = float(policy[key])
+            if not isfinite(value) or not low <= value <= high:
+                raise ValueError(f"Invalid market pressure {key}")
+            policy[key] = value
+        parameters["market_pressure"] = policy
     if revision >= 33:
         # Profit pocketing is not part of the active strategy contract. Ignore
         # stale persisted overrides; revision 32 remains reproducible.
@@ -2705,6 +2716,8 @@ class LongMomentumStrategyEngine:
         state["previous_observed_price"] = state.get("last_price")
         state["last_observed_at"] = observation.observed_at.isoformat()
         state["last_price"] = observation.price
+        if parameters.get("market_pressure", {}).get("enabled"):
+            state["market_pressure"] = market_pressure.evaluate(parameters["market_pressure"], state, observation)
         _record_macd_histogram_history(state, observation)
         if (parameters.get("entry_candle_confirmation", {}).get("slope_reentry_break_previous_high")
                 or parameters["protection"]["stop"]["method"] == "last_red_candle_close"):
@@ -2770,6 +2783,14 @@ class LongMomentumStrategyEngine:
                 assignment, observation, "wait", "exit_fill_pending", 0.0, 1.0,
                 state, assignment.status,
             )
+        pressure = state.get("market_pressure", {})
+        if parameters.get("market_pressure", {}).get("enabled"):
+            reason = ("entry_pressure_unavailable" if not pressure.get("usable") else
+                      "entry_adverse_pressure" if pressure.get("adverse") else
+                      "reentry_pressure_not_recovered" if state.get("pressure_exit_latched") and not pressure.get("recovered") else "")
+            if reason:
+                state.pop("pending_capital_request", None)
+                return self._result(assignment, observation, "wait", reason, 0., 1., state, AssignmentStatus.WATCHING)
         reentries = int(state.get("reentries") or 0)
         reentry = parameters["reentry"]
         state.pop("manual_entry_requested", None)
@@ -4965,6 +4986,12 @@ class LongMomentumStrategyEngine:
     ) -> StrategyEngineResult:
         event_id = str(uuid4())
         resolved_metadata = dict(metadata or {})
+        if assignment.parameters.get("market_pressure", {}).get("enabled"):
+            resolved_metadata["market_pressure"] = dict(state.get("market_pressure") or {})
+            if action == "exit" and reason == "market_pressure_rejection":
+                state["pressure_exit_latched"] = True
+            elif action == "enter_long":
+                state.pop("pressure_exit_latched", None)
         pending_capital = dict(state.get("pending_capital_request") or {})
         capital_retry = self.revision >= 41 and bool(pending_capital) and action in {"enter_long", "enter_short"}
         if capital_retry:
@@ -6993,6 +7020,10 @@ def _matching_momentum_management_route(
     side: str,
 ) -> dict[str, Any] | None:
     settings = dict(parameters.get("momentum_management") or {})
+    if side == "long" and parameters.get("market_pressure", {}).get("enabled") and state.get("market_pressure", {}).get("exit_confirmed"):
+        return {"route_id": "market-pressure-rejection", "name": "Selling pressure / absorbed breakout",
+                "mechanism": "market_pressure_rejection", "position_fraction": 1.,
+                "evidence": dict(state["market_pressure"])}
     if not settings or side != "long":
         return None
     if parameters.get("macd_histogram_gate_bps") is not None:

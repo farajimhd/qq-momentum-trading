@@ -193,6 +193,7 @@ def strategy_observation_from_market_row(
         if isinstance(level, Mapping)
     ]
     return StrategyObservation(
+        market_pressure=dict(row.get("market_pressure") or {}),
         ticker=ticker,
         observed_at=timestamp,
         price=price,

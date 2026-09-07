@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.trading_runtime.market_pressure import PressureTracker
+
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD, CONTRACT as LEVEL_LOAD_CONTRACT
 
 import asyncio
@@ -1005,6 +1007,11 @@ class ReplayRunController:
         self._strategy_quality_candidate_tickers: set[str] = set()
         self._strategy_quality_prune_ready = False
         self._historical_market_quality: dict[str, dict[str, Any]] = {}
+        self._pressure_trackers: dict[str, PressureTracker] = {}
+        pressure_config = dict(definition.configuration_revision.get("payload") or {})
+        pressure_profiles = [dict(pressure_config.get("strategy_profile") or {}),
+                             *list(pressure_config.get("assignments") or [])]
+        self._pressure_enabled = any(dict(row.get("parameters") or {}).get("market_pressure", {}).get("enabled") for row in pressure_profiles)
         self._historical_prepared_structure: dict[str, dict[str, Any]] = {}
         self._event_structure_sessions: dict[str, tuple[str, datetime, int]] = {}
         self._historical_structure_context: dict[
@@ -1779,6 +1786,7 @@ class ReplayRunController:
                     )
                 ],
                 "strategy_source_values": deepcopy(self._strategy_source_values),
+                "pressure_trackers": {ticker: tracker.checkpoint() for ticker, tracker in self._pressure_trackers.items()},
                 "provisional_macd_states": {
                     ticker: state.checkpoint()
                     for ticker, state in sorted(
@@ -2738,6 +2746,7 @@ class ReplayRunController:
         self._strategy_source_values = deepcopy(
             dict(controller.get("strategy_source_values") or {})
         )
+        self._pressure_trackers = {ticker: PressureTracker(saved) for ticker, saved in controller.get("pressure_trackers", {}).items()}
         self._provisional_macd_states = {
             str(ticker).upper(): _ProvisionalMacdState.restore(dict(payload))
             for ticker, payload in dict(
@@ -2843,6 +2852,11 @@ class ReplayRunController:
     ) -> None:
         if self._runtime is None:
             raise RuntimeError("Replay runtime was not initialized")
+        if self._pressure_enabled:
+            tracker = self._pressure_trackers.get(event.ticker)
+            if tracker is None:
+                tracker = self._pressure_trackers[event.ticker] = PressureTracker()
+            tracker.observe(event)
         self._observe_historical_market_quality_event(event)
         if isinstance(event, TradeEvent) and event.price_eligible:
             self._experimental_session_high(event.ticker, event.ts, event.price)
@@ -3043,6 +3057,7 @@ class ReplayRunController:
         base = StrategyObservation(
             ticker=frame.ticker,
             observed_at=frame.as_of,
+            market_pressure=self._pressure_trackers.get(frame.ticker, PressureTracker()).snapshot(frame.as_of),
             price=float(indicator.get("close") or bar.get("close") or 0),
             bar_open=_optional_positive(bar.get("open")),
             bar_high=_optional_positive(bar.get("high")),
@@ -3459,6 +3474,7 @@ class ReplayRunController:
         observation = replace(
             base,
             observed_at=event.ts,
+            market_pressure=self._pressure_trackers.get(event.ticker, PressureTracker()).snapshot(event.ts),
             price=price,
             bar_open=forming_open,
             bar_high=None,
