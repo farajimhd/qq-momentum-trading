@@ -92,6 +92,35 @@ class SwingTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             for t,p in enumerate([10,10.2,10.4,10.2,10,10.5],1): e.observe(t,p,p,p)
 
+    def test_opening_spike_does_not_freeze_major_confirmation(self):
+        e = SwingStructure()
+        for t, (hi,lo,cl) in enumerate([(10,10,10),(10.2,10.2,10.2),
+                                       (12,10.1,12),(12.1,12,12.1)],1):
+            e.observe(t,hi,lo,cl)
+        for t in range(5,16): e.observe(t,11.82,11.8,11.81)
+        found = [s for s in e.segments if s['scale']=='major' and s['side']=='resistance' and s['price']==12.1]
+        self.assertTrue(found)
+        self.assertLessEqual(found[0]['confirmed_at'],15)
+
+    def test_repeated_contacts_do_not_duplicate_chart_segments(self):
+        e = self.engine()
+        l = self.seed_high(e)
+        for t in range(5,105):
+            if t%2: e.observe(t,10.4,10.3,10.35)
+            else: e.observe(t,10.2,10.2,10.2)
+        self.assertGreater(e.counts['events_rejection'],20)
+        self.assertEqual(len([s for s in e.segments if s['level_id']==l['level_id']]),1)
+
+    def test_contact_phase_preserves_pending_chart_segment(self):
+        e = self.engine()
+        l = self.seed_high(e)
+        for t,p in [(5,10.5),(6,10.6)]: e.observe(t,p,p,p)
+        count = len([s for s in e.segments if s['level_id']==l['level_id']])
+        e.observe(7,10.45,10.4,10.45)
+        self.assertEqual(l['state'],'retest_contact')
+        self.assertEqual(len([s for s in e.segments if s['level_id']==l['level_id']]),count)
+        self.assertEqual(e.segments[l['segment']]['state'],'pending')
+
 
 class PreviewTests(unittest.TestCase):
     def setUp(self):

@@ -53,7 +53,7 @@ export function useSwingStructure(ticker: string, sessionDate?: string) {
           <label className="chart-setting-row" key={label}>{label}<span className="chart-setting-inline"><input aria-label={label} type="range" min={0} max={100} value={value} onChange={e => setter(e.target.valueAsNumber)} /><b>{value}%</b></span></label>)}
         <form className="chart-settings-section" onSubmit={e => { e.preventDefault(); generate(); }}>
           {fields.map(([key, label, min, max, step]) => <label className="chart-setting-row" key={key}>{label}<span className="chart-setting-inline"><input type="range" aria-label={label} min={min} max={max} step={step} value={settings[key]} onChange={e => setSettings(s => ({ ...s, [key]: e.target.valueAsNumber }))} /><b>{settings[key]}</b></span></label>)}
-          <p className="chart-settings-help">Local reversal = the larger of the bps floor, 2 ticks, and volatility × multiple. Major swings multiply that distance. Volatility uses the preceding 30 observed seconds. Untested local levels expire after 30 minutes, major after 2 hours.</p>
+          <p className="chart-settings-help">Local reversal = the larger of the bps floor, 2 ticks, and volatility × multiple. Major swings multiply that distance. Volatility is the median true range of the preceding 30 observed seconds; thresholds adapt as new bars close. Untested local levels expire after 30 minutes, major after 2 hours.</p>
           <button className="toolbar-button hindsight-apply" type="submit" disabled={current.busy}>Apply and preview</button>
         </form>
       </HindsightDetails> : null}

@@ -6,7 +6,8 @@ establish whether its high or low happened first. All times are UTC seconds.
 """
 from collections import Counter, deque
 from dataclasses import dataclass, asdict
-from math import isfinite, exp
+from math import isfinite
+from statistics import median
 
 
 @dataclass(frozen=True)
@@ -31,7 +32,6 @@ class SwingStructure:
     def __init__(self, settings=SwingSettings()):
         self.settings = settings
         self.ranges = deque(maxlen=30)
-        self.range_sum = 0.
         self.previous_close = None
         self.last_time = float('-inf')
         self.detectors = [dict(scale=s, direction=0, high=None, low=None) for s in ('local', 'major')]
@@ -41,6 +41,11 @@ class SwingStructure:
         self.sequence = 0
 
     def _publish(self, level, t, reason):
+        self.counts['events_'+reason] += 1
+        # This API is a visual projection, not a score/state journal. A touch
+        # or score change does not change a line. Both pending phases are dashed.
+        if reason in ('rejection', 'retest_contact'):
+            return
         old = level.get('segment')
         if old is not None:
             self.segments[old]['valid_to'] = t
@@ -51,12 +56,12 @@ class SwingStructure:
             raise RuntimeError('Swing segment budget exceeded; no partial result')
         level['segment'] = len(self.segments)
         self.segments.append({k: level[k] for k in
-            ('level_id', 'price', 'lower', 'upper', 'side', 'scale', 'pivot_at', 'confirmed_at', 'tests', 'state')}
+            ('level_id', 'price', 'lower', 'upper', 'side', 'scale', 'pivot_at', 'confirmed_at')}
             | dict(valid_from=t, valid_to=None, reason=reason,
-                   strength=level['strength'], p_norm=1-exp(-level['strength']/3)))
+                   state='active' if level['state'] == 'active' else 'pending'))
 
     def _found(self, detector, extreme, side, t):
-        price, pivot_at, threshold = extreme
+        price, pivot_at = extreme
         tick = .0001 if price < 1 else .01
         width = max(tick, price * .0002)
         # Repeated nearby pivots reinforce one anchored level. Do not union
@@ -86,7 +91,9 @@ class SwingStructure:
             raise ValueError('Require ordered distinct completed bars with valid positive OHLC')
         # Levels and thresholds use only already observed bars.
         tick = .0001 if close < 1 else .01
-        volatility = self.range_sum / len(self.ranges) if self.ranges else 0.
+        # Prior-only robust range: an opening spike must not lock an extreme
+        # behind its old, abnormally large reversal threshold for minutes.
+        volatility = median(self.ranges) if self.ranges else 0.
         for key, level in list(self.active.items()):
             ttl = self.settings.local_lifetime_seconds if level['scale'] == 'local' else self.settings.major_lifetime_seconds
             if t-level['last_test'] >= ttl:
@@ -130,36 +137,33 @@ class SwingStructure:
             level['previous_contact'] = contact
         for d in self.detectors:
             multiplier = 1 if d['scale'] == 'local' else self.settings.major_multiple
-            distance = multiplier*max(2*tick, close*self.settings.reversal_bps/10000,
+            def distance(price):
+                return multiplier*max(2*(.0001 if price < 1 else .01), price*self.settings.reversal_bps/10000,
                                       volatility*self.settings.volatility_multiple)
-            # Freeze each candidate's threshold when its extreme is observed.
             if d['high'] is None:
-                d.update(high=(high,t,distance), low=(low,t,distance))
+                d.update(high=(high,t), low=(low,t))
                 continue
-            if high > d['high'][0]: d['high'] = (high,t,distance)
-            if low < d['low'][0]: d['low'] = (low,t,distance)
+            if high > d['high'][0]: d['high'] = (high,t)
+            if low < d['low'][0]: d['low'] = (low,t)
             up = d['direction'] >= 0
             down = d['direction'] <= 0
-            high_confirm = up and d['high'][1] < t and close <= d['high'][0]-d['high'][2]
-            low_confirm = down and d['low'][1] < t and close >= d['low'][0]+d['low'][2]
+            high_confirm = up and d['high'][1] < t and close <= d['high'][0]-distance(d['high'][0])
+            low_confirm = down and d['low'][1] < t and close >= d['low'][0]+distance(d['low'][0])
             if high_confirm and low_confirm:
                 # Ambiguous initialization: establish a direction first.
-                d.update(high=(high,t,distance), low=(low,t,distance))
+                d.update(high=(high,t), low=(low,t))
             elif high_confirm:
                 self._found(d, d['high'], 'resistance', t)
-                d.update(direction=-1, low=(low,t,distance), high=(high,t,distance))
+                d.update(direction=-1, low=(low,t), high=(high,t))
             elif low_confirm:
                 self._found(d, d['low'], 'support', t)
-                d.update(direction=1, high=(high,t,distance), low=(low,t,distance))
+                d.update(direction=1, high=(high,t), low=(low,t))
         tr = high-low if self.previous_close is None else max(high-low, abs(high-self.previous_close), abs(low-self.previous_close))
-        if len(self.ranges) == self.ranges.maxlen:
-            self.range_sum -= self.ranges[0]
         self.ranges.append(tr)
-        self.range_sum += tr
         self.previous_close, self.last_time = close, t
         self.counts['bars'] += 1
 
     def result(self):
-        return dict(algorithm='causal-session-swing-v1', settings=asdict(self.settings),
+        return dict(algorithm='causal-session-swing-v2', settings=asdict(self.settings),
                     segments=self.segments, counts=dict(self.counts), active_levels=len(self.active),
                     through=self.last_time if self.counts['bars'] else None)
