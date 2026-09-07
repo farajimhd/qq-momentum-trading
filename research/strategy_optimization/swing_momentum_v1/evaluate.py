@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[3]))
 import argparse
 import json
+import subprocess
 from hashlib import sha256
 from datetime import datetime,timezone
 from collections import Counter,deque
@@ -80,6 +81,14 @@ def main():
     if not args.output.resolve().is_relative_to(Path('D:/TradingML/runtimes')):
         raise ValueError('Output must be in the operational runtime root')
     args.output.mkdir(parents=True,exist_ok=True)
+    (args.output/'run-manifest.json').write_text(json.dumps(dict(
+        family='swing_momentum',version=1,job='discovery_execution_proxy',
+        git_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+        evaluator_hash=sha256(Path(__file__).read_bytes()).hexdigest(),
+        policy_hash=sha256(Path(M.__file__).read_bytes()).hexdigest(),
+        features_root=str(args.features_root.resolve()),output=str(args.output.resolve()),
+        books=args.book,minimum_p_norm=.2,slippage_bps_per_side=5,
+        maximum_spread_bps=200,entry_expiry_seconds=1),indent=2))
     result=[]
     for item in args.book:
         ticker,book=item.split('=',1);started=perf_counter()
