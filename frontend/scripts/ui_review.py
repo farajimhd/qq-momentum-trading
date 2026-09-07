@@ -2492,8 +2492,40 @@ def capture(args: argparse.Namespace) -> int:
                                 }),
                         };
                     }""")
+                    hindsight_issue = None
+                    if args.hindsight_positions:
+                        button = page.get_by_role("button", name="Hindsight positions", exact=True)
+                        button.click(timeout=30_000)
+                        page.wait_for_function("""() => {
+                            const text = document.querySelector('.hindsight-summary')?.textContent || '';
+                            return text.includes('/share') || text.includes('Failed:');
+                        }""", timeout=120_000)
+                        status = page.locator('.hindsight-summary').inner_text()
+                        if 'Failed:' in status:
+                            raise RuntimeError(status)
+                        metrics['hindsight'] = status
+                        if button.evaluate('(el) => el.scrollWidth > el.clientWidth + 1'):
+                            raise RuntimeError('Hindsight button label overflows its control')
+                        pane = page.locator('.chart-pane-canvas').first
+                        page.mouse.move(0, 0)
+                        page.wait_for_timeout(250)
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem + '__hindsight.png')), full_page=True)
+                        button.click()
+                        page.mouse.move(0, 0)
+                        page.wait_for_timeout(250)
+                        baseline = pane.screenshot()
+                        button.focus()
+                        page.keyboard.press('Enter')
+                        page.wait_for_timeout(250)
+                        button.click()
+                        page.mouse.move(0, 0)
+                        page.wait_for_timeout(250)
+                        if baseline != pane.screenshot():
+                            hindsight_issue = 'Hindsight toggle changed the chart viewport or underlying rendering'
                     page.screenshot(path=str(screenshot_path), full_page=True)
                     issues: list[str] = []
+                    if hindsight_issue:
+                        issues.append(hindsight_issue)
                     if not metrics["appShellPresent"]:
                         issues.append("app shell is missing")
                     if metrics["bodyTextLength"] < 20:
@@ -2550,12 +2582,13 @@ def capture(args: argparse.Namespace) -> int:
                         and scenario["scale"] == 1.0
                         and scenario["viewport_name"] == "normal"
                     ) else screenshot_path.with_name(f"{screenshot_path.stem}__chart-interaction.png") if scenario["page"] == "canvas-focus" else None
-                    issues.extend(validate_canvas_interactions(
-                        page, scenario, interaction_screenshot,
-                        args.canvas_chart_timeframe, args.chart_stress_cycles,
-                        args.chart_stress_pattern, args.chart_stress_only,
-                        args.watchlist_close_only,
-                    ))
+                    if not args.hindsight_positions:
+                        issues.extend(validate_canvas_interactions(
+                            page, scenario, interaction_screenshot,
+                            args.canvas_chart_timeframe, args.chart_stress_cycles,
+                            args.chart_stress_pattern, args.chart_stress_only,
+                            args.watchlist_close_only,
+                        ))
                     if args.stub_service_status:
                         issues.extend(validate_service_interactions(page, scenario, interaction_screenshot))
                     objective_issues += len(issues)
@@ -2567,6 +2600,9 @@ def capture(args: argparse.Namespace) -> int:
                         "issues": issues,
                     })
                 except Exception as exc:
+                    if args.hindsight_positions:
+                        result["hindsight_status"] = page.locator('.hindsight-controls').all_text_contents()
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem + '__failed.png')), full_page=True)
                     capture_failures += 1
                     result.update({
                         "status": "capture_failed", "error": str(exc), "issues": [],
@@ -2620,6 +2656,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--chart-stress-pattern", choices=("mixed", "pathological", "left-paging"), default="mixed", help="alternate gestures, accumulate them in one direction, or force left-edge history paging")
     result.add_argument("--chart-stress-only", action="store_true", help="stop the Canvas interaction review after chart stress")
     result.add_argument("--stub-chart-history", action="store_true", help="use deterministic chart history for frontend-only renderer and interaction QA")
+    result.add_argument("--hindsight-positions", action="store_true", help="generate real hindsight positions, capture the overlay and verify reversible keyboard toggling")
     result.add_argument("--canvas-charts-quotes", action="store_true", help="seed the Charts & Quotes container in Canvas focus review")
     result.add_argument("--canvas-position-manager", action="store_true", help="seed the Position Manager container in Canvas focus review")
     result.add_argument("--stub-split-events", action="store_true", help="use a deterministic stock-split event for daily chart QA")

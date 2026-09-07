@@ -1,5 +1,6 @@
 import { tradeGuideSpan } from "./tradeGuideGeometry";
 import { macdBpsPoints } from "./macdBps";
+import { HindsightPrimitive, useHindsightPositions } from "./HindsightPositions";
 import { STRATEGY_ENTRY_REFERENCE_BACKING, STRATEGY_ENTRY_REFERENCE_COLOR } from "../theme";
 import {
   type AutoscaleInfo,
@@ -653,6 +654,7 @@ export type ChartPanelHandle = {
 };
 
 type ChartPanelProps = {
+  hindsightSessionDate?: string;
   appearanceDefaults?: ChartAppearanceDefaults;
   baseHeight?: number;
   catalogColumns?: ChartCatalogItem[];
@@ -873,6 +875,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   showIndicatorControls = true,
   showSupervisionControls = false,
   strategyPresentationEnabled = false,
+  hindsightSessionDate,
   settingsStorageKey,
   ticker,
   tickerChangeAsOf,
@@ -943,6 +946,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
   const [supervisionMenuOpen, setSupervisionMenuOpen] = useState(false);
   const [strategyPresentationOpen, setStrategyPresentationOpen] = useState(false);
+  const hindsight = useHindsightPositions(ticker, hindsightSessionDate);
+  const hindsightRef = useRef(hindsight.positions);
+  hindsightRef.current = hindsight.positions;
+  const hindsightPrimitiveRef = useRef<HindsightPrimitive | null>(null);
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null);
   const strategyLifecycles = useMemo(() => [...(payload?.trade_annotations ?? [])]
     .sort((a, b) => a.entryTime - b.entryTime || a.id.localeCompare(b.id)), [payload?.trade_annotations]);
@@ -1290,6 +1297,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     drawCurrentRegions();
   }, [selectedStrategy?.id, strategyPresentationEnabled]);
 
+  useEffect(() => { drawCurrentRegions(); }, [hindsight.positions]);
+
   useEffect(() => {
     oscillatorPaneGroups.forEach((group) => {
       const runtime = oscillatorPaneRuntimesRef.current.get(group.key);
@@ -1337,6 +1346,9 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const tradeAnnotationPrimitive = new TradeAnnotationPrimitive();
     candleSeries.attachPrimitive(tradeAnnotationPrimitive);
     tradeAnnotationPrimitiveRef.current = tradeAnnotationPrimitive;
+    const hindsightPrimitive = new HindsightPrimitive();
+    candleSeries.attachPrimitive(hindsightPrimitive);
+    hindsightPrimitiveRef.current = hindsightPrimitive;
     const volume = priceChart.addSeries(HistogramSeries, {
       base: 0,
       lastValueVisible: false,
@@ -1752,6 +1764,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       zones: selectedZones,
     });
     syncTradeAnnotationPrimitive(currentPayload, timeline);
+    const hindsightDuration = hindsightRef.current.length ? estimateCandleDuration(timeline) : 60;
+    hindsightPrimitiveRef.current?.setState(hindsightRef.current, (time) => xForAnnotationTime(chart, time, timeline, hindsightDuration));
     syncPriceZoneAxisLines(candleRef.current, selectedZones, legendSettingsRef.current, priceZoneAxisLinesRef.current);
     livePositionPrimitiveRef.current?.setState(currentPayload.candles, liveEntryLineRef.current);
     oscillatorPaneRuntimesRef.current.forEach((_runtime, key) => {
@@ -1855,6 +1869,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       candleRef.current.detachPrimitive(tradeAnnotationPrimitiveRef.current);
     }
     tradeAnnotationPrimitiveRef.current = null;
+    if (hindsightPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(hindsightPrimitiveRef.current);
+    hindsightPrimitiveRef.current = null;
     if (livePositionPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(livePositionPrimitiveRef.current);
     livePositionPrimitiveRef.current = null;
     if (priceChartRef.current) {
@@ -2079,6 +2095,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           />
         ) : null}
         <div className="toolbar-spacer" />
+        {hindsight.controls}
         <button
           className="toolbar-button"
           data-chart-settings-trigger="true"
@@ -7941,9 +7958,8 @@ function compactTradeLabel(parts: TradeLabelPart[] | undefined, fallback: string
   return fromParts || fallback || defaultLabel;
 }
 
-function xForAnnotationTime(chart: IChartApi, time: number, candles: Array<{ time: number }>) {
+function xForAnnotationTime(chart: IChartApi, time: number, candles: Array<{ time: number }>, candleDuration = estimateCandleDuration(candles)) {
   if (!candles.length) return null;
-  const candleDuration = estimateCandleDuration(candles);
   if (time < candles[0].time || time >= candles[candles.length - 1].time + candleDuration) return null;
   const exact = chart.timeScale().timeToCoordinate(time as Time);
   if (exact !== null) return exact;
