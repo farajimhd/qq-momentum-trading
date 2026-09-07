@@ -67,6 +67,7 @@ def run(ticker, args):
     started = time.perf_counter()
     code = P.digest({str(p.relative_to(Path(__file__).resolve().parents[1])):sha256(p.read_bytes()).hexdigest()
         for p in [Path(__file__).resolve(), Path('src/market_engine/swing_structure.py').resolve(),
+                  Path('src/market_engine/swing_level_index.py').resolve(),
                   Path('src/market_engine/swing_book.py').resolve(), Path('src/backend/swing_book_source.py').resolve()]})
     days = client.query(f"SELECT source_date,event_count,next_ordinal,last_ordinal,first_sip_timestamp_us,last_sip_timestamp_us,build_step,updated_at FROM market_sip_compact.events_ordinal_continuity FINAL WHERE ticker={P.literal(ticker)} AND source_date BETWEEN '{args.start}' AND '{args.end}' ORDER BY source_date", 'source_days')
     if not days:

@@ -97,3 +97,19 @@ six-session validation book is therefore a partial-history proof; a full
 historical campaign requires ingestion-owned canonical coverage repair first.
 Old books remain retained. Repeating the identical command verifies and resumes
 the existing build without increasing logical row counts.
+
+## Indexed continuation
+
+V2 continuation uses an interval index for bar contacts, ordered boundaries
+for gap/break/retest transitions, and local-level expiry deadlines. Unaffected
+dormant anchors are not revisited on every bar. Indexes are derived from the
+closing state and are not persisted. The original transition rules, output
+ordering, and checkpoint payload remain unchanged. Legacy v1 retains its
+original scan. Writer fingerprints include the index implementation.
+
+The September 7 audit of the older condition-only SQL found 597 JUNS and 1,692
+SUGP execution-delayed trades that would remain price-eligible over August
+14–21. Condition eligibility therefore cannot replace the execution-time
+exclusion. Older canonical event tables do not carry participant timestamps;
+their missing clock sidecars cannot be reconstructed from SIP timestamps alone.
+Do not publish a full-history book using that approximation.

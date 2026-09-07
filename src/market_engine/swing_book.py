@@ -8,6 +8,7 @@ from copy import deepcopy
 from math import isfinite, log1p
 
 from .swing_structure import SwingStructure
+from .swing_level_index import SwingLevelIndex
 
 LEGACY_VERSION = 'causal-swing-closing-book-1'
 VERSION = 'causal-swing-closing-book-2'
@@ -20,6 +21,7 @@ class SwingBook(SwingStructure):
         if version not in VERSIONS:
             raise ValueError('Unsupported swing book version')
         self.version = version
+        self.level_index = SwingLevelIndex() if version == VERSION else None
         self.persisted_ids = set()
         self.revision = 0
         if not isfinite(split_factor) or split_factor <= 0:
@@ -39,7 +41,21 @@ class SwingBook(SwingStructure):
             # An overnight gap is not a touch or a consecutive breakout bar.
             level.update(beyond=0, touching=False, previous_contact=False)
             self.active[level['level_id']] = level
+            self._level_updated(level)
             self.persisted_ids.add(level['level_id'])
+
+    def _levels_to_update(self, t, high, low, close, tick):
+        if self.level_index is None:
+            return super()._levels_to_update(t, high, low, close, tick)
+        return self.level_index.candidates(t, high, low, close, tick)
+
+    def _level_updated(self, level):
+        if self.level_index is not None:
+            self.level_index.update(level, self.settings.local_lifetime_seconds)
+
+    def _level_removed(self, key):
+        if self.level_index is not None:
+            self.level_index.remove(key)
 
     def _expired(self, level, t):
         if self.version==VERSION and level['scale']=='major':

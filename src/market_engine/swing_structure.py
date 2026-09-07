@@ -76,6 +76,7 @@ class SwingStructure:
         if matches:
             level = min(matches, key=lambda l: (abs(l['price']-price), l['level_id']))
             level['last_test'] = t
+            self._level_updated(level)
             # A departure/retest already counts the encounter; another pivot
             # must not inflate the score for the same encounter.
             return
@@ -91,6 +92,7 @@ class SwingStructure:
                      touching=False, previous_contact=False, break_at=None)
         level.update(confirmation_kind=reason, reversal_distance=distance)
         self.active[level['level_id']] = level
+        self._level_updated(level)
         self.counts['confirmed_'+detector['scale']] += 1
         self._publish(level, t, reason)
 
@@ -160,6 +162,15 @@ class SwingStructure:
         ttl = self.settings.local_lifetime_seconds if level['scale']=='local' else self.settings.major_lifetime_seconds
         return t-level['last_test'] >= ttl
 
+    def _levels_to_update(self, t, high, low, close, tick):
+        return list(self.active)
+
+    def _level_updated(self, level):
+        pass
+
+    def _level_removed(self, key):
+        pass
+
     def observe(self, t, high, low, close):
         if not all(isfinite(x) for x in (t, high, low, close)) or low <= 0 or not low <= close <= high or t <= self.last_time:
             raise ValueError('Require ordered distinct completed bars with valid positive OHLC')
@@ -168,10 +179,12 @@ class SwingStructure:
         tick = .0001 if close < 1 else .01
         # Robust prior-only volatility is capped before freezing each extreme.
         volatility = median(self.ranges) if self.ranges else 0.
-        for key, level in list(self.active.items()):
+        for key in self._levels_to_update(t, high, low, close, tick):
+            level = self.active[key]
             if self._expired(level, t):
                 self._publish(level, t, 'expired')
                 del self.active[key]
+                self._level_removed(key)
                 continue
             side, lower, upper = level['side'], level['lower'], level['upper']
             contact = low <= upper and high >= lower
@@ -208,6 +221,7 @@ class SwingStructure:
                     level.update(state='active', beyond=0, touching=False, last_test=t)
                     self._publish(level, t, 'failed_break')
             level['previous_contact'] = contact
+            self._level_updated(level)
         self._stall(t,high,low,close)
         for d in self.detectors:
             multiplier = 1 if d['scale'] == 'local' else self.settings.major_multiple
