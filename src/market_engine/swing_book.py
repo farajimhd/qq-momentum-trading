@@ -7,7 +7,7 @@ Expiry counts session time, with the overnight gap paused.
 from copy import deepcopy
 from math import isfinite, log1p
 
-from .swing_structure import SwingStructure
+from .swing_structure import SwingStructure, SwingSettings
 from .swing_level_index import SwingLevelIndex
 
 LEGACY_VERSION = 'causal-swing-closing-book-1'
@@ -17,7 +17,9 @@ VERSIONS = (LEGACY_VERSION, VERSION)
 
 class SwingBook(SwingStructure):
     def __init__(self, seed=None, opening=None, split_factor=1., *, version=VERSION):
-        super().__init__()
+        # Historical carry contains dormant anchors from many sessions. This
+        # is a fail-closed memory budget, not a level selection/truncation rule.
+        super().__init__(SwingSettings(max_active=8192 if version == VERSION else 2048))
         if version not in VERSIONS:
             raise ValueError('Unsupported swing book version')
         self.version = version

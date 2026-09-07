@@ -107,6 +107,10 @@ closing state and are not persisted. The original transition rules, output
 ordering, and checkpoint payload remain unchanged. Legacy v1 retains its
 original scan. Writer fingerprints include the index implementation.
 
+Historical v2 has an 8,192-level fail-closed memory budget, independently of
+the session preview's 2,048-level budget. This accommodates retained dormant
+anchors; it does not drop, rank, merge, or expire levels to fit the budget.
+
 Historical SIP-condition eligibility is the deliberately approved archive
 approximation, as restored by `d44d09a0`. Do not confuse it with the separate
 execution-aware chart-bar contract or silently change either existing build's

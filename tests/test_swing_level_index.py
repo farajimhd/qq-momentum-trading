@@ -59,3 +59,13 @@ def test_remote_dormant_levels_are_not_scanned_and_gap_restores_them():
     assert engine.active == before
     engine.observe(6., 150., 150., 150.)
     assert all(l['state']=='active' for l in engine.active.values())
+
+
+def test_historical_capacity_is_separate_from_session_preview_budget():
+    from src.market_engine.swing_structure import SwingStructure
+    assert SwingStructure().settings.max_active == 2048
+    book = SwingBook()
+    for j in range(2050):
+        book._found({'scale':'major'}, (20.+j,1.,.3),'support',2.)
+    assert len(book.active) == 2050
+    assert book.settings.max_active == 8192
