@@ -832,6 +832,10 @@ def resolve_long_momentum_parameters(
     if parameters.get("require_completed_entry_candle"):
         parameters["entry_candle_confirmation"].update(require_closed_bar=True, evaluate_macd_intrabar=False)
         parameters["structural_entry"].update(accept_live_price_above_entry_level=False, intrabar_after_completed_r3=False)
+    elif (parameters.get("require_completed_entry_candle") is False
+          and parameters.get("macd_histogram_entry_gate_bps") is not None):
+        parameters["entry_candle_confirmation"].update(require_closed_bar=False, evaluate_macd_intrabar=True)
+        parameters["structural_entry"]["intrabar_after_completed_r3"] = False
     execution = dict(parameters.get("execution") or {})
     slope_policy = parameters["momentum_management"].get("histogram_slope_exit")
     if slope_policy is not None:
@@ -2256,7 +2260,7 @@ def _prior_completed_frame_resistance_trigger(
         and observation.source_timeframe.lower() in {"", "1s"}
     )
     intrabar = bool(
-        policy.get("intrabar_after_completed_r3")
+        (policy.get("intrabar_after_completed_r3") or policy.get("accept_live_price_above_entry_level"))
         and "market_data_update" in observation.evaluation_events
         and observation.source_timeframe.lower() in {"", "1s"}
     )

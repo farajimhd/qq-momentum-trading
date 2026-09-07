@@ -56,6 +56,9 @@ def test_intrabar_entry_requires_ten_bps_and_strictly_green(gap,opening,enters):
     p['entry_candle_confirmation'].update(require_closed_bar=False,evaluate_macd_intrabar=True,
         minimum_macd_open_gap_bps=10,minimum_reentry_macd_gap_bps=10)
     p['structural_entry']['accept_live_price_above_entry_level']=True
+    p=S.resolve_long_momentum_parameters(p,revision=47)
+    assert not p['entry_candle_confirmation']['require_closed_bar']
+    assert p['entry_candle_confirmation']['evaluate_macd_intrabar']
     obs=replace(market(101.3),bar_open=opening,source_timeframe='',evaluation_events=('market_data_update',),
         macd_line=(gap+10)*101.3/10000,macd_signal=10*101.3/10000)
     state={'last_red_entry_candle':dict(close=100.8,open=101.,timestamp=(NOW-timedelta(seconds=1)).timestamp())}
