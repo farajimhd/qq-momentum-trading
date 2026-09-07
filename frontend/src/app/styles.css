@@ -16239,4 +16239,6 @@ button {
 .hindsight-details .chart-setting-row { gap: 12px; }
 .hindsight-details .chart-setting-inline { grid-template-columns: minmax(80px, 140px) 48px; flex-shrink: 0; }
 .hindsight-details .chart-setting-inline input { width: 100%; min-width: 0; }
+.structure-gap-navigation { display: grid; grid-template-columns: 28px minmax(80px, 140px) 28px; gap: 6px; align-items: center; }
+.structure-gap-navigation input { width: 100%; min-width: 0; }
 .hindsight-details .hindsight-apply { width: auto; height: auto; min-height: 30px; padding: 6px 12px; justify-self: end; white-space: nowrap; }

@@ -2299,6 +2299,17 @@ def capture(args: argparse.Namespace) -> int:
                         "localStorage.setItem(" + json.dumps(f"{storage_prefix}.{args.canvas_id}") + ", " + json.dumps(json.dumps(storage_payload)) + ");"
                     )
                 page = context.new_page()
+                if args.structure_gaps_fixture:
+                    base = datetime.fromisoformat(f"{args.canvas_session_date or '2026-08-20'}T10:00:00+00:00").timestamp()
+                    book = dict(id='structure_book_000000000001',ticker=args.canvas_symbol,version='causal-swing-closing-book-4',start='2025-01-01',end='2026-09-04')
+                    page.route('**/api/trading/backtest/structure-books',fulfill_json(json.dumps(dict(items=[book]))))
+                    setup = dict(id=1,time=base+10800,price=105.1,support=105.,support_lower=104.9,
+                        stop=104.85,target=105.8,score=70.,upside=.6,risk=.3,reward_risk=2.,volatility=.1,
+                        cost=.1,upside_gap=.9,downside_gap=.2,prior_retests=2,support_age_seconds=3600,
+                        support_p_norm=.5,outcome='target_first',outcome_at=base+50000)
+                    fixture = dict(segments=[dict(id='r',kind='resistance',lower=105.2,upper=105.8,valid_from=base+10800,
+                        valid_to=None,width=.6,width_bps=57)],setups=[setup,dict(setup,id=2,time=base+11000),dict(setup,id=3,time=base+50000)],seconds=.1,book_id=book['id'])
+                    page.route('**/api/research/structure-gaps',fulfill_json(json.dumps(fixture)))
                 if args.swing_structure_fixture:
                     base = datetime.fromisoformat(f"{args.canvas_session_date or '2026-08-20'}T10:00:00+00:00").timestamp()
                     fixture = dict(segments=[dict(level_id=i, price=p, lower=p-.03, upper=p+.03,
@@ -2501,6 +2512,36 @@ def capture(args: argparse.Namespace) -> int:
                         };
                     }""")
                     hindsight_issue = None
+                    if args.structure_gaps_fixture or args.structure_gaps:
+                        toggle=page.get_by_role('button',name='Gap analysis',exact=True)
+                        toggle.click()
+                        dialog=page.get_by_role('dialog',name='Gap analysis · v4',exact=True)
+                        dialog.get_by_role('button',name='Apply and preview',exact=True).click()
+                        dialog.get_by_text('setups as of',exact=False).wait_for(timeout=180000)
+                        if args.structure_gaps_fixture:
+                            dialog.get_by_text('2 setups as of',exact=False).wait_for(timeout=15000)
+                        dialog.get_by_role('checkbox',name='Show observed outcome',exact=True).check()
+                        if args.structure_gaps_fixture:
+                            dialog.get_by_text('Unresolved at this chart time.',exact=False).wait_for()
+                        dialog.get_by_role('button',name='Previous gap setup',exact=True).click()
+                        for slider in dialog.get_by_role('slider').all():
+                            slider.focus()
+                            box=slider.bounding_box();parent=dialog.bounding_box()
+                            if not box or not parent or box['x']+box['width']>parent['x']+parent['width']+1:
+                                raise RuntimeError('Gap slider clipped')
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__gap-settings.png')),full_page=True)
+                        page.keyboard.press('Escape')
+                        page.mouse.move(0,0)
+                        page.wait_for_timeout(150)
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__gap-overlay.png')),full_page=True)
+                        toggle.click();page.wait_for_timeout(150)
+                        pane=page.locator('.chart-pane-canvas').first
+                        baseline=pane.screenshot()
+                        toggle.click();page.wait_for_timeout(150)
+                        if pane.screenshot()==baseline:raise RuntimeError('Gap overlay did not paint')
+                        toggle.click();page.wait_for_timeout(150)
+                        if pane.screenshot()!=baseline:raise RuntimeError('Gap toggle changed viewport')
+                        toggle.click()
                     if args.swing_structure_fixture:
                         page.get_by_role('button', name='Swing structure', exact=True).click()
                         page.get_by_role('button', name='Swing structure settings', exact=True).click()
@@ -2681,7 +2722,7 @@ def capture(args: argparse.Namespace) -> int:
                         and scenario["scale"] == 1.0
                         and scenario["viewport_name"] == "normal"
                     ) else screenshot_path.with_name(f"{screenshot_path.stem}__chart-interaction.png") if scenario["page"] == "canvas-focus" else None
-                    if not args.hindsight_positions and not args.swing_structure_fixture:
+                    if not args.hindsight_positions and not args.swing_structure_fixture and not args.structure_gaps_fixture and not args.structure_gaps:
                         issues.extend(validate_canvas_interactions(
                             page, scenario, interaction_screenshot,
                             args.canvas_chart_timeframe, args.chart_stress_cycles,
@@ -2757,6 +2798,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--stub-chart-history", action="store_true", help="use deterministic chart history for frontend-only renderer and interaction QA")
     result.add_argument("--hindsight-positions", action="store_true", help="generate real hindsight positions, capture the overlay and verify reversible keyboard toggling")
     result.add_argument('--swing-structure-fixture', action='store_true', help='validate swing controls with synthetic segments; never calculate real levels')
+    result.add_argument('--structure-gaps-fixture', action='store_true', help='validate gap controls, causal cutoff and outcome visibility with deterministic fixtures')
+    result.add_argument('--structure-gaps', action='store_true', help='calculate and inspect the real v4 gap preview on a historical chart')
     result.add_argument('--swing-book-selector',action='store_true',help='verify published JUNS/SUGP swing books in the Backtest selector; never launch a run')
     result.add_argument('--swing-book-version',type=int,choices=(1,2,3,4),default=1,help='book version expected by the selector check')
     result.add_argument("--canvas-charts-quotes", action="store_true", help="seed the Charts & Quotes container in Canvas focus review")
