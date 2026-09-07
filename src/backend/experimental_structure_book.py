@@ -41,6 +41,7 @@ def builds():
         result.append({'id': report['database'], 'ticker': report['ticker'],
             'version': report['version'], 'start': report['requested_start'],
             'end': report['actual_end'], 'fingerprint': report['fingerprint'],
+            'source_policy': report.get('source_policy', 'canonical-causal-ohlc-1'),
             'runtime': str(path.parent)})
     return result
 

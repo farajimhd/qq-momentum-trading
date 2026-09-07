@@ -41,7 +41,7 @@ def inputs(build_id, ticker, session, fingerprint):
             effective = session_bounds(split['execution_date'])[0].timestamp()
             if seed['closed_at']<effective<=opening.timestamp():
                 factor *= float(split['split_from'])/float(split['split_to'])
-    bars, revision = read_session(ticker,session)
+    bars, revision = read_session(ticker,session,policy=build.get('source_policy','canonical-causal-ohlc-1'))
     expected = rows(f"SELECT source_revision FROM {build_id}.sessions FINAL WHERE session_date='{session}'")
     if not expected or json.loads(expected[0]['source_revision'])['token']!=revision['token']:
         raise ValueError('Canonical session changed since book construction; rebuild required')

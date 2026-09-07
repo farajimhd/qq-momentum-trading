@@ -19,7 +19,7 @@ import time
 
 import prototype_structure_book_clickhouse as P
 from build_structure_book_clickhouse import canonical_splits
-from src.backend.swing_book_source import read_session, session_bounds, NY
+from src.backend.swing_book_source import read_session, session_bounds, NY, HISTORICAL_POLICY
 from src.market_engine.swing_book import VERSION, SwingBook, project
 
 
@@ -73,7 +73,7 @@ def run(ticker, args):
     if not days:
         raise ValueError(f'No certified days for {ticker}')
     splits = canonical_splits(client.query(f"SELECT execution_date,split_from,split_to,inserted_at FROM q_live.market_stock_split_v1 FINAL WHERE provider_ticker={P.literal(ticker)} AND execution_date BETWEEN '{args.start}' AND '{args.end}' ORDER BY execution_date", 'splits'))
-    coverage = {r['source_date']:r for r in client.query(f"SELECT * FROM q_live.historical_event_execution_clock_coverage_v1 FINAL WHERE ticker={P.literal(ticker)} AND source_date BETWEEN '{args.start}' AND '{args.end}' ORDER BY source_date",'clock_preflight')}
+    coverage = dict(source_policy=HISTORICAL_POLICY)
     rules = client.query("SELECT token_id,modifier_int,update_high_low,update_last,update_volume FROM market_sip_compact.event_condition_token_reference WHERE source_family='trade_conditions' AND is_join_canonical=1 ORDER BY token_id",'rules')
     fingerprint = P.digest([VERSION,code,ticker,days,splits,coverage,rules])
     db = 'structure_book_'+fingerprint[:12]
@@ -83,18 +83,10 @@ def run(ticker, args):
         raise ValueError('Source or code changed: use a new runtime directory')
     report = dict(version=VERSION, database=db, ticker=ticker, fingerprint=fingerprint,
         requested_start=args.start, actual_end=days[-1]['source_date'], status='building',
-        threads=args.threads, code_hash=code, runtime=str(folder),
+        threads=args.threads, code_hash=code, runtime=str(folder), source_policy=HISTORICAL_POLICY,
         session_profiles=previous_report.get('session_profiles',[]))
     P.save(report_path, report)
     P.save(folder/'source_manifest.json', [days,rules,splits,coverage])
-    missing = [r['source_date'] for r in days if r['source_date'] not in coverage or
-        int(coverage[r['source_date']]['event_count'])!=int(r['event_count']) or
-        int(coverage[r['source_date']]['clock_count'])!=int(coverage[r['source_date']]['trade_count']) or
-        not coverage[r['source_date']]['source_filter_key'].endswith('|delayed_audit_v1')]
-    if missing:
-        report.update(status='blocked_source_coverage',missing_execution_clock_days=missing)
-        P.save(report_path,report)
-        raise ValueError(f'{ticker}: missing execution-clock certification for {len(missing)}/{len(days)} days; first={missing[0]}. See {report_path}')
     policy(client,db)
     client.query(f'CREATE DATABASE IF NOT EXISTS {db}', 'database', read=False)
     schemas = {
@@ -144,7 +136,7 @@ def run(ticker, args):
                     source_revision=encode(split),revision=1)])
                 previous_rows = adjusted
             print(f'{ticker} {session} | active=1 completed={index} queued={len(days)-index-1} failed=0 | aggregating canonical seconds',flush=True)
-            bars, revision = read_session(ticker,session,client)
+            bars, revision = read_session(ticker,session,client,policy=HISTORICAL_POLICY)
             compute_start = time.perf_counter()
             for bar in bars:
                 engine.observe(*bar)

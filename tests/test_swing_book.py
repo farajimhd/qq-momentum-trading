@@ -7,6 +7,7 @@ import pytest
 from src.market_engine.swing_book import SwingBook, VERSION, LEGACY_VERSION
 from src.market_engine.swing_structure import SwingStructure
 from src.backend.swing_book_source import bar_sql, session_bounds, source_metadata
+from src.backend.swing_book_source import HISTORICAL_POLICY
 from src.backend.swing_book_cursor import SwingBookCursor, SwingChartTimeline
 
 
@@ -105,6 +106,25 @@ def test_no_same_bar_confirmation_and_new_ids_follow_carry():
 def test_missing_execution_clock_fails_closed():
     with pytest.raises(ValueError,match='Missing certified'):
         source_metadata('JUNS','2026-08-13',lambda sql:[])
+
+
+def test_historical_policy_uses_certified_sip_without_execution_clock():
+    queries = []
+    def query(sql):
+        queries.append(sql)
+        if 'events_ordinal_continuity' in sql:
+            return [dict(event_count=10,next_ordinal=20,last_ordinal=19)]
+        return [dict(token_id=1,modifier_int=0,update_last=1,update_high_low=1,update_volume=1)]
+    revision, rules = source_metadata('JUNS','2025-01-02',query,policy=HISTORICAL_POLICY)
+    assert revision['source_version'] == HISTORICAL_POLICY
+    assert not any('execution_clock' in sql for sql in queries)
+    left,right = session_bounds('2025-01-02')
+    sql = bar_sql('JUNS','2025-01-02',left,right,rules,policy=HISTORICAL_POLICY)
+    assert 'execution_timestamp' not in sql and 'JOIN' not in sql
+    assert 'arrayAll' in sql and 'last_ok' in sql and 'high_low_ok' in sql
+    assert 'tuple(e.sip_timestamp_us,e.ordinal)' in sql
+    with pytest.raises(ValueError,match='Missing certified SIP'):
+        source_metadata('JUNS','2025-01-02',lambda sql:[],policy=HISTORICAL_POLICY)
 
 
 def test_split_book_rows_create_new_interval_without_mutating_old():

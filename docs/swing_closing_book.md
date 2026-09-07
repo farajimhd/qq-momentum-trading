@@ -12,12 +12,14 @@ ClickHouse threads per query by default; the controller runs at most two
 tickers. Only aggregated seconds and metadata leave ClickHouse. The ordered
 detector runs in Python, not inside a SQL array fold.
 
-The canonical execution-clock sidecar must cover every trade. Missing or
-mismatched coverage fails before building. Actual ordinal/SIP timestamp joins
-are verified as well as coverage manifests. Trades reported after their
-execution second closed are excluded from causal bars. This intentionally
-differs from retrospectively corrected chart bars used by the original
-session preview. No flatfile fallback is allowed.
+New builds use the recovered `historical-sip-condition-v1` authority: certified
+archive events in SIP order with canonical last/high-low condition eligibility,
+including the established extended-hours Form T handling. Execution-clock
+sidecars are not required. The source policy and condition rules are bound to
+the build fingerprint and replay uses that same policy. This excludes
+condition-ineligible reports; it does not claim exact participant-time delay
+filtering. Existing execution-clock-based builds retain their original policy
+and validation. No flatfile fallback is allowed.
 
 Each completed second becomes usable at its end. Replay advances only through
 the requested cutoff. Loading a complete session's input does not make future
@@ -59,7 +61,7 @@ versions start then. Earlier prices and scores remain unchanged. The next
 session continuation applies the same factor to the prior seed. Source
 `inserted_at` is retained as audit provenance; economic adjustment uses the
 reported effective date, not the later local import date. Real split-session
-validation still requires canonical execution-clock coverage for that session.
+validation uses the source policy pinned to that build.
 
 Daily writes are deterministic and resume from verified closing hashes. Source
 or writer-code changes require a new runtime/build identity. Partial writes
@@ -87,14 +89,12 @@ Run from the repository through the installed Python environment:
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
-python scripts/build_swing_structure_book.py --tickers SUGP JUNS --start 2026-08-14 --end 2026-08-21 --runtime D:/TradingML/runtimes/structure-validation/my-swing-build
+python scripts/build_swing_structure_book.py --tickers SUGP JUNS --start 2025-01-01 --runtime D:/TradingML/runtimes/structure-validation/my-swing-build
 ```
 
-The default range starts January 1, 2025 and ends today. It fails closed if
-any certified source day lacks execution-clock certification. As observed on
-September 7, 2026, both tickers have that sidecar only for August 14–21. The
-six-session validation book is therefore a partial-history proof; a full
-historical campaign requires ingestion-owned canonical coverage repair first.
+The default range starts January 1, 2025 and ends at the latest certified
+source session through today. Missing source or condition-rule certification
+fails closed; missing execution-clock sidecars do not block this policy.
 Old books remain retained. Repeating the identical command verifies and resumes
 the existing build without increasing logical row counts.
 
@@ -107,9 +107,7 @@ closing state and are not persisted. The original transition rules, output
 ordering, and checkpoint payload remain unchanged. Legacy v1 retains its
 original scan. Writer fingerprints include the index implementation.
 
-The September 7 audit of the older condition-only SQL found 597 JUNS and 1,692
-SUGP execution-delayed trades that would remain price-eligible over August
-14–21. Condition eligibility therefore cannot replace the execution-time
-exclusion. Older canonical event tables do not carry participant timestamps;
-their missing clock sidecars cannot be reconstructed from SIP timestamps alone.
-Do not publish a full-history book using that approximation.
+Historical SIP-condition eligibility is the deliberately approved archive
+approximation, as restored by `d44d09a0`. Do not confuse it with the separate
+execution-aware chart-bar contract or silently change either existing build's
+policy. A change of source policy creates a new build identity.
