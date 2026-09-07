@@ -55,6 +55,21 @@ class HistoricalRuntimeVersionsTests(unittest.TestCase):
                          _parameters_with_action_policies(renamed, rules, []))
 
 
+    def test_intrabar_macd_keeps_existing_one_second_veto_dependencies(self):
+        from copy import deepcopy
+        from src.backend.trading_configuration_service import _parameters_with_action_policies, _default_draft
+        from src.trading_runtime.strategy_engine import strategy_rule_timeframes
+        model = _default_draft()
+        profile = deepcopy(next(row for row in model['strategy']['profiles']
+                                if row['profile_id'] == 'long-momentum-balanced'))
+        profile['parameters'].update(require_completed_entry_candle=False, completed_macd_setup=False,
+                                     macd_histogram_gate_bps=5, macd_histogram_entry_gate_bps=10)
+        resolved = _parameters_with_action_policies(profile, model['market_discovery']['rule_sets'], [])
+        self.assertFalse(resolved['entry_candle_confirmation']['require_closed_bar'])
+        self.assertTrue(resolved['entry_candle_confirmation']['evaluate_macd_intrabar'])
+        self.assertEqual(strategy_rule_timeframes(resolved), {'1s'})
+
+
 class BoundedStructurePrefetchTests(unittest.IsolatedAsyncioTestCase):
     async def test_batches_bound_work_without_losing_competing_ticker_boundaries(self):
         from src.backend.replay_run_service import ReplayRunController

@@ -7951,11 +7951,14 @@ def _parameters_with_action_policies(
     if (
         str(profile.get("definition_id") or "") == STRATEGY_ID
         and bool(confirmation.get("enabled"))
-        and bool(confirmation.get("require_closed_bar"))
+        and (bool(confirmation.get("require_closed_bar"))
+             or resolved.get("macd_histogram_entry_gate_bps") is not None)
         and str(confirmation.get("timeframe") or "") == "1s"
     ):
-        # The squeeze strategy makes decisions on completed one-second frames.
-        # Project its flow/liquidity vetoes at that same causal cadence so the
+        # Flow/liquidity vetoes retain their one-second cadence when MACD entry
+        # moves intrabar. Forming MACD is projected from canonical trades; it
+        # does not require a separate 100ms indicator warm-up product.
+        # Project the vetoes at their existing causal cadence so the
         # historical runtime does not prepare an unused 100ms product for every
         # source-signal symbol. This is an executor/cadence contract, not a
         # profile-name convention: renamed and cloned profiles must retain it.
