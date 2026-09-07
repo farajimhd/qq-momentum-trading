@@ -18,7 +18,7 @@ const LABEL_FIELDS = [
   ['lookback_seconds', 'Swing lookback (seconds)', 0, 30, .1],
 ] as const;
 
-function HindsightDetails({ anchor, onClose, children }: { anchor: HTMLButtonElement; onClose: () => void; children: ReactNode }) {
+export function HindsightDetails({ anchor, onClose, children, title = 'Hindsight statistics' }: { anchor: HTMLButtonElement; onClose: () => void; children: ReactNode; title?: string }) {
   const panel = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ left: 8, top: 8, maxHeight: window.innerHeight - 16 });
   useLayoutEffect(() => {
@@ -47,8 +47,8 @@ function HindsightDetails({ anchor, onClose, children }: { anchor: HTMLButtonEle
     document.addEventListener("keydown", key);
     return () => { document.removeEventListener("pointerdown", pointer); document.removeEventListener("keydown", key); };
   }, [anchor, onClose]);
-  return createPortal(<div ref={panel} className="chart-settings-slot hindsight-details" role="dialog" aria-label="Hindsight statistics and filter" tabIndex={-1} style={position}>
-    <div className="chart-settings-header"><b>Hindsight statistics</b><button type="button" className="toolbar-button" aria-label="Close hindsight statistics" onClick={() => { onClose(); anchor.focus(); }}><X size={14} /></button></div>
+  return createPortal(<div ref={panel} className="chart-settings-slot hindsight-details" role="dialog" aria-label={title === 'Hindsight statistics' ? 'Hindsight statistics and filter' : title} tabIndex={-1} style={position}>
+    <div className="chart-settings-header"><b>{title}</b><button type="button" className="toolbar-button" aria-label={`Close ${title.toLowerCase()}`} onClick={() => { onClose(); anchor.focus(); }}><X size={14} /></button></div>
     {children}
   </div>, document.body);
 }

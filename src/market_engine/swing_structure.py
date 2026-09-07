@@ -1,0 +1,165 @@
+"""Session-only causal directional-change structure. No persistence or hindsight.
+
+One pass over completed OHLC seconds; bounded live state, delta-only output.
+An extreme from a bar cannot be confirmed by that same bar: OHLC does not
+establish whether its high or low happened first. All times are UTC seconds.
+"""
+from collections import Counter, deque
+from dataclasses import dataclass, asdict
+from math import isfinite, exp
+
+
+@dataclass(frozen=True)
+class SwingSettings:
+    reversal_bps: float = 50
+    volatility_multiple: float = 2
+    major_multiple: float = 3
+    local_lifetime_seconds: float = 1800
+    major_lifetime_seconds: float = 7200
+    max_active: int = 2048
+    max_segments: int = 20000
+
+    def __post_init__(self):
+        for value in asdict(self).values():
+            if not isfinite(value) or value <= 0:
+                raise ValueError('Swing settings must be finite and positive')
+        if self.major_multiple < 1:
+            raise ValueError('Major scale must be at least the local scale')
+
+
+class SwingStructure:
+    def __init__(self, settings=SwingSettings()):
+        self.settings = settings
+        self.ranges = deque(maxlen=30)
+        self.range_sum = 0.
+        self.previous_close = None
+        self.last_time = float('-inf')
+        self.detectors = [dict(scale=s, direction=0, high=None, low=None) for s in ('local', 'major')]
+        self.active = {}
+        self.segments = []
+        self.counts = Counter()
+        self.sequence = 0
+
+    def _publish(self, level, t, reason):
+        old = level.get('segment')
+        if old is not None:
+            self.segments[old]['valid_to'] = t
+        if reason == 'expired':
+            self.counts['expired'] += 1
+            return
+        if len(self.segments) >= self.settings.max_segments:
+            raise RuntimeError('Swing segment budget exceeded; no partial result')
+        level['segment'] = len(self.segments)
+        self.segments.append({k: level[k] for k in
+            ('level_id', 'price', 'lower', 'upper', 'side', 'scale', 'pivot_at', 'confirmed_at', 'tests', 'state')}
+            | dict(valid_from=t, valid_to=None, reason=reason,
+                   strength=level['strength'], p_norm=1-exp(-level['strength']/3)))
+
+    def _found(self, detector, extreme, side, t):
+        price, pivot_at, threshold = extreme
+        tick = .0001 if price < 1 else .01
+        width = max(tick, price * .0002)
+        # Repeated nearby pivots reinforce one anchored level. Do not union
+        # bands transitively or merge support with resistance / local with major.
+        matches = [l for l in self.active.values() if l['side'] == side
+                   and l['scale'] == detector['scale'] and l['state'] == 'active'
+                   and abs(l['price']-price) <= min(width, (l['upper']-l['lower'])/2)]
+        if matches:
+            level = min(matches, key=lambda l: (abs(l['price']-price), l['level_id']))
+            level['last_test'] = t
+            # A departure/retest already counts the encounter; another pivot
+            # must not inflate the score for the same encounter.
+            return
+        if len(self.active) >= self.settings.max_active:
+            raise RuntimeError('Swing active-level budget exceeded; no partial result')
+        self.sequence += 1
+        level = dict(level_id=self.sequence, price=price, lower=price-width, upper=price+width,
+                     side=side, scale=detector['scale'], pivot_at=pivot_at, confirmed_at=t,
+                     last_test=t, tests=1, strength=1., state='active', beyond=0,
+                     touching=False, previous_contact=False, break_at=None)
+        self.active[level['level_id']] = level
+        self.counts['confirmed_'+detector['scale']] += 1
+        self._publish(level, t, 'reversal_confirmed')
+
+    def observe(self, t, high, low, close):
+        if not all(isfinite(x) for x in (t, high, low, close)) or low <= 0 or not low <= close <= high or t <= self.last_time:
+            raise ValueError('Require ordered distinct completed bars with valid positive OHLC')
+        # Levels and thresholds use only already observed bars.
+        tick = .0001 if close < 1 else .01
+        volatility = self.range_sum / len(self.ranges) if self.ranges else 0.
+        for key, level in list(self.active.items()):
+            ttl = self.settings.local_lifetime_seconds if level['scale'] == 'local' else self.settings.major_lifetime_seconds
+            if t-level['last_test'] >= ttl:
+                self._publish(level, t, 'expired')
+                del self.active[key]
+                continue
+            side, lower, upper = level['side'], level['lower'], level['upper']
+            contact = low <= upper and high >= lower
+            beyond = close < lower-tick if side == 'support' else close > upper+tick
+            rejected = close > upper+tick if side == 'support' else close < lower-tick
+            if level['state'] == 'active':
+                level['beyond'] = level['beyond']+1 if beyond else 0
+                if level['beyond'] >= 2:
+                    level.update(state='awaiting_retest', break_at=t, touching=False, last_test=t)
+                    self._publish(level, t, 'accepted_break')
+                    self.counts['accepted_breaks'] += 1
+                else:
+                    if contact:
+                        if not level['previous_contact']:
+                            level['touching'] = True
+                        level['last_test'] = t
+                    if level['touching'] and rejected:
+                        level['touching'] = False
+                        level['tests'] += 1
+                        level['strength'] += 1
+                        self._publish(level, t, 'rejection')
+            else:
+                # A later bar must touch from the other side, then a subsequent
+                # close depart on that side. No role flip on a crossing alone.
+                if level['state'] == 'awaiting_retest' and contact and t > level['break_at']:
+                    level.update(state='retest_contact', contact_at=t, last_test=t)
+                    self._publish(level, t, 'retest_contact')
+                elif level['state'] == 'retest_contact' and beyond and t > level['contact_at']:
+                    level.update(side='resistance' if side == 'support' else 'support', state='active',
+                                 beyond=0, touching=False, last_test=t, confirmed_at=t)
+                    self._publish(level, t, 'role_reversal')
+                    self.counts['role_reversals'] += 1
+                elif rejected:
+                    level.update(state='active', beyond=0, touching=False, last_test=t)
+                    self._publish(level, t, 'failed_break')
+            level['previous_contact'] = contact
+        for d in self.detectors:
+            multiplier = 1 if d['scale'] == 'local' else self.settings.major_multiple
+            distance = multiplier*max(2*tick, close*self.settings.reversal_bps/10000,
+                                      volatility*self.settings.volatility_multiple)
+            # Freeze each candidate's threshold when its extreme is observed.
+            if d['high'] is None:
+                d.update(high=(high,t,distance), low=(low,t,distance))
+                continue
+            if high > d['high'][0]: d['high'] = (high,t,distance)
+            if low < d['low'][0]: d['low'] = (low,t,distance)
+            up = d['direction'] >= 0
+            down = d['direction'] <= 0
+            high_confirm = up and d['high'][1] < t and close <= d['high'][0]-d['high'][2]
+            low_confirm = down and d['low'][1] < t and close >= d['low'][0]+d['low'][2]
+            if high_confirm and low_confirm:
+                # Ambiguous initialization: establish a direction first.
+                d.update(high=(high,t,distance), low=(low,t,distance))
+            elif high_confirm:
+                self._found(d, d['high'], 'resistance', t)
+                d.update(direction=-1, low=(low,t,distance), high=(high,t,distance))
+            elif low_confirm:
+                self._found(d, d['low'], 'support', t)
+                d.update(direction=1, high=(high,t,distance), low=(low,t,distance))
+        tr = high-low if self.previous_close is None else max(high-low, abs(high-self.previous_close), abs(low-self.previous_close))
+        if len(self.ranges) == self.ranges.maxlen:
+            self.range_sum -= self.ranges[0]
+        self.ranges.append(tr)
+        self.range_sum += tr
+        self.previous_close, self.last_time = close, t
+        self.counts['bars'] += 1
+
+    def result(self):
+        return dict(algorithm='causal-session-swing-v1', settings=asdict(self.settings),
+                    segments=self.segments, counts=dict(self.counts), active_levels=len(self.active),
+                    through=self.last_time if self.counts['bars'] else None)

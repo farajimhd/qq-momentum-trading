@@ -2299,6 +2299,14 @@ def capture(args: argparse.Namespace) -> int:
                         "localStorage.setItem(" + json.dumps(f"{storage_prefix}.{args.canvas_id}") + ", " + json.dumps(json.dumps(storage_payload)) + ");"
                     )
                 page = context.new_page()
+                if args.swing_structure_fixture:
+                    base = datetime.fromisoformat(f"{args.canvas_session_date or '2026-08-20'}T10:00:00+00:00").timestamp()
+                    fixture = dict(segments=[dict(level_id=i, price=p, lower=p-.03, upper=p+.03,
+                        side=side, scale=scale, valid_from=base+10800+60*i, valid_to=None, state='active')
+                        for i,p,side,scale in [(1,105.4,'resistance','major'),(2,104.9,'support','major'),(3,105.2,'support','local')]],
+                        session_end=base+16000, counts=dict(confirmed_major=2,confirmed_local=1,expired=0), active_levels=3,
+                        timing=dict(total_seconds=.2,compute_seconds=.01))
+                    page.route('**/api/research/swing-structure', fulfill_json(json.dumps(fixture)))
                 if args.stub_service_status and (scenario["page"] == "services-dashboard" or scenario["page"].startswith("service-")):
                     service_id = None if scenario["page"] == "services-dashboard" else scenario["page"].removeprefix("service-")
                     fleet = [service_status_fixture(item) for item in SERVICE_REVIEW_LABELS] if service_id is None else [service_status_fixture(service_id)]
@@ -2493,6 +2501,46 @@ def capture(args: argparse.Namespace) -> int:
                         };
                     }""")
                     hindsight_issue = None
+                    if args.swing_structure_fixture:
+                        page.get_by_role('button', name='Swing structure', exact=True).click()
+                        page.get_by_role('button', name='Swing structure settings', exact=True).click()
+                        dialog = page.get_by_role('dialog', name='Swing structure prototype', exact=True)
+                        dialog.get_by_text('2 major / 1 local levels', exact=False).wait_for(timeout=15000)
+                        dialog.get_by_role('checkbox', name='Show local swings').check()
+                        for label in ['Price opacity','Band opacity','Minimum reversal (bps)','Volatility multiple','Major swing multiple']:
+                            slider = dialog.get_by_role('slider',name=label,exact=True)
+                            box = slider.bounding_box()
+                            parent = dialog.bounding_box()
+                            if not box or not parent or box['x']+box['width'] > parent['x']+parent['width']+1:
+                                raise RuntimeError(f'Swing slider clipped: {label}')
+                            slider.focus()
+                            page.keyboard.press('ArrowRight')
+                        dialog.get_by_role('slider',name='Price opacity',exact=True).fill('60')
+                        dialog.get_by_role('slider',name='Band opacity',exact=True).fill('15')
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__swing-settings.png')),full_page=True)
+                        page.keyboard.press('Escape')
+                        toggle = page.get_by_role('button',name='Swing structure',exact=True)
+                        toggle.click()
+                        if toggle.get_attribute('aria-pressed') != 'false':
+                            raise RuntimeError('Swing overlay did not hide')
+                        pane = page.locator('.chart-pane-canvas').first
+                        page.mouse.move(0,0)
+                        page.wait_for_timeout(150)
+                        baseline = pane.screenshot()
+                        toggle.focus()
+                        page.keyboard.press('Enter')
+                        if toggle.get_attribute('aria-pressed') != 'true':
+                            raise RuntimeError('Swing overlay did not show through keyboard')
+                        page.mouse.move(0,0)
+                        page.wait_for_timeout(150)
+                        if pane.screenshot() == baseline:
+                            raise RuntimeError('Swing segments did not paint on the chart')
+                        toggle.click()
+                        page.mouse.move(0,0)
+                        page.wait_for_timeout(150)
+                        if pane.screenshot() != baseline:
+                            raise RuntimeError('Swing toggle changed chart viewport or underlying rendering')
+                        toggle.click()
                     if args.hindsight_positions:
                         button = page.get_by_role("button", name="Hindsight positions", exact=True)
                         button.click(timeout=30_000)
@@ -2628,7 +2676,7 @@ def capture(args: argparse.Namespace) -> int:
                         and scenario["scale"] == 1.0
                         and scenario["viewport_name"] == "normal"
                     ) else screenshot_path.with_name(f"{screenshot_path.stem}__chart-interaction.png") if scenario["page"] == "canvas-focus" else None
-                    if not args.hindsight_positions:
+                    if not args.hindsight_positions and not args.swing_structure_fixture:
                         issues.extend(validate_canvas_interactions(
                             page, scenario, interaction_screenshot,
                             args.canvas_chart_timeframe, args.chart_stress_cycles,
@@ -2703,6 +2751,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--chart-stress-only", action="store_true", help="stop the Canvas interaction review after chart stress")
     result.add_argument("--stub-chart-history", action="store_true", help="use deterministic chart history for frontend-only renderer and interaction QA")
     result.add_argument("--hindsight-positions", action="store_true", help="generate real hindsight positions, capture the overlay and verify reversible keyboard toggling")
+    result.add_argument('--swing-structure-fixture', action='store_true', help='validate swing controls with synthetic segments; never calculate real levels')
     result.add_argument("--canvas-charts-quotes", action="store_true", help="seed the Charts & Quotes container in Canvas focus review")
     result.add_argument("--canvas-position-manager", action="store_true", help="seed the Position Manager container in Canvas focus review")
     result.add_argument("--stub-split-events", action="store_true", help="use a deterministic stock-split event for daily chart QA")

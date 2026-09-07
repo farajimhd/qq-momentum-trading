@@ -1,6 +1,7 @@
 import { tradeGuideSpan } from "./tradeGuideGeometry";
 import { macdBpsPoints } from "./macdBps";
 import { HindsightPrimitive, useHindsightPositions } from "./HindsightPositions";
+import { SwingStructurePrimitive, useSwingStructure } from "./SwingStructure";
 import { STRATEGY_ENTRY_REFERENCE_BACKING, STRATEGY_ENTRY_REFERENCE_COLOR } from "../theme";
 import {
   type AutoscaleInfo,
@@ -950,6 +951,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const hindsightRef = useRef(hindsight.positions);
   hindsightRef.current = hindsight.positions;
   const hindsightPrimitiveRef = useRef<HindsightPrimitive | null>(null);
+  const swingStructure = useSwingStructure(ticker, hindsightSessionDate);
+  const swingStructureRef = useRef(swingStructure);
+  swingStructureRef.current = swingStructure;
+  const swingStructurePrimitiveRef = useRef<SwingStructurePrimitive | null>(null);
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null);
   const strategyLifecycles = useMemo(() => [...(payload?.trade_annotations ?? [])]
     .sort((a, b) => a.entryTime - b.entryTime || a.id.localeCompare(b.id)), [payload?.trade_annotations]);
@@ -1298,6 +1303,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }, [selectedStrategy?.id, strategyPresentationEnabled]);
 
   useEffect(() => { drawCurrentRegions(); }, [hindsight.positions]);
+  useEffect(() => { drawCurrentRegions(); }, [swingStructure.segments, swingStructure.lineOpacity, swingStructure.bandOpacity]);
 
   useEffect(() => {
     oscillatorPaneGroups.forEach((group) => {
@@ -1349,6 +1355,9 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const hindsightPrimitive = new HindsightPrimitive();
     candleSeries.attachPrimitive(hindsightPrimitive);
     hindsightPrimitiveRef.current = hindsightPrimitive;
+    const swingPrimitive = new SwingStructurePrimitive();
+    candleSeries.attachPrimitive(swingPrimitive);
+    swingStructurePrimitiveRef.current = swingPrimitive;
     const volume = priceChart.addSeries(HistogramSeries, {
       base: 0,
       lastValueVisible: false,
@@ -1766,6 +1775,12 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     syncTradeAnnotationPrimitive(currentPayload, timeline);
     const hindsightDuration = hindsightRef.current.length ? estimateCandleDuration(timeline) : 60;
     hindsightPrimitiveRef.current?.setState(hindsightRef.current, (time) => xForAnnotationTime(chart, time, timeline, hindsightDuration));
+    const swing = swingStructureRef.current;
+    const swingDuration = estimateCandleDuration(timeline);
+    swingStructurePrimitiveRef.current?.setState(swing.segments,
+      (time) => xForAnnotationTime(chart, Math.max(timeline[0]?.time ?? 0,
+        Math.min(time, timeline.at(-1)?.time ?? 0)), timeline, swingDuration),
+      Math.min(swing.end, (timeline.at(-1)?.time ?? 0) + swingDuration), swing.lineOpacity, swing.bandOpacity);
     syncPriceZoneAxisLines(candleRef.current, selectedZones, legendSettingsRef.current, priceZoneAxisLinesRef.current);
     livePositionPrimitiveRef.current?.setState(currentPayload.candles, liveEntryLineRef.current);
     oscillatorPaneRuntimesRef.current.forEach((_runtime, key) => {
@@ -1871,6 +1886,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     tradeAnnotationPrimitiveRef.current = null;
     if (hindsightPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(hindsightPrimitiveRef.current);
     hindsightPrimitiveRef.current = null;
+    if (swingStructurePrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(swingStructurePrimitiveRef.current);
+    swingStructurePrimitiveRef.current = null;
     if (livePositionPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(livePositionPrimitiveRef.current);
     livePositionPrimitiveRef.current = null;
     if (priceChartRef.current) {
@@ -2096,6 +2113,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         ) : null}
         <div className="toolbar-spacer" />
         {hindsight.controls}
+        {swingStructure.controls}
         <button
           className="toolbar-button"
           data-chart-settings-trigger="true"

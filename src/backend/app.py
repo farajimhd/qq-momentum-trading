@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
 from src.backend.hindsight_service import router as hindsight_router
+from src.backend.swing_structure_service import router as swing_structure_router
 
 import asyncio
 import http.client
@@ -586,6 +587,7 @@ async def application_lifespan(_app: FastAPI):
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0", lifespan=application_lifespan)
 app.include_router(hindsight_router)
+app.include_router(swing_structure_router)
 authority_policy = AuthorityPolicy.from_environment()
 
 
