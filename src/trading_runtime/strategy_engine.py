@@ -787,7 +787,7 @@ def resolve_long_momentum_parameters(
             parameters["phase_policy"]["initial_entry"]["add_steps"] = []
         parameters["reentry"]["target_replenishment"]["enabled"] = False
         if parameters["protection"]["trailing"].get("mode") not in {
-            "qualified_support", "support_distance", "third_resistance_below_session_high", "first_resistance_below_session_high"
+            "qualified_support", "support_distance", "fixed_support_distance", "third_resistance_below_session_high", "first_resistance_below_session_high"
         }:
             raise ValueError("Unsupported structural trailing mode")
     if revision >= 38:
@@ -3960,9 +3960,9 @@ class LongMomentumStrategyEngine:
 
         stop_replacement = None
         if (self.revision >= 37 and stop > previous_stop > 0
-                and parameters["protection"]["trailing"].get("mode") in {"qualified_support", "third_resistance_below_session_high", "first_resistance_below_session_high"}):
+                and parameters["protection"]["trailing"].get("mode") in {"qualified_support", "fixed_support_distance", "third_resistance_below_session_high", "first_resistance_below_session_high"}):
             stop_replacement = self._result(
-                assignment, observation, "replace_protective_stop", ("highest_broken_level_advanced" if parameters.get("broken_level_stop_only") else "first_resistance_advanced" if parameters["protection"]["trailing"].get("mode") == "first_resistance_below_session_high" else "third_resistance_advanced" if parameters["protection"]["trailing"].get("mode") == "third_resistance_below_session_high" else "qualified_support_advanced"),
+                assignment, observation, "replace_protective_stop", ("fixed_support_distance_advanced" if parameters["protection"]["trailing"].get("mode") == "fixed_support_distance" else "highest_broken_level_advanced" if parameters.get("broken_level_stop_only") else "first_resistance_advanced" if parameters["protection"]["trailing"].get("mode") == "first_resistance_below_session_high" else "third_resistance_advanced" if parameters["protection"]["trailing"].get("mode") == "third_resistance_below_session_high" else "qualified_support_advanced"),
                 observation.qmd_score, 1.0, state, AssignmentStatus.MANAGING,
                 quantity=observation.position_quantity, invalidation_price=stop,
                 metadata={"previous_stop": previous_stop,
@@ -4652,6 +4652,8 @@ class LongMomentumStrategyEngine:
         side: str,
         stop: float,
     ) -> StrategyEngineResult | None:
+        if parameters["protection"]["profit_ladder"].get("fixed_at_entry"):
+            return None
         if self.revision >= 37:
             return self._moving_target_result(assignment, observation, parameters, state, side=side, stop=stop)
         policy = dict(parameters["protection"].get("profit_ladder") or {})
@@ -5400,7 +5402,7 @@ def _protection_profile_from_phase(
         trailing_rule = TrailingRuleType(
             str(trailing_raw.pop("rule_type", TrailingRuleType.NONE))
         )
-        if parameters["protection"]["trailing"].get("mode") in {"qualified_support", "third_resistance_below_session_high", "first_resistance_below_session_high"}:
+        if parameters["protection"]["trailing"].get("mode") in {"qualified_support", "fixed_support_distance", "third_resistance_below_session_high", "first_resistance_below_session_high"}:
             trailing_rule = TrailingRuleType.NONE
             trailing_raw = {}
         if trailing_rule == TrailingRuleType.BROKER_AMOUNT and not trailing_raw.get("amount"):
@@ -7762,6 +7764,18 @@ def _ratcheted_stop(
             state["trailing_support_selection"] = evidence
             return candidate
         return current
+    if trailing.get("mode") == "fixed_support_distance":
+        distance = float(state.get("trailing_amount") or 0)
+        if not isfinite(distance) or distance <= 0:
+            return current
+        candidate = (float(state["high_water_price"]) - distance if side == "long"
+                     else float(state["low_water_price"]) + distance)
+        selected = max(current, candidate) if side == "long" else min(current, candidate)
+        state["trailing_support_selection"] = {"selection_mode": "fixed_support_distance",
+            "entry_reference_price": state.get("entry_reference_price"),
+            "initial_support_stop": state.get("initial_stop"), "distance": distance,
+            "high_water_price": state.get("high_water_price"), "selected_stop": round(selected, 4)}
+        return round(selected, 4)
     distance = float(
         state.get("trailing_amount")
         or _trailing_amount(observation, parameters, stop=current)
