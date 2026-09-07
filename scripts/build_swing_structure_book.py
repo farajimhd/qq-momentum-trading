@@ -20,7 +20,7 @@ import time
 import prototype_structure_book_clickhouse as P
 from build_structure_book_clickhouse import canonical_splits
 from src.backend.swing_book_source import read_session, session_bounds, NY, HISTORICAL_POLICY
-from src.market_engine.swing_book import QUALIFIED_VERSION as VERSION, SwingBook, project, PRICE_STATE_FIELDS
+from src.market_engine.swing_book import INTRADAY_VERSION as VERSION, SwingBook, project, PRICE_STATE_FIELDS
 
 
 def encode(value):

@@ -8,7 +8,7 @@ MINIMUM_PROMINENCE = 4.0
 
 
 def is_point_level(row):
-    return row.get('book_version') in (BOOK_VERSION, 'causal-swing-closing-book-1', 'causal-swing-closing-book-2', 'causal-swing-closing-book-3')
+    return row.get('book_version') in (BOOK_VERSION, 'causal-swing-closing-book-1', 'causal-swing-closing-book-2', 'causal-swing-closing-book-3', 'causal-swing-closing-book-4')
 
 
 def qualifies(row, observed_at=None):

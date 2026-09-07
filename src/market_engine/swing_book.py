@@ -14,7 +14,9 @@ from .swing_level_index import SwingLevelIndex
 LEGACY_VERSION = 'causal-swing-closing-book-1'
 VERSION = 'causal-swing-closing-book-2'
 QUALIFIED_VERSION = 'causal-swing-closing-book-3'
-VERSIONS = (LEGACY_VERSION, VERSION, QUALIFIED_VERSION)
+INTRADAY_VERSION = 'causal-swing-closing-book-4'
+QUALIFIED_VERSIONS = (QUALIFIED_VERSION, INTRADAY_VERSION)
+VERSIONS = (LEGACY_VERSION, VERSION, *QUALIFIED_VERSIONS)
 PRICE_STATE_FIELDS = ('price', 'lower', 'upper', 'reversal_distance',
                       'history_threshold', 'retest_threshold', 'best_departure')
 
@@ -50,7 +52,7 @@ class SwingBook(SwingStructure):
                     level[key] *= split_factor
             # An overnight gap is not a touch or a consecutive breakout bar.
             level.update(beyond=0, touching=False, previous_contact=False)
-            if version == QUALIFIED_VERSION and level['scale'] == 'major':
+            if version in QUALIFIED_VERSIONS and level['scale'] == 'major':
                 level['retest_pending_at'] = None
             self.active[level['level_id']] = level
             self._level_updated(level)
@@ -63,7 +65,7 @@ class SwingBook(SwingStructure):
         return sorted(set(self.level_index.candidates(t, high, low, close, tick)) | self.history_watch)
 
     def _level_updated(self, level):
-        if self.version == QUALIFIED_VERSION and level['scale'] == 'major':
+        if self.version in QUALIFIED_VERSIONS and level['scale'] == 'major':
             self._update_history_evidence(level)
         if self.level_index is not None:
             self.level_index.update(level, self.settings.local_lifetime_seconds)
@@ -79,11 +81,11 @@ class SwingBook(SwingStructure):
         return super()._expired(level,t)
 
     def _publish(self, level, t, reason):
-        if self.version == QUALIFIED_VERSION and level['scale'] == 'major' and reason == 'accepted_break':
+        if self.version in QUALIFIED_VERSIONS and level['scale'] == 'major' and reason == 'accepted_break':
             level['accepted_crossings'] += 1
             level['retest_pending_at'] = None
             level['history_away'] = False
-            if level['accepted_crossings'] >= 2:
+            if level['accepted_crossings'] >= 2 and (self.version == QUALIFIED_VERSION or level['level_id'] in self.persisted_ids):
                 self.retired.add(level['level_id'])
         self.revision += 1
         self.counts['events_'+reason] += 1
@@ -132,7 +134,7 @@ class SwingBook(SwingStructure):
 
     def observe(self, t, high, low, close):
         super().observe(t, high, low, close)
-        if self.version == QUALIFIED_VERSION:
+        if self.version in QUALIFIED_VERSIONS:
             self.session_high = max(high, self.session_high) if self.session_high is not None else high
             self.session_low = min(low, self.session_low) if self.session_low is not None else low
             for key in sorted(self.retired):
@@ -144,11 +146,35 @@ class SwingBook(SwingStructure):
             self.retired.clear()
 
     def _qualified_for_carry(self, level):
-        if self.version != QUALIFIED_VERSION or level['scale'] != 'major' or level['level_id'] in self.persisted_ids:
+        if self.version not in QUALIFIED_VERSIONS or level['scale'] != 'major' or level['level_id'] in self.persisted_ids:
             return True
         span = self.session_high-self.session_low if self.session_high is not None else 0.
         return (level['best_departure'] >= max(level['history_threshold'], .15*span) or
                 (level['independent_retests'] >= 2 and level['best_departure'] >= max(level['retest_threshold'], .05*span)))
+
+    def _inside_consolidation(self, price, pivot_at, t):
+        if self.version != INTRADAY_VERSION:
+            return super()._inside_consolidation(price, pivot_at, t)
+        # A price bracket is not evidence of consolidation. Require a compact
+        # range actually visited at both edges during the preceding 30 seconds.
+        recent = [r for r in self.approach if r[0] >= t-30]
+        if len(recent) < 5 or recent[-1][0]-recent[0][0] < 10:
+            return False
+        closes = [r[1] for r in recent] + [self.current_close]
+        levels = [l for l in self.active.values() if l['scale']=='major'
+                  and l['state']=='active' and l['confirmed_at'] < min(pivot_at,t-15)]
+        supports = [l for l in levels if l['upper'] < min(closes)]
+        resistances = [l for l in levels if l['lower'] > max(closes)]
+        if not supports or not resistances:
+            return False
+        lower = max(supports, key=lambda l:l['upper'])
+        upper = min(resistances, key=lambda l:l['lower'])
+        width = upper['lower']-lower['upper']
+        if width > price*self.settings.reversal_bps/10000*self.settings.major_multiple*2:
+            return False
+        def visited(level):
+            return any(r[3] <= level['upper'] and r[2] >= level['lower'] for r in recent)
+        return lower['upper'] < price < upper['lower'] and visited(lower) and visited(upper)
 
     def closing_state(self, closed_at):
         if closed_at < self.last_time:

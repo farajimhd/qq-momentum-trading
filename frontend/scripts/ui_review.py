@@ -2758,7 +2758,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--hindsight-positions", action="store_true", help="generate real hindsight positions, capture the overlay and verify reversible keyboard toggling")
     result.add_argument('--swing-structure-fixture', action='store_true', help='validate swing controls with synthetic segments; never calculate real levels')
     result.add_argument('--swing-book-selector',action='store_true',help='verify published JUNS/SUGP swing books in the Backtest selector; never launch a run')
-    result.add_argument('--swing-book-version',type=int,choices=(1,2,3),default=1,help='book version expected by the selector check')
+    result.add_argument('--swing-book-version',type=int,choices=(1,2,3,4),default=1,help='book version expected by the selector check')
     result.add_argument("--canvas-charts-quotes", action="store_true", help="seed the Charts & Quotes container in Canvas focus review")
     result.add_argument("--canvas-position-manager", action="store_true", help="seed the Position Manager container in Canvas focus review")
     result.add_argument("--stub-split-events", action="store_true", help="use a deterministic stock-split event for daily chart QA")

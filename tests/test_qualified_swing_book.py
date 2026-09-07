@@ -2,7 +2,7 @@ from copy import deepcopy
 
 import pytest
 
-from src.market_engine.swing_book import SwingBook, QUALIFIED_VERSION
+from src.market_engine.swing_book import SwingBook, QUALIFIED_VERSION, INTRADAY_VERSION
 
 
 def book(side='support'):
@@ -79,13 +79,14 @@ def test_later_session_range_cannot_rewrite_earlier_snapshot():
     assert before['unified_levels'][0]['confirmed_at_ms']==2000
 
 
-def test_qualified_index_matches_full_scan_with_gaps_and_session_carry():
+@pytest.mark.parametrize('version',[QUALIFIED_VERSION,INTRADAY_VERSION])
+def test_qualified_index_matches_full_scan_with_gaps_and_session_carry(version):
     from random import Random
     class Scanned(SwingBook):
         def _levels_to_update(self,t,high,low,close,tick):
             self.history_bar=(t,high,low,close)
             return list(self.active)
-    engines=[SwingBook(version=QUALIFIED_VERSION),Scanned(version=QUALIFIED_VERSION)]
+    engines=[SwingBook(version=version),Scanned(version=version)]
     rng=Random(91);price=10.;t=10.
     for e in engines:
         for j in range(30):
@@ -95,7 +96,7 @@ def test_qualified_index_matches_full_scan_with_gaps_and_session_carry():
             seeds=[e.closing_state(t) for e in engines]
             assert seeds[0]==seeds[1]
             t+=86400
-            engines=[SwingBook(seeds[0],t,2.,version=QUALIFIED_VERSION),Scanned(seeds[1],t,2.,version=QUALIFIED_VERSION)]
+            engines=[SwingBook(seeds[0],t,2.,version=version),Scanned(seeds[1],t,2.,version=version)]
             price*=2
         t+=1;price=max(.1,price+rng.uniform(-.3,.3))
         if i%97==0: price=rng.uniform(8,14)

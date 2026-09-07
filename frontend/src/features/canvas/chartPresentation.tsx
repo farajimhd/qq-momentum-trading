@@ -918,9 +918,9 @@ function pushUnifiedStructureLevels(
   let latestRank = 0;
   segments.forEach(({ end, latest, level, start }) => {
     if (!Number.isFinite(start) || !(start > 0) || !(chartEnd > start)) return;
-    if (["clickhouse-closing-book-1", "causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3"].includes(String(level.book_version))) {
+    if (["clickhouse-closing-book-1", "causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4"].includes(String(level.book_version))) {
       const support = level.side > 0;
-      const bookLabel = ["causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3"].includes(String(level.book_version)) ? "Swing level book" : "Experimental ClickHouse level book";
+      const bookLabel = ["causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4"].includes(String(level.book_version)) ? "Swing level book" : "Experimental ClickHouse level book";
       zones.push({ annotationKind: "unified-structure-level", axisLabelDefault: latest && latestRank++ < 4,
         color: support ? "var(--success)" : "var(--danger)",
         compactLabel: `${support ? "S" : "R"} · P${Number(level.prominence ?? 0).toFixed(2)}`,
@@ -1086,7 +1086,7 @@ function isQmdUnifiedStructureLevel(value: unknown): value is QmdUnifiedStructur
     && (Number(row.side) === 1 || Number(row.side) === -1)
     && Number(row.lower) > 0
     && Number(row.upper) >= Number(row.lower)
-    && (["clickhouse-closing-book-1", "causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3"].includes(String(row.book_version)) ? Number.isFinite(row.prominence) : Number.isFinite(Number(row.hold_probability)))
+    && (["clickhouse-closing-book-1", "causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4"].includes(String(row.book_version)) ? Number.isFinite(row.prominence) : Number.isFinite(Number(row.hold_probability)))
     && Array.isArray(row.timeframes)
     && Array.isArray(row.sources);
 }
