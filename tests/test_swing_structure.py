@@ -113,7 +113,7 @@ class SwingTests(unittest.TestCase):
         self.assertEqual(e.detectors[1]['high'][2],threshold)
         self.assertFalse(any(s['price']==10.4 and s['reason']=='reversal_confirmed' for s in e.segments))
 
-    def test_stalled_boundary_without_reversal_and_support_symmetry(self):
+    def test_adjacent_touches_are_one_encounter_and_independent_retest_confirms(self):
         for sign in (1,-1):
             e = SwingStructure()
             transform = lambda p: 10+sign*(p-10)
@@ -121,21 +121,26 @@ class SwingTests(unittest.TestCase):
             for t in range(2,5):
                 p=transform(10.3); c=transform(10.295)
                 e.observe(t,max(p,c),min(p,c),c)
-            found=[s for s in e.segments if s['reason']=='boundary_tests_confirmed']
+            self.assertFalse(any(s['reason'].startswith('boundary_') for s in e.segments))
+            p=transform(10.22)
+            e.observe(5,p,p,p)  # Entire bar away, not another touching candle.
+            p,c=transform(10.3),transform(10.25)
+            e.observe(6,max(p,c),min(p,c),c)
+            found=[s for s in e.segments if s['reason']=='boundary_retest_confirmed']
             self.assertEqual(len(found),1)
             self.assertEqual(found[0]['side'],'resistance' if sign==1 else 'support')
-            self.assertEqual(found[0]['confirmed_at'],4)
+            self.assertEqual(found[0]['confirmed_at'],6)
             self.assertIsNone(found[0]['reversal_distance'])
 
     def test_crossing_invalidates_stall_candidate(self):
         e=SwingStructure()
         for t,p in [(1,10),(2,10.3),(3,10.3),(4,10.5),(5,10.3)]: e.observe(t,p,p,p)
-        self.assertFalse(any(s['price']==10.3 and s['reason']=='boundary_tests_confirmed' for s in e.segments))
+        self.assertFalse(any(s['price']==10.3 and s['reason'].startswith('boundary_') for s in e.segments))
 
     def test_sparse_tests_do_not_accumulate_across_long_gap(self):
         e=SwingStructure()
-        for t,p in [(1,10),(2,10.3),(3,10.3),(30,10.3)]: e.observe(t,p,p,p)
-        self.assertFalse(any(s['reason']=='boundary_tests_confirmed' for s in e.segments))
+        for t,p in [(1,10),(2,10.3),(3,10.3),(140,10.3)]: e.observe(t,p,p,p)
+        self.assertFalse(any(s['reason'].startswith('boundary_') for s in e.segments))
 
     def test_juns_three_failed_high_tests(self):
         e=SwingStructure()
@@ -146,7 +151,26 @@ class SwingTests(unittest.TestCase):
               (6.85,6.62,6.67),(6.8497,6.62,6.62)]
         for t,(hi,lo,cl) in enumerate(rows,48): e.observe(t,hi,lo,cl)
         found=[s for s in e.segments if s['price']==6.88 and s['scale']=='major']
-        self.assertEqual((found[0]['confirmed_at'],found[0]['reason']),(58,'boundary_tests_confirmed'))
+        self.assertEqual((found[0]['confirmed_at'],found[0]['reason']),(58,'boundary_rejection_confirmed'))
+
+    def test_quiet_stall_does_not_become_major_just_with_time(self):
+        e=SwingStructure()
+        e.observe(1,10,10,10)
+        for t in range(2,100): e.observe(t,10.3,10.29,10.295)
+        self.assertFalse(any(s['side']=='resistance' and s['scale']=='major' for s in e.segments))
+
+    def test_established_range_suppresses_interior_but_not_breakout(self):
+        e=SwingStructure()
+        e._found({'scale':'major'},(10,0,.1),'support',1)
+        e._found({'scale':'major'},(12,0,.1),'resistance',2)
+        for t in range(3,22): e.observe(t,11,11,11)
+        self.assertTrue(e._inside_consolidation(11.5,20,22))
+        count=len(e.segments)
+        e._found({'scale':'major'},(11.5,20,.1),'resistance',22)
+        self.assertEqual(len(e.segments),count)
+        self.assertEqual(e.counts['suppressed_interior_major'],1)
+        e.observe(22,12.2,12.2,12.2)
+        self.assertFalse(e._inside_consolidation(11.5,20,22))
 
     def test_repeated_contacts_do_not_duplicate_chart_segments(self):
         e = self.engine()

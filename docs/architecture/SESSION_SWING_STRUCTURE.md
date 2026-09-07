@@ -1,6 +1,6 @@
 # Session swing structure preview
 
-`causal-session-swing-v3` is an opt-in chart prototype. It neither replaces the
+`causal-session-swing-v4` is an opt-in chart prototype. It neither replaces the
 existing historical book nor changes strategy decisions. No historical campaign
 or persisted book is created. Click **Swing structure** in a historical chart;
 the adjacent settings button exposes scale/reversal and opacity sliders.
@@ -40,8 +40,13 @@ A candidate must be near that window's outer high/low and must have approached
 from the inside by at least the major-scale bps/tick floor. This prevents quiet
 flat trading or arbitrary internal prices from creating a new structural level.
 
-Three completed-bar tests within 15 seconds, spanning at least two seconds,
-confirm the boundary. Tests must stay within `max(3 ticks, 10 bps)` of the fixed
+Adjacent touching bars are one encounter and cannot confirm a level by count
+alone. After at least three touching bars, a price move away by the major-scale
+bps/tick floor can confirm a meaningful rejection. Alternatively, an entire
+bar must move away by the local bps/tick floor (at least three ticks), followed
+by a return and a failed close at least one contact tolerance inside the anchor.
+That second independent failed encounter confirms a retest level. Candidates
+expire after 120 seconds. Tests must stay within `max(3 ticks, 10 bps)` of the fixed
 anchor; a close beyond it by more than one tick invalidates the candidate.
 A new extreme beyond the tolerance starts a new candidate instead of widening
 the old one. The normal narrow band remains anchored at the first boundary test.
@@ -52,6 +57,15 @@ The visual segment records `confirmation_kind` and frozen `reversal_distance`
 (null for boundary-test confirmation), so diagnostics distinguish the mechanisms.
 This detector uses no future bars or MACD labels. Its 30-second deque and two
 pending candidates keep its memory and per-bar work bounded.
+
+Before founding another major level, the algorithm checks for an established
+active major support/resistance pair enclosing the recent trading range. Both
+boundaries must predate the candidate and be at least 15 seconds old. At least
+five observations spanning ten seconds in the last 15 seconds must remain
+enclosed, including the current close. Interior candidates are counted as
+`suppressed_interior_major`; local swings remain available. A breakout or a
+pending/invalidated boundary releases this suppression. No proximity merging
+or chart-only hiding is used to achieve the sparse major book.
 
 An active level breaks after two completed closes beyond its far bound plus
 one tick. Its original role remains pending. A later bar must touch the band,
@@ -116,3 +130,9 @@ and a fixed distance of $0.1896, that resistance confirms on the actual decline
 at 07:09:39 ET. JUNS tests at 07:13:56, :57 and :58 confirm the $6.88 ceiling
 at 07:13:58 through the boundary-test detector. Full memory-only session previews
 returned 19,629 JUNS / 8,309 SUGP visual segments, within the unchanged limit.
+
+V4 corrects V3's promotion of continuous touching bars as independent tests.
+On the default SUGP 2026-08-21 preview, major levels at 04:30 ET fell from 51
+to 11 in the initial comparison. The JUNS $6.88 level at 07:13:58 remains
+eligible because the repeated encounter ends in a substantial rejection,
+not because three adjacent candles automatically make three independent tests.

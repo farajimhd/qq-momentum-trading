@@ -34,6 +34,7 @@ class SwingStructure:
         self.settings = settings
         self.ranges = deque(maxlen=30)
         self.previous_close = None
+        self.current_close = None
         self.last_time = float('-inf')
         self.detectors = [dict(scale=s, direction=0, high=None, low=None) for s in ('local', 'major')]
         self.active = {}
@@ -78,6 +79,9 @@ class SwingStructure:
             # A departure/retest already counts the encounter; another pivot
             # must not inflate the score for the same encounter.
             return
+        if detector['scale'] == 'major' and self._inside_consolidation(price, pivot_at, t):
+            self.counts['suppressed_interior_major'] += 1
+            return
         if len(self.active) >= self.settings.max_active:
             raise RuntimeError('Swing active-level budget exceeded; no partial result')
         self.sequence += 1
@@ -90,16 +94,35 @@ class SwingStructure:
         self.counts['confirmed_'+detector['scale']] += 1
         self._publish(level, t, reason)
 
+    def _inside_consolidation(self, price, pivot_at, t):
+        # A range must already exist before this candidate and contain a real
+        # stretch of subsequent trading. Never invent a range retrospectively.
+        recent = [row for row in self.approach if row[0] >= t-15]
+        if len(recent) < 5 or recent[-1][0]-recent[0][0] < 10:
+            return False
+        prices = [r[1] for r in recent]
+        if self.current_close is not None:
+            prices.append(self.current_close)
+        minimum, maximum = min(prices), max(prices)
+        levels = [l for l in self.active.values() if l['scale']=='major' and l['state']=='active'
+                  and l['confirmed_at'] < min(pivot_at,t-15)]
+        supports = [l for l in levels if l['side']=='support' and l['upper'] < minimum]
+        resistances = [l for l in levels if l['side']=='resistance' and l['lower'] > maximum]
+        if not supports or not resistances:
+            return False
+        bottom, top = max(l['upper'] for l in supports), min(l['lower'] for l in resistances)
+        return bottom < price < top
+
     def _stall(self, t, high, low, close):
-        # Fixed 30-second approach and 15-second test windows; two candidates
-        # only. An approaching move distinguishes a barrier from inert prices.
+        # Adjacent touches are one encounter. A second encounter requires a
+        # whole bar away from the boundary before returning. Two candidates only.
         while self.approach and self.approach[0][0] < t-30:
             self.approach.popleft()
         for side, price in (('resistance', high), ('support', low)):
             sign = 1 if side == 'resistance' else -1
             tick = .0001 if price < 1 else .01
             candidate = self.stalls[side]
-            if candidate and (t-candidate['first'] > 15 or sign*(close-candidate['price']) > candidate['tick']):
+            if candidate and (t-candidate['first'] > 120 or sign*(close-candidate['price']) > candidate['tick']):
                 candidate = None
             if candidate and sign*(price-candidate['price']) > candidate['tolerance']+1e-9:
                 candidate = None
@@ -109,22 +132,34 @@ class SwingStructure:
                 floor = self.settings.major_multiple*max(2*tick, price*self.settings.reversal_bps/10000)
                 if sign*(price-origin) >= floor and sign*(price-boundary) >= -max(3*tick,price*.001):
                     candidate = dict(price=price, first=t, tick=tick,
-                        tolerance=max(3*tick,price*.001), tests=0, emitted=False)
+                        tolerance=max(3*tick,price*.001), tests=0, encounters=1,
+                        departure=max(3*tick,price*self.settings.reversal_bps/10000),
+                        rejection=floor, away=False, emitted=False)
             if candidate:
                 # Compare tick-rounded prices so fractional executions a fraction
                 # of a tick from the repeated boundary are not separate barriers.
                 near = abs(round(price/candidate['tick'])*candidate['tick']-candidate['price']) <= candidate['tolerance']+1e-9
                 if near and sign*(close-candidate['price']) <= candidate['tick']:
                     candidate['tests'] += 1
-                    if candidate['tests'] >= 3 and t-candidate['first'] >= 2 and not candidate['emitted']:
-                        self._found({'scale':'major'}, (candidate['price'],candidate['first'],None), side,t,'boundary_tests_confirmed')
-                        candidate['emitted'] = True
+                    if candidate['away']:
+                        candidate['encounters'] += 1
+                        candidate['away'] = False
+                retreat = sign*(candidate['price']-close)
+                rejected = candidate['tests'] >= 3 and retreat >= candidate['rejection'] and self.previous_close is not None and sign*(close-self.previous_close) < 0
+                retested = near and candidate['encounters'] >= 2 and retreat >= candidate['tolerance']
+                if not candidate['emitted'] and (rejected or retested) and t > candidate['first']:
+                    self._found({'scale':'major'}, (candidate['price'],candidate['first'],None), side,t,
+                                'boundary_retest_confirmed' if retested else 'boundary_rejection_confirmed')
+                    candidate['emitted'] = True
+                if not near and sign*(candidate['price']-price) > candidate['tolerance'] and retreat >= candidate['departure']:
+                    candidate['away'] = True
             self.stalls[side] = candidate
         self.approach.append((t,close,high,low))
 
     def observe(self, t, high, low, close):
         if not all(isfinite(x) for x in (t, high, low, close)) or low <= 0 or not low <= close <= high or t <= self.last_time:
             raise ValueError('Require ordered distinct completed bars with valid positive OHLC')
+        self.current_close = close
         # Levels and thresholds use only already observed bars.
         tick = .0001 if close < 1 else .01
         # Robust prior-only volatility is capped before freezing each extreme.
@@ -201,6 +236,6 @@ class SwingStructure:
         self.counts['bars'] += 1
 
     def result(self):
-        return dict(algorithm='causal-session-swing-v3', settings=asdict(self.settings),
+        return dict(algorithm='causal-session-swing-v4', settings=asdict(self.settings),
                     segments=self.segments, counts=dict(self.counts), active_levels=len(self.active),
                     through=self.last_time if self.counts['bars'] else None)
