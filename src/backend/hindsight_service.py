@@ -14,13 +14,16 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from src.backend.qmd_gateway_client import qmd_history_base_url, qmd_product_request, QmdProductRequest
-from src.market_engine.hindsight import HindsightOptimizer, small_profit_filter, merge_positions
-from src.market_engine.historical_source import QmdHistoricalEventSource
+from src.market_engine.hindsight import LiquidMacdBenchmark, small_profit_filter
+from src.market_engine.historical_source import QmdHistoricalEventSource, _source_revision
 
 router = APIRouter(prefix="/api/research/hindsight", tags=["hindsight research"])
 _pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hindsight-research")
 _lock = Lock()
 _jobs: dict[str, dict] = {}
+# One bounded, immutable-after-completion candidate set. Every reuse probes the
+# canonical revision; changing source data or liquidity settings invalidates it.
+_candidate_cache: dict = {}
 _NY = ZoneInfo("America/New_York")
 
 
@@ -29,17 +32,26 @@ class HindsightRequest(BaseModel):
     session_date: date
     cost_bps: float = Field(default=5, ge=0, le=1000, allow_inf_nan=False)
     max_spread_bps: float = Field(default=100, ge=0, le=10000, allow_inf_nan=False)
+    lookback_seconds: float = Field(default=2, ge=0, le=30, allow_inf_nan=False)
+    min_displayed_shares: float = Field(default=100, ge=1, le=1000000, allow_inf_nan=False)
+    activity_window_seconds: float = Field(default=1, gt=0, le=10, allow_inf_nan=False)
+    min_trade_count: int = Field(default=3, ge=1, le=100000)
+    min_trade_volume: float = Field(default=100, ge=1, le=100000000, allow_inf_nan=False)
 
 
 def load_macd_intervals(ticker: str, start: datetime, end: datetime, progress, deadline: float) -> tuple[list, list]:
     intervals: list[tuple[float, float]] = []
     provenance = []
     cursor = start
+    windows = []
     while cursor < end:
+        windows.append(cursor)
+        cursor = min(cursor + timedelta(hours=1), end)
+
+    def read_window(cursor):
         if monotonic() >= deadline:
-            raise RuntimeError("MACD merging exceeded the research time budget; no partial result published")
+            raise RuntimeError("MACD intervals exceeded the research time budget; no partial result published")
         chunk_end = min(cursor + timedelta(hours=1), end)
-        progress(stage="macd", through=cursor.isoformat())
         payload = qmd_product_request(QmdProductRequest(
             "chart", authority="history", mode="backtest", ticker=ticker, timeframe="1s",
             start=cursor.isoformat(), end=chunk_end.isoformat(), as_of=chunk_end.isoformat(),
@@ -50,23 +62,32 @@ def load_macd_intervals(ticker: str, start: datetime, end: datetime, progress, d
         # or an incomplete indicator authority, even if quote reading succeeded.
         evidence = payload.get("indicator_provenance") or {}
         if payload.get("has_more") or not payload.get("indicators_available") or evidence.get("complete") is not True:
-            raise RuntimeError("Canonical 1s MACD window is incomplete; merge was not published")
-        provenance.append(evidence)
-        rows = sorted(payload.get("indicators", []), key=lambda row: row["bar_end"])
-        for row in rows:
-            timestamp = datetime.fromisoformat(row["bar_end"].replace("Z", "+00:00"))
-            if not cursor < timestamp <= chunk_end:
-                raise RuntimeError("Canonical MACD bar falls outside its requested closed-bar window")
-            line, signal = row.get("macd_line"), row.get("macd_signal")
-            if line is None or signal is None or not isfinite(line) or not isfinite(signal):
-                continue
-            if line > signal:
+            raise RuntimeError("Canonical 1s MACD window is incomplete; no result published")
+        return cursor, chunk_end, payload, evidence
+
+    progress(stage="macd")
+    opened = None
+    # Independent bounded pages; consume chronologically so MACD state crosses
+    # hour boundaries and seconds without trades without artificial closures.
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="hindsight-macd") as readers:
+        for cursor, chunk_end, payload, evidence in readers.map(read_window, windows):
+            provenance.append(evidence)
+            rows = sorted(payload.get("indicators", []), key=lambda row: row["bar_end"])
+            for row in rows:
+                timestamp = datetime.fromisoformat(row["bar_end"].replace("Z", "+00:00"))
+                if not cursor < timestamp <= chunk_end:
+                    raise RuntimeError("Canonical MACD bar falls outside its requested closed-bar window")
                 t = timestamp.timestamp()
-                if intervals and intervals[-1][1] == t:
-                    intervals[-1] = (intervals[-1][0], min(t + 1, end.timestamp()))
-                else:
-                    intervals.append((t, min(t + 1, end.timestamp())))
-        cursor = chunk_end
+                line, signal = row.get("macd_line"), row.get("macd_signal")
+                bullish = line is not None and signal is not None and isfinite(line) and isfinite(signal) and line > signal
+                if bullish and opened is None:
+                    opened = t
+                elif not bullish and opened is not None:
+                    intervals.append((opened, t))
+                    opened = None
+            progress(stage="macd", through=chunk_end.isoformat())
+    if opened is not None and opened < end.timestamp():
+        intervals.append((opened, end.timestamp()))
     return intervals, provenance
 
 
@@ -76,38 +97,48 @@ async def calculate(request: HindsightRequest, progress=lambda **kwargs: None) -
     if end > datetime.now(timezone.utc):
         raise ValueError("Hindsight requires a completed 04:00–20:00 New York session")
     source = QmdHistoricalEventSource(qmd_history_base_url(), start=start, end=end,
-                                    tickers=[request.ticker.upper()], batch_size=50_000,
-                                    event_kinds=("quote",))
-    optimizer = HindsightOptimizer(request.cost_bps, request.max_spread_bps)
+                                    tickers=[request.ticker.upper()], batch_size=100_000,
+                                    event_kinds=("trade", "quote"))
+    optimizer = LiquidMacdBenchmark(**request.model_dump(include={"cost_bps", "max_spread_bps", "min_displayed_shares",
+                                     "activity_window_seconds", "min_trade_count", "min_trade_volume"}))
     started = monotonic()
-    async for batch in source.stream():
-        for event in batch.events:
-            optimizer.observe(event.ts.timestamp(), event.bid_price, event.ask_price,
-                              event.bid_size, event.ask_size)
-        progress(quotes=optimizer.quotes, rejected_quotes=optimizer.rejected_quotes,
-                 through=batch.events[-1].ts.isoformat(), elapsed_seconds=monotonic() - started)
-        if optimizer.quotes > 10_000_000 or monotonic() - started > 600 or (optimizer.path and optimizer.path.count > 50_000):
-            raise RuntimeError("Session exceeds the 10-million quote / 50,000-position / 10-minute research budget; no partial optimum published")
+    cache_key = tuple(sorted(request.model_dump(mode="json", exclude={"lookback_seconds"}).items()))
+    cached = _candidate_cache.get("value")
+    cache_hit = False
+    if cached and cached[0] == cache_key:
+        current_revision = _source_revision(await asyncio.to_thread(source._read_page, None, None, 1))
+        if current_revision == cached[1]:
+            optimizer = cached[2]
+            source.source_revision = current_revision
+            cache_hit = True
+    if not cache_hit:
+        async for rows in source.stream_rows():
+            for row in rows:
+                optimizer.observe_payload(row)
+            progress(stage="events", quotes=optimizer.quotes, trades=optimizer.trade_count,
+                     rejected_quotes=sum(optimizer.reasons.values()), elapsed_seconds=monotonic() - started)
+            if monotonic() - started > 600:
+                raise RuntimeError("Session exceeds the 10-minute research budget; no partial result published")
+        optimizer.trades.clear()
+        if len(optimizer.times) <= 2_000_000 and (source.source_revision or {}).get("complete_for_history") is True:
+            _candidate_cache["value"] = (cache_key, source.source_revision, optimizer)
     # A certified session with no eligible quotes has zero opportunities, not
     # a data failure. Coverage failures already raise in the source reader.
-    result = optimizer.result()
-    originals = result["positions"]
-    intervals, macd_provenance = await asyncio.to_thread(load_macd_intervals, request.ticker.upper(), start, end, progress, started + 600) if len(originals) > 1 else ([], [])
-    merged = merge_positions(originals, intervals, request.cost_bps)
-    result.update(positions=merged, position_count=len(merged),
-                  unmerged_net_profit_per_share=result["net_profit_per_share"],
-                  net_profit_per_share=sum(p["net_profit_per_share"] for p in merged),
-                  unmerged_positions=originals, unmerged_position_count=len(originals),
-                  merging={"short_gap_seconds": 1, "macd_rule": "completed 1s MACD > signal (including negative values)",
-                           "exit_rule": "highest eligible component swing bid; earliest tie",
-                           "merged_away": len(originals) - len(merged), "macd_provenance": macd_provenance})
+    events_seconds = monotonic() - started
+    intervals, macd_provenance = await asyncio.to_thread(load_macd_intervals, request.ticker.upper(), start, end, progress, started + 600)
+    macd_seconds = monotonic() - started - events_seconds
+    result = optimizer.result(intervals, request.lookback_seconds)
+    selection_seconds = monotonic() - started - events_seconds - macd_seconds
+    if monotonic() - started > 600:
+        raise RuntimeError("Session exceeds the 10-minute research budget; no partial result published")
     return {**result, "profit_filter": small_profit_filter(result["positions"]),
-            "max_spread_bps": request.max_spread_bps, "minimum_displayed_shares_per_side": 1,
+            "parameters": request.model_dump(mode="json"), "macd_provenance": macd_provenance,
+            "timing": {"events_seconds": events_seconds, "macd_seconds": macd_seconds, "selection_seconds": selection_seconds, "candidate_cache_hit": cache_hit},
             "ticker": request.ticker.upper(), "session_date": str(request.session_date),
             "start": start.isoformat(), "end": end.isoformat(), "cost_bps": request.cost_bps,
-            "algorithm": "long-one-share-quote-dp-v4", "hindsight_only": True,
-            "objective": "Merged profitable moves from the maximum-net-profit one-share sequence; filtered after merging",
-            "execution_assumption": "Observed ask entries / bid exits; at least one share displayed per side; bounded midpoint spread; additional cost per side; no latency, queue or impact model",
+            "algorithm": "liquid-macd-interval-swings-v1", "hindsight_only": True,
+            "objective": "One liquid lookback trough to open-interval peak per completed-1s MACD > signal interval",
+            "execution_assumption": "Fresh observed NBBO updates with displayed size and preceding trade activity; ask entries / bid exits plus costs; one-share benchmark; no latency, queue or impact model",
             "source_revision": source.source_revision, "elapsed_seconds": monotonic() - started}
 
 
@@ -128,7 +159,7 @@ def start_hindsight(request: HindsightRequest):
     end = datetime.combine(request.session_date, time(20), _NY)
     if end > datetime.now(timezone.utc):
         raise HTTPException(422, "Select a completed historical session")
-    key = (request.ticker.upper(), str(request.session_date), request.cost_bps, request.max_spread_bps)
+    key = tuple(sorted(request.model_dump(mode="json").items()))
     with _lock:
         # Only deduplicate active requests. Re-running revalidates source revision.
         for job in _jobs.values():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
 import json
 import urllib.parse
 import urllib.request
@@ -68,6 +69,18 @@ class QmdHistoricalEventSource:
         return _validate_health(await asyncio.to_thread(read))
 
     async def stream(self, cursor: EventCursor | None = None):
+        async with aclosing(self.stream_rows(cursor)) as pages:
+            async for rows in pages:
+                events = await asyncio.to_thread(_events_from_qmd_payload, rows)
+                if events:
+                    yield _batch(events)
+
+    async def stream_rows(self, cursor: EventCursor | None = None):
+        """Validated canonical rows for research projections without domain hydration.
+
+        Both consumers share the same pinned revision, coverage, pagination and
+        bounded prefetch checks. These are API rows, never raw SIP flatfiles.
+        """
         if cursor and cursor.token:
             raise ValueError("Reconnect historical events using a source-owned page boundary")
         page_cursor: dict[str, Any] | None = (
@@ -123,15 +136,9 @@ class QmdHistoricalEventSource:
                     )
                 else:
                     self.source_revision = dict(revision)
-                # Large accelerated pages are decoded off the event loop in
-                # ``_read_page``. Their Python domain projection must stay off
-                # it as well; converting 100k raw rows inline made run status,
-                # pause, stop, and UI progress requests unresponsive even
-                # though the source fetch itself was prefetched.
-                events = await asyncio.to_thread(
-                    _events_from_qmd_payload,
-                    payload.get("events") or [],
-                )
+                # Domain consumers project these rows off the event loop in
+                # stream(); research consumers can select only required fields.
+                events = payload.get("events") or []
                 complete = bool(payload.get("complete"))
                 if not complete:
                     if not events:
@@ -155,7 +162,7 @@ class QmdHistoricalEventSource:
                         )
                     )
                 if events:
-                    yield _batch(events)
+                    yield events
                 if complete:
                     return
         finally:

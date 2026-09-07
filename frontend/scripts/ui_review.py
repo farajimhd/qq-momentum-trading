@@ -2506,6 +2506,23 @@ def capture(args: argparse.Namespace) -> int:
                         if 'Failed:' in status:
                             raise RuntimeError(status)
                         metrics['hindsight'] = status
+                        lookback = page.get_by_role('slider', name='Buy lookback (seconds)', exact=True)
+                        if lookback.count():
+                            if lookback.input_value() != '2':
+                                raise RuntimeError('Hindsight lookback default is not two seconds')
+                            if scenario['theme'] == 'light' and float(scenario['scale']) == 1:
+                                lookback.focus()
+                                page.keyboard.press('ArrowRight')
+                                if float(lookback.input_value()) <= 2:
+                                    raise RuntimeError('Hindsight slider does not respond to keyboard')
+                                page.keyboard.press('ArrowLeft')
+                                with page.expect_response(lambda response: response.request.method == 'POST' and response.url.endswith('/api/research/hindsight'), timeout=30_000) as regeneration:
+                                    page.get_by_role('button', name='Apply and regenerate', exact=True).click()
+                                sent = regeneration.value.request.post_data_json
+                                if sent['lookback_seconds'] != 2 or sent['min_displayed_shares'] != 100 or sent['min_trade_count'] != 3:
+                                    raise RuntimeError('Hindsight form did not submit its liquidity configuration')
+                                page.wait_for_function("() => document.querySelector('.hindsight-summary')?.textContent.includes('/share')", timeout=120_000)
+                                status = page.locator('.hindsight-summary').first.inner_text()
                         profit_toggle = page.get_by_role('checkbox', name=re.compile('Hide small profits'))
                         if profit_toggle.count():
                             if not profit_toggle.is_checked():

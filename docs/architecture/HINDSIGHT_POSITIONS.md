@@ -1,87 +1,90 @@
 # Full-session hindsight positions
 
-Research-only oracle, `long-one-share-quote-dp-v3`. The chart's **Hindsight**
-toolbar button generates idealized long positions for the selected date's entire
-04:00–20:00 America/New_York session. It deliberately uses future information.
-It is never supplied to the strategy, Portfolio, OMS, or causal indicator inputs.
-The chart draws only positions intersecting loaded chart times; its full-session
-count and profit can include times outside a shorter Backtest review interval.
+Research-only benchmark `liquid-macd-interval-swings-v1`, covering the selected
+04:00–20:00 America/New_York session. It deliberately uses future information
+and never supplies strategy, Portfolio, OMS, or causal indicator inputs.
+Counts cover the full session even if the chart displays a shorter interval.
 
-## Objective and assumptions
+## Selection
 
-Maximize additive net dollars for one share, allowing one open long position,
-unlimited sequential round trips, and zero trades when none is profitable.
-Entries use observed asks, exits observed bids. Default additional cost is 5 bps
-of each side's price. No minimum holding time, cooldown, stop, holding limit,
-liquidity participation, execution latency, queue, impact, or capital compounding
-is modeled. It is an idealized benchmark, not executable profit or a forecast.
-Strictly increasing action timestamps disallow a same-timestamp round trip or
-exit/reentry. Equal objective values retain the existing path.
+Find uninterrupted completed-1s MACD > signal intervals, including negative MACD.
+Closed-bar state begins at bar_end and persists through seconds without trades.
+Only a completed non-bullish or explicitly invalid bar closes it; session end
+caps the final interval. A missing bar does not imply a MACD crossing. Buy the lowest eligible observed ask
+within two seconds before opening, including opening. Restrict that lookback
+to timestamps strictly after the preceding selected position's exit. Sell at
+the highest eligible observed bid during the open interval, strictly after the
+buy and before interval close. Equal prices select the earliest candidate.
 
-The linear-time dynamic program maintains the best flat cash value and best
-holding value. At each timestamp it evaluates selling the previously held share
-and buying from the previous flat state. Immutable backpointers reconstruct the
-best completed trade sequence. An unclosed final holding is discarded. Quotes
-with non-finite/non-positive prices, crossed markets, less than one share displayed
-on either side, or spread above 100 bps of the bid/ask midpoint are counted and
-rejected before optimization. Locked positive-size quotes are allowed. Unordered input
-fails. A 1e-10 dollar tolerance stabilizes equal-value comparisons.
+Reject intervals with no eligible entry, no eligible exit, or non-positive net
+profit. At most one position per interval; no short-gap or post-hoc merging.
+This replaces the endpoint's earlier DP-plus-merging pipeline. The old optimizer
+remains a tested research helper. MACD defines the search boundary, not sell time.
 
-## Authority and operation
+## Liquidity and costs
 
-`QmdHistoricalEventSource` reads quote-only pages with pinned revision and complete
-coverage from QMD History's canonical archive authority. Source revision, rejected
-quote count, elapsed time, and model assumptions accompany every result. No raw
-flatfiles, new operational tables, or indicator warm-up are involved.
+Default gates: finite positive non-crossed NBBO, spread <=100 bps of midpoint,
+>=100 displayed shares on each side, and >=3 eligible trades totaling >=100
+shares in the preceding one second. Trade activity uses the window
+(quote_time - window, quote_time], in canonical source order. Invalid or
+price-ineligible trades do not count; same-timestamp trades count only after
+encountered. Future trades never supply liquidity evidence.
 
-`POST /api/research/hindsight` accepts `ticker`, `session_date`, optional `cost_bps`
-and `max_spread_bps` (default 100).
-`GET /api/research/hindsight/{id}` reports queued/running/completed/failed and progress.
-One worker, at most three active/queued requests, eight retained jobs, and a
-10-million quote / 50,000-position / 10-minute budget bound work. Repeated active requests coalesce;
-new requests revalidate source revisions. Source errors and budget overruns never
-publish partial optima. Results are ephemeral; a backend restart requires regeneration.
+Only observed quote updates are candidates; no quote is carried forward through
+quiet periods. Canonical NBBO snapshots do not expose separate bid/ask ages,
+so independent side freshness is not certified. Gates apply at entry/exit,
+not continuously throughout a holding. These are configurable prototype filters.
 
-The dedicated paint-only chart primitive cannot affect autoscale, navigation,
-strategy annotations, or execution. Arrows distinguish buys/sells and dashed
-connectors pair positions. Dense labels are suppressed, but their markers remain.
-The toolbar is available on historical intraday Charts & Quotes views only.
+Profit is per share, at observed ask/bid with 5 bps additional cost per side.
+No latency, queue, impact, participation, compounding, or guaranteed execution is
+modeled. These are hindsight trough/peak labels, not live signals.
 
-After optimization, adjacent positions merge if their gap is at most one second,
-or both fit within the same uninterrupted completed-1s MACD > signal interval.
-Negative MACD values are explicitly allowed. Non-positive endpoint net profit
-prevents merging. After groups are fixed, a merged position uses the first entry
-and the highest eligible component swing bid (earliest tie), charging costs once
-per side. MACD defines grouping, not the sell timestamp. The original group end
-is retained as `merge_window_end`; shortening the exit does not regroup later
-positions. Component profits are never summed. Raw positions and source
-component numbers remain in the response, together with merged counts.
+## Authority and bounded operation
 
-MACD comes from QMD History's canonical bars-stage 1s projection, in bounded hourly
-requests with full-session-anchor indicator seeding and exact same-session prefix
-advancement. Complete provenance is required and retained. A closed bar's state
-begins at bar_end; missing/invalid seconds interrupt the MACD interval. No private
-EMA approximation or full structural-checkpoint reconstruction is used. Source
-and indicator failures prevent publishing a partially merged result.
+QmdHistoricalEventSource reads canonical trades and quotes together with pinned
+source revision and complete coverage. Historical authority is market_sip_compact
+through QMD History. MACD uses canonical bars-stage 1s projections in bounded
+hourly requests with four bounded readers, chronological consumption, same-session
+seeding and complete retained provenance. Research selects required canonical
+row fields without constructing full execution event objects. Both projections
+share revision, completeness and pagination checks.
+No private EMA approximation, flatfile read, or new operational table is used.
 
-**Hide small profits** is enabled by default. After merging,
-a descriptive statistical screen hides net returns below the session's
-larger of the inclusive 25th percentile and 500 bps (5%, approximately $0.15
-net profit at a $3 entry). Returns include both side costs and are normalized by
-entry cost. Ties at the cutoff are retained; fewer than four positions use only
-the 500 bps floor. The API retains the full sequence and exposes cutoff, removed/retained
-counts and retained net profit. The chart checkbox reversibly selects the subset
-without refetching. Original position numbers remain stable.
-The toolbar's statistics popover contains the filter checkbox, total eligible positions found, the count after merging, and positions shown;
-the found count remains visible when the overlay is hidden. This is a small-return
-filter, not a statistical significance test or a newly optimized constrained
-sequence. Displayed quote size is not proof of executable larger-order liquidity.
+POST /api/research/hindsight accepts ticker, session_date, cost_bps (5),
+max_spread_bps (100), lookback_seconds (2), min_displayed_shares (100),
+activity_window_seconds (1), min_trade_count (3), min_trade_volume (100).
+GET /api/research/hindsight/{id} reports state and progress. All parameters
+participate in active-job deduplication and accompany results.
+
+One worker, three active/queued requests, eight retained results, ten million
+events, one million trades per rolling window, and ten minutes bound the job.
+Accepted quote columns consume 24 bytes/event; raw events are not retained.
+One completed candidate set of at most two million quotes (48 MB of columns)
+can be cached. Reuse requires an exact canonical source-revision probe and
+matching liquidity settings; changing lookback can reuse candidates. MACD pages
+are freshly requested. Source changes force rereading; source errors fail closed.
+Phase timings and cache use are returned with each result.
+Failures never publish partial results. Results are ephemeral. Quote and
+interval rejection counts explain exclusions.
+
+## Chart and filter
+
+The popover reuses chart settings sections and sliders with displayed values,
+Apply and regenerate, interval,
+valid-position and shown counts, net profit, and rejection details. Draft settings
+apply on regeneration. The paint-only overlay does not affect chart autoscale
+or execution. Position numbers identify MACD intervals and remain stable.
+
+Hide small profits defaults on: retain net return >=max(500 bps, inclusive 25th
+percentile of positive candidates). Fewer than four candidates use only 500 bps.
+Returns divide net profit by entry cost including fees: 5% is approximately $0.15
+at $3. The checkbox reveals all positive candidates. This is descriptive
+filtering, not a significance test or a global profit optimum.
 
 ## Validation
 
-Exhaustive enumeration checks the optimizer on 300 deterministic short quote
-paths with three cost settings and duplicate timestamps. Other tests cover loss-only
-sessions, costs, empty/unclosed positions, invalid quotes, ordering, complete-session
-source integration, and coverage failures. The browser harness option
-`--hindsight-positions` exercises the real API, captures the layer, and checks that
-keyboard toggling restores the underlying chart image.
+Focused tests cover lookback clipping, sequential positions, in-interval peaks,
+wide/undersized/stale-activity quotes, trade count/volume, invalid trades, costs,
+source completeness, filtering, negative MACD, no-trade gaps, and cache invalidation.
+Real-API browser review checks the popover, filtering, keyboard dismissal,
+and preservation of the chart viewport when toggling the overlay.

@@ -10,6 +10,111 @@ from dataclasses import dataclass
 from math import isfinite
 from statistics import quantiles
 from bisect import bisect_right
+from bisect import bisect_left
+from array import array
+from collections import Counter, deque
+from datetime import datetime
+from types import SimpleNamespace
+
+
+class LiquidMacdBenchmark:
+    """Observed quote candidates gated by preceding canonical trade activity.
+
+    Compact columns bound quote memory to 24 bytes per accepted event. No quote
+    is forward filled: each candidate is the published NBBO at its own timestamp.
+    """
+    def __init__(self, *, cost_bps=5, max_spread_bps=100, min_displayed_shares=100,
+                 activity_window_seconds=1, min_trade_count=3, min_trade_volume=100):
+        self.fee = cost_bps / 10000
+        self.spread = max_spread_bps
+        self.depth = min_displayed_shares
+        self.window = activity_window_seconds
+        self.min_count = min_trade_count
+        self.min_volume = min_trade_volume
+        self.trades = deque()
+        self.volume = 0.0
+        self.times, self.bids, self.asks = array('d'), array('d'), array('d')
+        self.reasons = Counter()
+        self.quotes = self.trade_count = self.invalid_trades = self.events = 0
+        self.last_time = float('-inf')
+
+    def observe(self, event):
+        t = event.ts.timestamp()
+        if not isfinite(t) or t < self.last_time:
+            raise ValueError('Events must have ordered finite source timestamps')
+        self.last_time = t
+        self.events += 1
+        if self.events > 10_000_000:
+            raise RuntimeError('Session exceeds the 10-million-event research budget')
+        while self.trades and self.trades[0][0] <= t - self.window:
+            self.volume -= self.trades.popleft()[1]
+        if event.kind == 'trade':
+            self.trade_count += 1
+            if not event.price_eligible or not isfinite(event.size) or not isfinite(event.price) or event.size <= 0 or event.price <= 0:
+                self.invalid_trades += 1
+                return
+            self.trades.append((t, event.size))
+            self.volume += event.size
+            if len(self.trades) > 1_000_000:
+                raise RuntimeError('Trade activity window exceeds research memory budget')
+            return
+        if event.kind != 'quote':
+            raise ValueError('Unsupported canonical event kind')
+        self.quotes += 1
+        b, a, bs, az = event.bid_price, event.ask_price, event.bid_size, event.ask_size
+        reason = ('non_finite' if not all(isfinite(x) for x in (b, a, bs, az))
+                  else 'non_positive_price' if min(b, a) <= 0
+                  else 'crossed' if b > a
+                  else 'no_liquidity' if min(bs, az) < self.depth
+                  else 'wide_spread' if (a-b)/((a+b)/2)*10000 > self.spread + 1e-10
+                  else 'insufficient_trade_count' if len(self.trades) < self.min_count
+                  else 'insufficient_trade_volume' if self.volume < self.min_volume else None)
+        if reason:
+            self.reasons[reason] += 1
+            return
+        self.times.append(t)
+        self.bids.append(b)
+        self.asks.append(a)
+
+    def observe_payload(self, row):
+        """Project only fields used here; avoid rich execution-event hydration."""
+        common = dict(kind=row['kind'], ts=datetime.fromisoformat(row['ts'].replace('Z', '+00:00')))
+        if row['kind'] == 'trade':
+            event = SimpleNamespace(**common, price=float(row.get('price') or 0), size=float(row.get('size') or 0),
+                                    price_eligible=(row.get('raw') or {}).get('price_eligible') is not False)
+        else:
+            event = SimpleNamespace(**common, **{k: float(row.get(k) or 0) for k in ('bid_price', 'ask_price', 'bid_size', 'ask_size')})
+        self.observe(event)
+
+    def result(self, intervals, lookback_seconds=2):
+        positions, rejected = [], Counter()
+        previous_exit = float('-inf')
+        for number, (start, end) in enumerate(intervals, 1):
+            first = max(bisect_left(self.times, start-lookback_seconds), bisect_right(self.times, previous_exit))
+            last = bisect_right(self.times, start)
+            if first >= last:
+                rejected['no_liquid_entry'] += 1
+                continue
+            buy = min(range(first, last), key=self.asks.__getitem__)
+            first_sell = max(bisect_left(self.times, start), bisect_right(self.times, self.times[buy]))
+            last_sell = bisect_left(self.times, end)
+            if first_sell >= last_sell:
+                rejected['no_liquid_exit'] += 1
+                continue
+            sell = max(range(first_sell, last_sell), key=self.bids.__getitem__)
+            profit = self.bids[sell]*(1-self.fee) - self.asks[buy]*(1+self.fee)
+            if profit <= 1e-10:
+                rejected['non_positive_net_profit'] += 1
+                continue
+            positions.append(dict(position_number=number, entry_time=self.times[buy], exit_time=self.times[sell],
+                entry_price=self.asks[buy], exit_price=self.bids[sell], net_profit_per_share=profit,
+                net_return_bps=profit/(self.asks[buy]*(1+self.fee))*10000, macd_open=start, macd_close=end))
+            previous_exit = self.times[sell]
+        return dict(positions=positions, position_count=len(positions), interval_count=len(intervals),
+                    interval_rejections=dict(rejected), quotes=self.quotes, trades=self.trade_count,
+                    invalid_trades=self.invalid_trades, eligible_quotes=len(self.times),
+                    rejected_quotes=sum(self.reasons.values()), rejection_reasons=dict(self.reasons),
+                    net_profit_per_share=sum(p['net_profit_per_share'] for p in positions))
 
 
 @dataclass(frozen=True, slots=True)
