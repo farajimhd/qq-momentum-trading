@@ -121,14 +121,19 @@ def test_wide_spread_and_absent_liquidity_cannot_supply_fills():
 
 def test_lower_quartile_filter_preserves_raw_and_ties():
     from src.market_engine.hindsight import small_profit_filter
-    rows = [{"net_return_bps": x, "net_profit_per_share": x / 100} for x in [1, 2, 3, 1000]]
+    rows = [{"net_return_bps": x, "net_profit_per_share": x / 100} for x in [600, 800, 1000, 2000]]
     result = small_profit_filter(rows)
-    assert result["cutoff_bps"] == 1.75
+    assert result["cutoff_bps"] == 750
     assert result["removed_count"] == 1
     assert len(rows) == 4
     assert small_profit_filter(rows[:3])["removed_count"] == 0
     assert small_profit_filter([rows[0]] * 4)["removed_count"] == 0
     assert small_profit_filter([])["retained_count"] == 0
+    floor_rows = [{"net_return_bps": x, "net_profit_per_share": 3 * x / 10000} for x in [499, 500, 501]]
+    floor = small_profit_filter(floor_rows)
+    assert floor["cutoff_bps"] == 500
+    assert floor["removed_count"] == 1
+    assert floor["retained_count"] == 2
 
 
 def test_certified_session_without_liquidity_returns_zero_opportunities(monkeypatch):

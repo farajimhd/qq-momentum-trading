@@ -105,11 +105,13 @@ def small_profit_filter(positions: list[dict]) -> dict:
     """Descriptive lower-quartile screen; never claim this is a new optimum.
 
     Keep ties at the boundary. Fewer than four trades do not support a useful
-    quartile screen and are retained. The raw oracle sequence remains available.
+    quartile screen; the 500 bps minimum still applies. The raw oracle sequence
+    remains available.
     """
     cutoff = quantiles([p["net_return_bps"] for p in positions], n=4, method="inclusive")[0] if len(positions) >= 4 else 0.0
+    cutoff = max(500.0, cutoff)
     kept = [p for p in positions if p["net_return_bps"] >= cutoff]
-    return {"method": "net-return-lower-quartile-v1", "percentile": 25,
+    return {"method": "net-return-lower-quartile-floor-v2", "percentile": 25, "minimum_bps": 500.0,
             "cutoff_bps": cutoff, "retained_count": len(kept),
             "removed_count": len(positions) - len(kept),
             "retained_profit_per_share": sum(p["net_profit_per_share"] for p in kept)}

@@ -63,9 +63,10 @@ and indicator failures prevent publishing a partially merged result.
 
 **Hide small profits** is enabled by default. After merging,
 a descriptive statistical screen hides net returns below the session's
-inclusive 25th percentile. Returns include both side costs and are normalized by
-entry cost. Ties at the cutoff are retained; fewer than four positions are left
-unchanged. The API retains the full sequence and exposes cutoff, removed/retained
+larger of the inclusive 25th percentile and 500 bps (5%, approximately $0.15
+net profit at a $3 entry). Returns include both side costs and are normalized by
+entry cost. Ties at the cutoff are retained; fewer than four positions use only
+the 500 bps floor. The API retains the full sequence and exposes cutoff, removed/retained
 counts and retained net profit. The chart checkbox reversibly selects the subset
 without refetching. Original position numbers remain stable.
 The adjacent stats show total eligible positions found, the count after merging, and positions shown;
