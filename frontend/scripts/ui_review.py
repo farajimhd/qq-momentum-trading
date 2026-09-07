@@ -2500,10 +2500,22 @@ def capture(args: argparse.Namespace) -> int:
                             const text = document.querySelector('.hindsight-summary')?.textContent || '';
                             return text.includes('/share') || text.includes('Failed:');
                         }""", timeout=120_000)
-                        status = page.locator('.hindsight-summary').inner_text()
+                        status = page.locator('.hindsight-summary').first.inner_text()
                         if 'Failed:' in status:
                             raise RuntimeError(status)
                         metrics['hindsight'] = status
+                        profit_toggle = page.get_by_role('checkbox', name=re.compile('Hide small profits'))
+                        if profit_toggle.count():
+                            if not profit_toggle.is_checked():
+                                raise RuntimeError('Small-profit filter is not enabled by default')
+                            filtered_count = int(re.search(r'([\d,]+) shown', status).group(1).replace(',', ''))
+                            profit_toggle.uncheck()
+                            unfiltered = page.locator('.hindsight-summary').first.inner_text()
+                            if int(re.search(r'([\d,]+) shown', unfiltered).group(1).replace(',', '')) < filtered_count:
+                                raise RuntimeError('Unfiltered hindsight count is smaller than filtered count')
+                            profit_toggle.check()
+                            if page.locator('.hindsight-summary').first.inner_text() != status:
+                                raise RuntimeError('Small-profit filter does not restore its original result')
                         if button.evaluate('(el) => el.scrollWidth > el.clientWidth + 1'):
                             raise RuntimeError('Hindsight button label overflows its control')
                         pane = page.locator('.chart-pane-canvas').first

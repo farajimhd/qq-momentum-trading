@@ -7,7 +7,7 @@ from src.market_engine.hindsight import HindsightOptimizer
 
 
 def solve(rows, cost=5):
-    model = HindsightOptimizer(cost)
+    model = HindsightOptimizer(cost, max_spread_bps=10000)
     for timestamp, bid, ask in rows:
         model.observe(timestamp, bid, ask, 1, 1)
     return model.result()
@@ -100,3 +100,87 @@ def test_source_error_does_not_publish_partial_optimum(monkeypatch):
     monkeypatch.setattr(service, "QmdHistoricalEventSource", Source)
     with pytest.raises(RuntimeError, match="coverage gap"):
         asyncio.run(service.calculate(service.HindsightRequest(ticker="JUNS", session_date="2026-08-21")))
+
+
+def test_wide_spread_and_absent_liquidity_cannot_supply_fills():
+    model = HindsightOptimizer()
+    model.observe(1, 9, 10, 1, 1)  # Wide, tempting cheap entry must be excluded.
+    model.observe(2, 10, 10.01, .5, 1)  # Less than one share displayed.
+    model.observe(3, 11, 11.01, 1, 1)
+    model.observe(4, 20, 21, 1, 1)  # Wide, tempting exit must be excluded.
+    model.observe(5, 12, 12.01, 1, 1)
+    result = model.result()
+    assert result["positions"][0]["entry_time"] == 3
+    assert result["positions"][0]["exit_time"] == 5
+    assert result["rejection_reasons"]["wide_spread"] == 2
+    assert result["rejection_reasons"]["no_liquidity"] == 1
+    boundary = HindsightOptimizer()
+    boundary.observe(1, 99.5, 100.5, 1, 1)  # Exactly 100 bps is allowed.
+    assert boundary.rejected_quotes == 0
+
+
+def test_lower_quartile_filter_preserves_raw_and_ties():
+    from src.market_engine.hindsight import small_profit_filter
+    rows = [{"net_return_bps": x, "net_profit_per_share": x / 100} for x in [1, 2, 3, 1000]]
+    result = small_profit_filter(rows)
+    assert result["cutoff_bps"] == 1.75
+    assert result["removed_count"] == 1
+    assert len(rows) == 4
+    assert small_profit_filter(rows[:3])["removed_count"] == 0
+    assert small_profit_filter([rows[0]] * 4)["removed_count"] == 0
+    assert small_profit_filter([])["retained_count"] == 0
+
+
+def test_certified_session_without_liquidity_returns_zero_opportunities(monkeypatch):
+    import asyncio
+    from datetime import datetime
+    from types import SimpleNamespace
+    from src.backend import hindsight_service as service
+    class Source:
+        source_revision = {"request_complete": True}
+        def __init__(self, *args, **kwargs): pass
+        async def stream(self):
+            yield SimpleNamespace(events=[SimpleNamespace(ts=datetime.fromisoformat('2026-08-21T04:00:00-04:00'),
+                bid_price=5, ask_price=5.01, bid_size=0, ask_size=0)])
+    monkeypatch.setattr(service, 'QmdHistoricalEventSource', Source)
+    result = asyncio.run(service.calculate(service.HindsightRequest(ticker='JUNS', session_date='2026-08-21')))
+    assert result['position_count'] == 0
+    assert result['rejection_reasons']['no_liquidity'] == 1
+    assert result['profit_filter']['retained_count'] == 0
+
+
+def test_merging_short_gaps_and_macd_episodes_reprices_endpoints():
+    from src.market_engine.hindsight import merge_positions
+    def p(i, start, end, buy, sell):
+        return dict(position_number=i, entry_time=start, exit_time=end,
+                    entry_price=buy, exit_price=sell, net_profit_per_share=sell-buy, net_return_bps=100)
+    a, b = p(1, 1, 2, 10, 11), p(2, 2.5, 3, 10.8, 12)
+    merged = merge_positions([a, b], [])
+    assert len(merged) == 1
+    assert merged[0]['net_profit_per_share'] == pytest.approx(12 * .9995 - 10 * 1.0005)
+    assert merged[0]['component_positions'] == [1, 2]
+    assert a['exit_time'] == 2 and 'component_positions' not in a
+    b = p(2, 6, 7, 10.8, 12)
+    assert len(merge_positions([a, b], [(0, 10)])) == 1
+    assert len(merge_positions([a, b], [(0, 3), (5, 10)])) == 2
+    assert len(merge_positions([a, p(2, 2.5, 3, 5, 6)], [])) == 2
+    # MACD turns bearish at t=7: the second position is not fully inside the interval.
+    assert len(merge_positions([a, b], [(0, 7)])) == 2
+
+
+def test_macd_intervals_include_negative_values_and_stop_at_gaps(monkeypatch):
+    from datetime import datetime, timedelta
+    from types import SimpleNamespace
+    from time import monotonic
+    from src.backend import hindsight_service as service
+    start = datetime.fromisoformat('2026-08-21T04:00:00-04:00')
+    rows = [dict(bar_end=(start + timedelta(seconds=t)).isoformat(), macd_line=m, macd_signal=s)
+            for t, m, s in [(1, -1, -2), (2, -.5, -1), (3, -2, -1), (4, .1, 0), (6, .2, .1)]]
+    def read(request):
+        assert request.timeframe == '1s' and request.stage == 'bars'
+        return SimpleNamespace(payload={'indicators_available': True, 'indicator_provenance': {'complete': True},
+                                        'has_more': False, 'indicators': rows})
+    monkeypatch.setattr(service, 'qmd_product_request', read)
+    intervals, _ = service.load_macd_intervals('SUGP', start, start + timedelta(seconds=10), lambda **kwargs: None, monotonic() + 10)
+    t = start.timestamp()
+    assert intervals == [(t+1, t+3), (t+4, t+5), (t+6, t+7)]

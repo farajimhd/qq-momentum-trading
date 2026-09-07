@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Eye, EyeOff, LoaderCircle } from "lucide-react";
 import type { IChartApi, ISeriesApi, ISeriesPrimitive, IPrimitivePaneView, Time } from "lightweight-charts";
 import { api } from "../../api/client";
@@ -6,9 +6,11 @@ import { api } from "../../api/client";
 export type HindsightPosition = {
   entry_time: number; exit_time: number; entry_price: number; exit_price: number;
   net_profit_per_share: number; net_return_bps: number;
+  position_number: number;
 };
-type Result = { positions: HindsightPosition[]; position_count: number; net_profit_per_share: number };
-type Job = { id: string; status: "queued" | "running" | "completed" | "failed"; quotes: number; error?: string; result?: Result };
+type Result = { positions: HindsightPosition[]; position_count: number; unmerged_position_count?: number; net_profit_per_share: number;
+  profit_filter?: { cutoff_bps: number; retained_count: number; removed_count: number; retained_profit_per_share: number } };
+type Job = { id: string; status: "queued" | "running" | "completed" | "failed"; stage?: string; quotes: number; error?: string; result?: Result };
 const EMPTY: HindsightPosition[] = [];
 
 export function useHindsightPositions(ticker: string, sessionDate?: string) {
@@ -16,6 +18,7 @@ export function useHindsightPositions(ticker: string, sessionDate?: string) {
   const [state, setState] = useState<{ identity: string; job?: Job; visible: boolean; error?: string }>({ identity, visible: false });
   const [request, setRequest] = useState({ identity: "", nonce: 0 });
   const generation = useRef(0);
+  const [hideSmallProfits, setHideSmallProfits] = useState(true);
   const current = state.identity === identity ? state : { identity, visible: false };
   useEffect(() => {
     generation.current += 1;
@@ -46,18 +49,26 @@ export function useHindsightPositions(ticker: string, sessionDate?: string) {
   }, [request, identity, ticker, sessionDate]);
   const busy = Boolean(request.identity === identity && !current.error && (!current.job || ["queued", "running"].includes(current.job.status)));
   const result = current.job?.result;
-  const title = `Hindsight only · ${sessionDate} 04:00–20:00 New York · one share, long-only, one position at a time · ask entries / bid exits + 5 bps per side · no latency or impact model. Does not change strategy trades or chart zoom.`;
+  const filter = result?.profit_filter;
+  const displayedCount = hideSmallProfits && filter ? filter.retained_count : result?.position_count;
+  const displayedProfit = hideSmallProfits && filter ? filter.retained_profit_per_share : result?.net_profit_per_share;
+  const title = `Hindsight only · ${sessionDate} 04:00–20:00 New York · one share, long-only · at least 1 share displayed on each side · spread ≤100 bps of midpoint · ask entries / bid exits + 5 bps per side · no latency or impact model. Merge gaps ≤1s or the same completed-1s MACD > signal interval (negative MACD allowed), retaining positive endpoint profit. Filter below the 25th percentile after merging. These merged/filtered moves are not a new profit optimum.`;
   const controls = sessionDate ? <div className="hindsight-controls">
     <button type="button" className="toolbar-button" aria-label="Hindsight positions" aria-pressed={current.visible} disabled={busy} title={title}
       onClick={() => result ? setState((value) => ({ ...value, visible: !value.visible })) : setRequest((n) => ({ identity, nonce: n.nonce + 1 }))}>
       {busy ? <LoaderCircle size={15} /> : current.visible ? <EyeOff size={15} /> : <Eye size={15} />}
-      <span>{busy ? "Finding positions…" : "Hindsight"}</span>
+      <span>{busy ? current.job?.stage === "macd" ? "Merging with MACD…" : "Finding positions…" : "Hindsight"}</span>
     </button>
     <span className="hindsight-summary" role="status" title={current.error || title}>
-      {current.error ? `Failed: ${current.error} — click Hindsight to retry` : busy ? `${(current.job?.quotes ?? 0).toLocaleString()} quotes` : result && current.visible ? `${result.position_count} positions · $${result.net_profit_per_share.toFixed(3)}/share · 5 bps/side · full session` : ""}
+      {current.error ? `Failed: ${current.error} — click Hindsight to retry` : busy ? `${(current.job?.quotes ?? 0).toLocaleString()} quotes` : result ? `${(result.unmerged_position_count ?? result.position_count).toLocaleString()} found · ${result.position_count.toLocaleString()} after merge · ${current.visible ? `${displayedCount?.toLocaleString()} shown · $${displayedProfit?.toFixed(3)}/share` : "overlay hidden"}` : ""}
     </span>
+    {filter && current.visible ? <label className="hindsight-summary" title={title}>
+      <input type="checkbox" checked={hideSmallProfits} onChange={(event) => setHideSmallProfits(event.target.checked)} /> Hide small profits
+      {hideSmallProfits ? ` (<${filter.cutoff_bps.toFixed(1)} bps; ${filter.removed_count} hidden)` : ""}
+    </label> : null}
   </div> : null;
-  return { controls, positions: current.visible ? result?.positions ?? EMPTY : EMPTY };
+  const selected = useMemo(() => result && hideSmallProfits && filter ? result.positions.filter((p) => p.net_return_bps >= filter.cutoff_bps) : result?.positions, [result, hideSmallProfits, filter]);
+  return { controls, positions: current.visible ? selected ?? EMPTY : EMPTY };
 }
 
 /** Independent paint-only layer: contributes nothing to autoscale or trade state. */
@@ -96,7 +107,7 @@ export class HindsightPrimitive implements ISeriesPrimitive<Time> {
             ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 4, y + sign * 8); ctx.lineTo(x + 4, y + sign * 8); ctx.closePath(); ctx.fill();
             // Keep every marker, but avoid stacking hundreds of labels at low zoom.
             if (x - lastLabelX >= 65) {
-              const label = `${entry ? "Buy" : "Sell"} H${index + 1}`;
+              const label = `${entry ? "Buy" : "Sell"} H${p.position_number ?? index + 1}`;
               const labelY = Math.max(14, Math.min(mediaSize.height - 5, y + sign * 22));
               ctx.fillStyle = this.backing;
               ctx.fillRect(x + 5, labelY - 12, ctx.measureText(label).width + 6, 15);
