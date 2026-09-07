@@ -848,6 +848,11 @@ def resolve_long_momentum_parameters(
         if not isfinite(gap) or gap <= 0:
             raise ValueError("MACD histogram gate must be finite positive basis points")
         parameters["macd_histogram_gate_bps"] = gap
+    if "macd_histogram_entry_gate_bps" in parameters:
+        gap = float(parameters["macd_histogram_entry_gate_bps"])
+        if not isfinite(gap) or gap <= 0 or "macd_histogram_gate_bps" not in parameters:
+            raise ValueError("MACD entry gap requires positive finite basis points and an exit gap")
+        parameters["macd_histogram_entry_gate_bps"] = gap
     if "normalized_macd_threshold_bps" in parameters:
         threshold = float(parameters["normalized_macd_threshold_bps"])
         if not isfinite(threshold) or threshold <= 0 or revision < 44:
@@ -1253,10 +1258,12 @@ def _normalized_macd_regime(parameters, observation, timeframe="1s"):
     valid = line_bps is not None and signal_bps is not None
     if gap_threshold is not None:
         gap = _macd_gap_bps(observation.price, line, signal)
+        entry_threshold = float(parameters.get("macd_histogram_entry_gate_bps", gap_threshold))
         return {
             "threshold_bps": float(gap_threshold), "macd_line_bps": line_bps, "macd_signal_bps": signal_bps,
             "histogram_bps": gap, "entry_gap_bypassed": False,
-            "entry_confirmed": bool(valid and line > 0 and gap > float(gap_threshold) + 1e-12),
+            "entry_confirmed": bool(valid and line > 0 and gap > entry_threshold + 1e-12),
+            **({"entry_threshold_bps": entry_threshold} if "macd_histogram_entry_gate_bps" in parameters else {}),
             "exit_confirmed": bool(valid and gap < float(gap_threshold) - 1e-12),
         }
     return {
@@ -7016,7 +7023,7 @@ def _matching_momentum_management_route(
         signal = _source_value(observation, "indicator.macd.signal", downside_timeframe)
         gap_bps = _macd_gap_bps(observation.price, line, signal)
         normalized_macd = _normalized_macd_regime(parameters, observation, downside_timeframe)
-        if bool(downside.get("macd_closed", True)) and (not parameters.get("completed_macd_setup") or "bar_close" in observation.evaluation_events) and (
+        if bool(downside.get("macd_closed", True)) and (not (parameters.get("completed_macd_setup") or parameters.get("require_completed_macd_exit")) or "bar_close" in observation.evaluation_events) and (
             normalized_macd["exit_confirmed"] if normalized_macd is not None else (
             line is not None
             and signal is not None
@@ -7172,7 +7179,7 @@ def _matching_momentum_management_route(
     normalized_macd = _normalized_macd_regime(parameters, observation, timeframe)
     if normalized_macd is not None:
         macd_closed = normalized_macd["exit_confirmed"]
-    if parameters.get("completed_macd_setup") and "bar_close" not in observation.evaluation_events:
+    if (parameters.get("completed_macd_setup") or parameters.get("require_completed_macd_exit")) and "bar_close" not in observation.evaluation_events:
         macd_closed = False
     if observation.source_timeframe in {"", timeframe}:
         if macd_closed:

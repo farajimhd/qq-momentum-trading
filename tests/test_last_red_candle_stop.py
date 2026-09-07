@@ -46,3 +46,24 @@ def test_missing_or_noncausal_red_candle_fails_closed(change):
     if change=='above_entry':candle.update(close=110,open=111)
     state={} if change=='missing' else {'last_red_entry_candle':candle}
     assert S._initial_stop(market(101.3),policy(),None,side='long',candle_state=state)==0
+
+
+@pytest.mark.parametrize('gap,opening,enters',[(11,101.2,True),(10,101.2,False),(9,101.2,False),
+                                              (11,101.3,False),(11,101.4,False)])
+def test_intrabar_entry_requires_ten_bps_and_strictly_green(gap,opening,enters):
+    p=policy();p.update(require_completed_entry_candle=False,completed_macd_setup=False,
+        macd_histogram_entry_gate_bps=10,strict_green_entry=True,require_completed_macd_exit=True)
+    p['entry_candle_confirmation'].update(require_closed_bar=False,evaluate_macd_intrabar=True,
+        minimum_macd_open_gap_bps=10,minimum_reentry_macd_gap_bps=10)
+    p['structural_entry']['accept_live_price_above_entry_level']=True
+    obs=replace(market(101.3),bar_open=opening,source_timeframe='',evaluation_events=('market_data_update',),
+        macd_line=(gap+10)*101.3/10000,macd_signal=10*101.3/10000)
+    state={'last_red_entry_candle':dict(close=100.8,open=101.,timestamp=(NOW-timedelta(seconds=1)).timestamp())}
+    result=S.LongMomentumStrategyEngine(revision=47).evaluate(assignment(strategy_revision=47,parameters=p,state=state),obs)
+    assert any(i.action=='enter_long' for i in result.evaluation.intents)==enters,[s.reason for s in result.evaluation.signals]
+    if enters:
+        assert result.state['initial_stop']==100.79
+    regime=S._normalized_macd_regime(p,replace(obs,macd_line=14*101.3/10000))
+    assert regime['exit_confirmed']  # Exit remains below 5 bps.
+    assert S._matching_momentum_management_route(p,replace(obs,macd_line=14*101.3/10000),
+        {'entry_at':NOW.isoformat()},gain_pct=1,side='long') is None
