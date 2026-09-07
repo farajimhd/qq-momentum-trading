@@ -6,6 +6,43 @@ import pytest
 from src.market_engine.hindsight import HindsightOptimizer
 
 
+def test_price_labels_are_symmetric_independent_and_ignore_execution_fields():
+    from src.market_engine.hindsight import PriceMacdLabels
+    from datetime import datetime, timezone
+    model = PriceMacdLabels()
+    # No size/activity gate. Both labels can reuse the same swing extreme.
+    for t, price in [(1, 100), (2, 101), (3, 105), (4, 102), (5, 95), (6, 110)]:
+        model.observe_payload(dict(kind='trade', ts=datetime.fromtimestamp(t, timezone.utc).isoformat(),
+                                   price=price, size=0, bid_price=1, ask_price=1000))
+    result = model.result([(2, 4, 'long'), (4, 6, 'short')], 2)
+    long, short = result['positions']
+    assert (long['entry_time'], long['exit_time'], long['entry_swing'], long['exit_swing']) == (1, 3, 'low', 'high')
+    assert (short['entry_time'], short['exit_time'], short['entry_swing'], short['exit_swing']) == (3, 5, 'high', 'low')
+    assert long['gross_move_per_share'] == 5 and short['gross_move_per_share'] == 10
+    assert long['gross_return_bps'] == 500
+    assert result['direction_counts'] == {'long': 1, 'short': 1}
+    assert result['display_filter']['retained_count'] == 2
+    # The display filter does not remove small-move training labels.
+    tiny = model.result([(2, 3, 'long')], 2)
+    assert tiny['position_count'] == 1 and tiny['display_filter']['retained_count'] == 0
+
+
+def test_price_labels_preserve_data_quality_and_strict_timestamps():
+    from src.market_engine.hindsight import PriceMacdLabels
+    model = PriceMacdLabels()
+    def row(price, **kwargs):
+        return dict(kind='trade', ts='2026-08-21T08:00:00Z', price=price, **kwargs)
+    model.observe_payload(row(0))
+    model.observe_payload(row(1000, raw={'price_eligible': False}))
+    model.observe_payload(row(3))
+    model.observe_payload(row(4))
+    t = model.times[0]
+    assert model.result([(t, t+1, 'long')])['position_count'] == 0
+    assert model.reasons == {'invalid_price': 1, 'canonical_price_ineligible': 1}
+    with pytest.raises(ValueError, match='trade-only'):
+        model.observe_payload(dict(kind='quote'))
+
+
 def test_liquid_macd_uses_lookback_trough_and_in_interval_peak_only():
     from src.market_engine.hindsight import LiquidMacdBenchmark
     from types import SimpleNamespace
@@ -132,23 +169,13 @@ def test_hindsight_api_complete_session_contract(monkeypatch):
         def __init__(self, url, **kwargs):
             observed.update(kwargs)
         async def stream_rows(self):
-            yield [dict(kind='quote', ts=t, bid_price=b, ask_price=a, bid_size=100, ask_size=100)
+            yield [dict(kind='trade', ts=t, price=b, size=1)
                 for t, b, a in [("2026-08-21T04:00:00-04:00", 5, 5.01), ("2026-08-21T19:59:59-04:00", 7, 7.01)]]
     monkeypatch.setattr(service, "QmdHistoricalEventSource", Source)
-    # Supply trade activity through the same canonical stream before each quote.
-    original_stream = Source.stream_rows
-    async def with_trades(self):
-        async for batch in original_stream(self):
-            events = []
-            for quote in batch:
-                events.extend([dict(kind='trade', ts=quote['ts'], price=quote['bid_price'], size=100)] * 3)
-                events.append(quote)
-            yield events
-    Source.stream_rows = with_trades
-    monkeypatch.setattr(service, 'load_macd_intervals', lambda *args: ([(datetime.fromisoformat('2026-08-21T04:00:01-04:00').timestamp(), datetime.fromisoformat('2026-08-21T20:00:00-04:00').timestamp())], []))
+    monkeypatch.setattr(service, 'load_macd_intervals', lambda *args: ([(datetime.fromisoformat('2026-08-21T04:00:01-04:00').timestamp(), datetime.fromisoformat('2026-08-21T20:00:00-04:00').timestamp(), 'long')], []))
     result = asyncio.run(service.calculate(service.HindsightRequest(ticker="JUNS", session_date="2026-08-21")))
     assert observed["start"].hour == 4 and observed["end"].hour == 20
-    assert observed["event_kinds"] == ("trade", "quote")
+    assert observed["event_kinds"] == ("trade",)
     assert result["position_count"] == 1
     assert result["hindsight_only"] is True
     assert result["source_revision"]["revision_token"] == "test"
@@ -167,7 +194,7 @@ def test_source_error_does_not_publish_partial_optimum(monkeypatch):
         asyncio.run(service.calculate(service.HindsightRequest(ticker="JUNS", session_date="2026-08-21")))
 
 
-def test_candidate_cache_revalidates_revision_and_reuses_only_matching_liquidity(monkeypatch):
+def test_candidate_cache_revalidates_revision_and_reuses_only_matching_session(monkeypatch):
     import asyncio
     from datetime import datetime
     from src.backend import hindsight_service as service
@@ -184,12 +211,11 @@ def test_candidate_cache_revalidates_revision_and_reuses_only_matching_liquidity
             rows = []
             for ts, price in [('2026-08-21T04:00:01-04:00', 3), ('2026-08-21T04:00:04-04:00', 4)]:
                 rows.extend([dict(kind='trade', ts=ts, price=price, size=100)] * 3)
-                rows.append(dict(kind='quote', ts=ts, bid_price=price, ask_price=price+.01, bid_size=100, ask_size=100))
             yield rows
     t = datetime.fromisoformat('2026-08-21T04:00:00-04:00').timestamp()
     monkeypatch.setattr(service, '_candidate_cache', {})
     monkeypatch.setattr(service, 'QmdHistoricalEventSource', Source)
-    monkeypatch.setattr(service, 'load_macd_intervals', lambda *args: ([(t+2, t+5)], []))
+    monkeypatch.setattr(service, 'load_macd_intervals', lambda *args: ([(t+2, t+5, 'long')], []))
     async def exercise():
         first = await service.calculate(service.HindsightRequest(ticker='SUGP', session_date='2026-08-21'))
         second = await service.calculate(service.HindsightRequest(ticker='SUGP', session_date='2026-08-21', lookback_seconds=5))
@@ -198,8 +224,8 @@ def test_candidate_cache_revalidates_revision_and_reuses_only_matching_liquidity
         state['token'] = 'b'
         third = await service.calculate(service.HindsightRequest(ticker='SUGP', session_date='2026-08-21'))
         assert third['timing']['candidate_cache_hit'] is False and state['reads'] == 2
-        fourth = await service.calculate(service.HindsightRequest(ticker='SUGP', session_date='2026-08-21', min_displayed_shares=200))
-        assert fourth['position_count'] == 0 and state['reads'] == 3
+        fourth = await service.calculate(service.HindsightRequest(ticker='JUNS', session_date='2026-08-21'))
+        assert fourth['timing']['candidate_cache_hit'] is False and state['reads'] == 3
     asyncio.run(exercise())
 
 
@@ -237,7 +263,7 @@ def test_lower_quartile_filter_preserves_raw_and_ties():
     assert floor["retained_count"] == 2
 
 
-def test_certified_session_without_liquidity_returns_zero_opportunities(monkeypatch):
+def test_certified_session_without_valid_prices_returns_zero_labels(monkeypatch):
     import asyncio
     from datetime import datetime
     from types import SimpleNamespace
@@ -246,14 +272,13 @@ def test_certified_session_without_liquidity_returns_zero_opportunities(monkeypa
         source_revision = {"request_complete": True}
         def __init__(self, *args, **kwargs): pass
         async def stream_rows(self):
-            yield [dict(kind='quote', ts='2026-08-21T04:00:00-04:00',
-                bid_price=5, ask_price=5.01, bid_size=0, ask_size=0)]
+            yield [dict(kind='trade', ts='2026-08-21T04:00:00-04:00', price=0)]
     monkeypatch.setattr(service, 'QmdHistoricalEventSource', Source)
-    monkeypatch.setattr(service, 'load_macd_intervals', lambda *args: ([(1, 2)], []))
+    monkeypatch.setattr(service, 'load_macd_intervals', lambda *args: ([(1, 2, 'long')], []))
     result = asyncio.run(service.calculate(service.HindsightRequest(ticker='JUNS', session_date='2026-08-21')))
     assert result['position_count'] == 0
-    assert result['rejection_reasons']['no_liquidity'] == 1
-    assert result['profit_filter']['retained_count'] == 0
+    assert result['rejection_reasons']['invalid_price'] == 1
+    assert result['display_filter']['retained_count'] == 0
 
 
 def test_merging_short_gaps_and_macd_episodes_reprices_endpoints():
@@ -306,4 +331,4 @@ def test_macd_intervals_include_negative_values_and_preserve_state_without_trade
     monkeypatch.setattr(service, 'qmd_product_request', read)
     intervals, _ = service.load_macd_intervals('SUGP', start, start + timedelta(seconds=10), lambda **kwargs: None, monotonic() + 10)
     t = start.timestamp()
-    assert intervals == [(t+1, t+3), (t+4, t+10)]
+    assert intervals == [(t+1, t+3, 'long'), (t+3, t+4, 'short'), (t+4, t+10, 'long')]

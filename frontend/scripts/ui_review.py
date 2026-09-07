@@ -2500,13 +2500,13 @@ def capture(args: argparse.Namespace) -> int:
                         details_button.click()
                         page.wait_for_function("""() => {
                             const text = document.querySelector('.hindsight-summary')?.textContent || '';
-                            return text.includes('/share') || text.includes('Failed:');
+                            return text.includes('shown') || text.includes('Failed:');
                         }""", timeout=120_000)
                         status = page.locator('.hindsight-summary').first.inner_text()
                         if 'Failed:' in status:
                             raise RuntimeError(status)
                         metrics['hindsight'] = status
-                        lookback = page.get_by_role('slider', name='Buy lookback (seconds)', exact=True)
+                        lookback = page.get_by_role('slider', name='Swing lookback (seconds)', exact=True)
                         if lookback.count():
                             if lookback.input_value() != '2':
                                 raise RuntimeError('Hindsight lookback default is not two seconds')
@@ -2519,11 +2519,21 @@ def capture(args: argparse.Namespace) -> int:
                                 with page.expect_response(lambda response: response.request.method == 'POST' and response.url.endswith('/api/research/hindsight'), timeout=30_000) as regeneration:
                                     page.get_by_role('button', name='Apply and regenerate', exact=True).click()
                                 sent = regeneration.value.request.post_data_json
-                                if sent['lookback_seconds'] != 2 or sent['min_displayed_shares'] != 100 or sent['min_trade_count'] != 3:
-                                    raise RuntimeError('Hindsight form did not submit its liquidity configuration')
-                                page.wait_for_function("() => document.querySelector('.hindsight-summary')?.textContent.includes('/share')", timeout=120_000)
+                                if sent['lookback_seconds'] != 2 or set(sent) != {'ticker', 'session_date', 'lookback_seconds'}:
+                                    raise RuntimeError('Hindsight form did not submit price-only label settings')
+                                page.wait_for_function("() => document.querySelector('.hindsight-summary')?.textContent.includes('shown')", timeout=120_000)
                                 status = page.locator('.hindsight-summary').first.inner_text()
-                        profit_toggle = page.get_by_role('checkbox', name=re.compile('Hide small profits'))
+                        direction = page.get_by_role('combobox', name='Hindsight direction', exact=True)
+                        if direction.input_value() != 'both':
+                            raise RuntimeError('Hindsight must show both label directions by default')
+                        direction.select_option('long')
+                        long_count = int(re.search(r'([\d,]+) shown', page.locator('.hindsight-summary').first.inner_text()).group(1).replace(',', ''))
+                        direction.select_option('short')
+                        short_count = int(re.search(r'([\d,]+) shown', page.locator('.hindsight-summary').first.inner_text()).group(1).replace(',', ''))
+                        direction.select_option('both')
+                        if long_count + short_count != int(re.search(r'([\d,]+) shown', status).group(1).replace(',', '')):
+                            raise RuntimeError('Hindsight direction counts do not reconcile')
+                        profit_toggle = page.get_by_role('checkbox', name=re.compile('Hide small moves'))
                         if profit_toggle.count():
                             if not profit_toggle.is_checked():
                                 raise RuntimeError('Small-profit filter is not enabled by default')

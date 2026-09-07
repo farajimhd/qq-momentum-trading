@@ -1,4 +1,4 @@
-"""Idealized, full-information long-only benchmark. Never an execution signal.
+"""Full-information price labels and legacy benchmarks. Never execution signals.
 
 Maximize additive net dollars for one share, with unlimited sequential round trips,
 observed ask/bid fills and proportional cost per side. The two-state dynamic
@@ -15,6 +15,69 @@ from array import array
 from collections import Counter, deque
 from datetime import datetime
 from types import SimpleNamespace
+
+
+class PriceMacdLabels:
+    """Price-only, direction-symmetric hindsight labels; no execution policy."""
+    def __init__(self):
+        self.times, self.prices = array('d'), array('d')
+        self.trades = 0
+        self.reasons = Counter()
+        self.last_time = float('-inf')
+
+    def observe_payload(self, row):
+        if row.get('kind') != 'trade':
+            raise ValueError('Price labels require the canonical trade-only stream')
+        t = datetime.fromisoformat(row['ts'].replace('Z', '+00:00')).timestamp()
+        if not isfinite(t) or t < self.last_time:
+            raise ValueError('Trades must have ordered finite source timestamps')
+        self.last_time = t
+        self.trades += 1
+        if self.trades > 10_000_000:
+            raise RuntimeError('Session exceeds the 10-million-trade research budget')
+        price = float(row.get('price') or 0)
+        reason = ('invalid_price' if not isfinite(price) or price <= 0 else
+                  'canonical_price_ineligible' if (row.get('raw') or {}).get('price_eligible') is False else None)
+        if reason:
+            self.reasons[reason] += 1
+            return
+        self.times.append(t)
+        self.prices.append(price)
+
+    def result(self, intervals, lookback_seconds=2):
+        positions, rejected = [], Counter()
+        for number, (start, end, direction) in enumerate(intervals, 1):
+            if direction not in ('long', 'short'):
+                raise ValueError('Unknown MACD direction')
+            first, last = bisect_left(self.times, start-lookback_seconds), bisect_right(self.times, start)
+            if first >= last:
+                rejected['no_entry_price'] += 1
+                continue
+            low, high = min, max
+            entry_select, exit_select = (low, high) if direction == 'long' else (high, low)
+            entry = entry_select(range(first, last), key=self.prices.__getitem__)
+            exit_first = max(bisect_left(self.times, start), bisect_right(self.times, self.times[entry]))
+            exit_last = bisect_left(self.times, end)
+            if exit_first >= exit_last:
+                rejected['no_exit_price'] += 1
+                continue
+            exit_index = exit_select(range(exit_first, exit_last), key=self.prices.__getitem__)
+            move = (self.prices[exit_index] - self.prices[entry]) * (1 if direction == 'long' else -1)
+            if move <= 0:
+                rejected['no_directional_move'] += 1
+                continue
+            positions.append(dict(position_number=number, direction=direction,
+                entry_time=self.times[entry], exit_time=self.times[exit_index],
+                entry_price=self.prices[entry], exit_price=self.prices[exit_index],
+                entry_swing='low' if direction == 'long' else 'high', exit_swing='high' if direction == 'long' else 'low',
+                gross_move_per_share=move, gross_return_bps=move/self.prices[entry]*10000,
+                macd_open=start, macd_close=end, label_available_at=end))
+        kept = [p for p in positions if p['gross_return_bps'] >= 500]
+        return dict(positions=positions, position_count=len(positions), interval_count=len(intervals),
+                    direction_counts=dict(Counter(p['direction'] for p in positions)),
+                    interval_rejections=dict(rejected), trades=self.trades, valid_prices=len(self.times),
+                    rejection_reasons=dict(self.reasons),
+                    display_filter=dict(cutoff_bps=500, retained_count=len(kept), removed_count=len(positions)-len(kept)))
 
 
 class LiquidMacdBenchmark:

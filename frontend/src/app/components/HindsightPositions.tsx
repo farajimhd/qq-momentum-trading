@@ -6,21 +6,16 @@ import { api } from "../../api/client";
 
 export type HindsightPosition = {
   entry_time: number; exit_time: number; entry_price: number; exit_price: number;
-  net_profit_per_share: number; net_return_bps: number;
+  direction: 'long' | 'short'; gross_move_per_share: number; gross_return_bps: number;
   position_number: number;
 };
-type Result = { positions: HindsightPosition[]; position_count: number; interval_count?: number; interval_rejections?: Record<string, number>; rejection_reasons?: Record<string, number>; eligible_quotes?: number; net_profit_per_share: number;
-  profit_filter?: { cutoff_bps: number; retained_count: number; removed_count: number; retained_profit_per_share: number } };
-type Job = { id: string; status: "queued" | "running" | "completed" | "failed"; stage?: string; quotes: number; error?: string; result?: Result };
+type Result = { positions: HindsightPosition[]; position_count: number; interval_count?: number; direction_counts?: Record<string, number>; interval_rejections?: Record<string, number>; rejection_reasons?: Record<string, number>; valid_prices?: number;
+  display_filter?: { cutoff_bps: number; retained_count: number; removed_count: number } };
+type Job = { id: string; status: "queued" | "running" | "completed" | "failed"; stage?: string; trades: number; error?: string; result?: Result };
 const EMPTY: HindsightPosition[] = [];
-const LIQUIDITY_DEFAULTS = { lookback_seconds: 2, max_spread_bps: 100, min_displayed_shares: 100, activity_window_seconds: 1, min_trade_count: 3, min_trade_volume: 100 };
-const LIQUIDITY_FIELDS = [
-  ['lookback_seconds', 'Buy lookback (seconds)', 0, 30, .1],
-  ['max_spread_bps', 'Maximum spread (bps)', 0, 500, 1],
-  ['min_displayed_shares', 'Minimum shares on each side', 1, 10000, 1],
-  ['activity_window_seconds', 'Trade activity window (seconds)', .1, 10, .1],
-  ['min_trade_count', 'Minimum trades in window', 1, 100, 1],
-  ['min_trade_volume', 'Minimum traded shares in window', 1, 10000, 1],
+const LABEL_DEFAULTS = { lookback_seconds: 2 };
+const LABEL_FIELDS = [
+  ['lookback_seconds', 'Swing lookback (seconds)', 0, 30, .1],
 ] as const;
 
 function HindsightDetails({ anchor, onClose, children }: { anchor: HTMLButtonElement; onClose: () => void; children: ReactNode }) {
@@ -61,17 +56,18 @@ function HindsightDetails({ anchor, onClose, children }: { anchor: HTMLButtonEle
 export function useHindsightPositions(ticker: string, sessionDate?: string) {
   const identity = `${ticker}:${sessionDate ?? ""}`;
   const [state, setState] = useState<{ identity: string; job?: Job; visible: boolean; error?: string }>({ identity, visible: false });
-  const [settings, setSettings] = useState(LIQUIDITY_DEFAULTS);
-  const [request, setRequest] = useState({ identity: "", nonce: 0, settings: LIQUIDITY_DEFAULTS });
+  const [settings, setSettings] = useState(LABEL_DEFAULTS);
+  const [request, setRequest] = useState({ identity: "", nonce: 0, settings: LABEL_DEFAULTS });
   const generation = useRef(0);
   const [hideSmallProfits, setHideSmallProfits] = useState(true);
+  const [direction, setDirection] = useState<'both' | 'long' | 'short'>('both');
   const [detailsAnchor, setDetailsAnchor] = useState<HTMLButtonElement | null>(null);
   const closeDetails = useCallback(() => setDetailsAnchor(null), []);
   const current = state.identity === identity ? state : { identity, visible: false };
   useEffect(() => {
     generation.current += 1;
     setState({ identity, visible: false });
-    setRequest({ identity: "", nonce: 0, settings: LIQUIDITY_DEFAULTS });
+    setRequest({ identity: "", nonce: 0, settings: LABEL_DEFAULTS });
     setDetailsAnchor(null);
   }, [identity]);
   useEffect(() => {
@@ -93,15 +89,15 @@ export function useHindsightPositions(ticker: string, sessionDate?: string) {
         setState({ identity, visible: false, error: error instanceof Error ? error.message : "Hindsight request failed" });
     };
     setState({ identity, visible: true });
-    void api<Job>("/api/research/hindsight", { method: "POST", body: JSON.stringify({ ticker, session_date: sessionDate, cost_bps: 5, ...request.settings }), signal: controller.signal, timeoutMs: 15_000 }).then(receive).catch(failed);
+    void api<Job>("/api/research/hindsight", { method: "POST", body: JSON.stringify({ ticker, session_date: sessionDate, ...request.settings }), signal: controller.signal, timeoutMs: 15_000 }).then(receive).catch(failed);
     return () => { controller.abort(); window.clearTimeout(timer); };
   }, [request, identity, ticker, sessionDate]);
   const busy = Boolean(request.identity === identity && !current.error && (!current.job || ["queued", "running"].includes(current.job.status)));
   const result = current.job?.result;
-  const filter = result?.profit_filter;
-  const displayedCount = hideSmallProfits && filter ? filter.retained_count : result?.position_count;
-  const displayedProfit = hideSmallProfits && filter ? filter.retained_profit_per_share : result?.net_profit_per_share;
-  const title = `Hindsight only · ${sessionDate} 04:00–20:00 New York · one share, long-only · completed-1s MACD > signal, including negative MACD. Buy the lowest liquid ask in the opening lookback; sell the highest liquid bid while open. Observed quotes only; size, spread and preceding trade activity gates apply. Costs: 5 bps per side. No latency or impact model; not a live signal or a global profit optimum.`;
+  const filter = result?.display_filter;
+  const selected = useMemo(() => result?.positions.filter((p) => (direction === 'both' || p.direction === direction) && (!hideSmallProfits || !filter || p.gross_return_bps >= filter.cutoff_bps)), [result, direction, hideSmallProfits, filter]);
+  const displayedCount = selected?.length ?? 0;
+  const title = `Hindsight price labels · ${sessionDate} 04:00–20:00 New York · completed-1s MACD > signal defines longs, MACD < signal defines shorts, regardless of zero. Long: lookback low to interval high. Short: lookback high to interval low. Canonical trade prices only; no liquidity, spread, costs or execution-policy gates. Both directions are retained for training; these are not executable profit estimates.`;
   const controls = sessionDate ? <div className="hindsight-controls">
     <button type="button" className="toolbar-button" aria-label="Hindsight positions" aria-pressed={current.visible} disabled={busy} title={title}
       onClick={() => result ? setState((value) => ({ ...value, visible: !value.visible })) : setRequest((n) => ({ identity, nonce: n.nonce + 1, settings }))}>
@@ -111,29 +107,29 @@ export function useHindsightPositions(ticker: string, sessionDate?: string) {
     <button type="button" className="toolbar-button" aria-label="Hindsight statistics and filter" aria-haspopup="dialog" aria-expanded={Boolean(detailsAnchor)} title="Hindsight statistics and filter" onClick={(event) => setDetailsAnchor(detailsAnchor ? null : event.currentTarget)}><SlidersHorizontal size={15} /></button>
     {detailsAnchor ? <HindsightDetails anchor={detailsAnchor} onClose={closeDetails}>
     <span className="hindsight-summary" role="status" title={current.error || title}>
-      {current.error ? `Failed: ${current.error} — click Hindsight to retry` : busy ? `${(current.job?.quotes ?? 0).toLocaleString()} quotes` : result ? `${(result.interval_count ?? 0).toLocaleString()} MACD intervals · ${result.position_count.toLocaleString()} valid positions · ${current.visible ? `${displayedCount?.toLocaleString()} shown · $${displayedProfit?.toFixed(3)}/share` : "overlay hidden"}` : "Click Hindsight to generate positions for this session."}
+      {current.error ? `Failed: ${current.error} — click Hindsight to retry` : busy ? `${(current.job?.trades ?? 0).toLocaleString()} trades` : result ? `${(result.interval_count ?? 0).toLocaleString()} MACD intervals · ${(result.direction_counts?.long ?? 0).toLocaleString()} long / ${(result.direction_counts?.short ?? 0).toLocaleString()} short labels · ${current.visible ? `${displayedCount.toLocaleString()} shown` : "overlay hidden"}` : "Click Hindsight to generate labels for this session."}
     </span>
     {filter && current.visible ? <label className="hindsight-summary" title={title}>
-      <input type="checkbox" checked={hideSmallProfits} onChange={(event) => setHideSmallProfits(event.target.checked)} /> Hide small profits
+      <input type="checkbox" checked={hideSmallProfits} onChange={(event) => setHideSmallProfits(event.target.checked)} /> Hide small moves
       {hideSmallProfits ? ` (<${filter.cutoff_bps.toFixed(1)} bps; ${filter.removed_count} hidden)` : ""}
     </label> : null}
-    <p className="chart-settings-help">Minimum net return: 5% (500 bps), or the session’s lower quartile if higher. Profits include 5 bps cost per side.</p>
-    {result ? <details className="chart-settings-help"><summary>Liquidity and rejected intervals</summary>
-      <p>{result.eligible_quotes?.toLocaleString()} eligible quote updates</p>
+    <label className="chart-setting-row">Show direction<select aria-label="Hindsight direction" value={direction} onChange={(event) => setDirection(event.target.value as typeof direction)}><option value="both">Both</option><option value="long">Long</option><option value="short">Short</option></select></label>
+    <p className="chart-settings-help">5% gross price-move filter for display only. All valid long and short labels remain in the result. Execution eligibility is separate.</p>
+    {result ? <details className="chart-settings-help"><summary>Price data and skipped intervals</summary>
+      <p>{result.valid_prices?.toLocaleString()} valid trade prices</p>
       {Object.entries(result.interval_rejections ?? {}).map(([reason, count]) => <div key={reason}>{reason.replaceAll('_', ' ')}: {count.toLocaleString()}</div>)}
-      {Object.entries(result.rejection_reasons ?? {}).map(([reason, count]) => <div key={reason}>Quotes — {reason.replaceAll('_', ' ')}: {count.toLocaleString()}</div>)}
+      {Object.entries(result.rejection_reasons ?? {}).map(([reason, count]) => <div key={reason}>Prices — {reason.replaceAll('_', ' ')}: {count.toLocaleString()}</div>)}
     </details> : null}
     <form className="chart-settings-section" onSubmit={(event) => { event.preventDefault(); setRequest((n) => ({ identity, nonce: n.nonce + 1, settings })); }}>
-      <h3>Liquidity and lookback</h3>
-      {LIQUIDITY_FIELDS.map(([key, label, min, max, step]) => <label className="chart-setting-row" key={key}>{label}
+      <h3>Swing labels</h3>
+      {LABEL_FIELDS.map(([key, label, min, max, step]) => <label className="chart-setting-row" key={key}>{label}
         <span className="chart-setting-inline"><input aria-label={label} type="range" min={min} max={max} step={step} value={settings[key]} onChange={(event) => setSettings((value) => ({ ...value, [key]: event.target.valueAsNumber }))} /><b>{settings[key].toLocaleString()}</b></span>
       </label>)}
       <button type="submit" className="toolbar-button hindsight-apply" disabled={busy}>Apply and regenerate</button>
-      <span className="chart-settings-help">Changes apply when regenerated. Quotes are never carried forward. Liquidity defaults are prototype filters, not guaranteed fills.</span>
+      <span className="chart-settings-help">Lookback changes apply when regenerated. Direction and move filters only change the chart. Labels are independent and can overlap.</span>
     </form>
     </HindsightDetails> : null}
   </div> : null;
-  const selected = useMemo(() => result && hideSmallProfits && filter ? result.positions.filter((p) => p.net_return_bps >= filter.cutoff_bps) : result?.positions, [result, hideSmallProfits, filter]);
   return { controls, positions: current.visible ? selected ?? EMPTY : EMPTY };
 }
 
@@ -145,6 +141,7 @@ export class HindsightPrimitive implements ISeriesPrimitive<Time> {
   private positions: HindsightPosition[] = EMPTY;
   private coordinate: (time: number) => number | null = () => null;
   private color = "";
+  private shortColor = "";
   private backing = "";
   private readonly view: IPrimitivePaneView = {
     zOrder: () => "top",
@@ -160,8 +157,9 @@ export class HindsightPrimitive implements ISeriesPrimitive<Time> {
           const x1 = this.coordinate(p.entry_time), x2 = this.coordinate(p.exit_time);
           const y1 = this.series!.priceToCoordinate(p.entry_price), y2 = this.series!.priceToCoordinate(p.exit_price);
           if (y1 === null || y2 === null || (x1 === null && x2 === null)) continue;
-          ctx.strokeStyle = this.color;
-          ctx.fillStyle = this.color;
+          const color = p.direction === 'short' ? this.shortColor : this.color;
+          ctx.strokeStyle = color;
+          ctx.fillStyle = color;
           ctx.setLineDash([5, 3]);
           if (x1 !== null && x2 !== null && x2 >= 0 && x1 <= mediaSize.width) {
             ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
@@ -169,15 +167,15 @@ export class HindsightPrimitive implements ISeriesPrimitive<Time> {
           ctx.setLineDash([]);
           for (const [x, y, entry] of [[x1, y1, true], [x2, y2, false]] as const) {
             if (x === null || x < 0 || x > mediaSize.width) continue;
-            const sign = entry ? 1 : -1;
+            const sign = (entry ? 1 : -1) * (p.direction === 'short' ? -1 : 1);
             ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 4, y + sign * 8); ctx.lineTo(x + 4, y + sign * 8); ctx.closePath(); ctx.fill();
             // Keep every marker, but avoid stacking hundreds of labels at low zoom.
             if (x - lastLabelX >= 65) {
-              const label = `${entry ? "Buy" : "Sell"} H${p.position_number ?? index + 1}`;
+              const label = `${p.direction === 'short' ? 'Short' : 'Long'} ${entry ? "entry" : "exit"} H${p.position_number ?? index + 1}`;
               const labelY = Math.max(14, Math.min(mediaSize.height - 5, y + sign * 22));
               ctx.fillStyle = this.backing;
               ctx.fillRect(x + 5, labelY - 12, ctx.measureText(label).width + 6, 15);
-              ctx.fillStyle = this.color; ctx.fillText(label, x + 8, labelY);
+              ctx.fillStyle = color; ctx.fillText(label, x + 8, labelY);
               lastLabelX = x;
             }
           }
@@ -195,6 +193,7 @@ export class HindsightPrimitive implements ISeriesPrimitive<Time> {
     this.positions = positions; this.coordinate = coordinate;
     const style = window.getComputedStyle(document.documentElement);
     this.color = style.getPropertyValue("--accent").trim();
+    this.shortColor = style.getPropertyValue("--warning").trim();
     this.backing = style.getPropertyValue("--card").trim();
     this.update?.();
   }
