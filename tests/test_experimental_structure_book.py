@@ -112,7 +112,7 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
         run._record_data_authority=Mock()
         instances=[]
         class Cursor:
-            def __init__(self,*args): self.calls=[];instances.append(self)
+            def __init__(self,*args): self.calls=[];self.build={'version':E.VERSION};instances.append(self)
             def snapshot(self,at,sequence=None): self.calls.append((at,sequence));return {'unified_levels':[]}
         at=datetime(2026,8,21,9,30,tzinfo=E.NY)
         with patch.object(E,'NormalizedBookCursor',Cursor):

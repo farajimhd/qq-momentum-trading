@@ -26,20 +26,20 @@ NY = ZoneInfo('America/New_York')
 
 def builds():
     result = []
-    for path in sorted(ROOT.glob('*/report.json')):
+    for path in sorted([*ROOT.glob('*/report.json'), *ROOT.glob('*/*/report.json')]):
         validation = path.with_name('validation.json')
         if not validation.is_file():
             continue
         report = json.loads(path.read_text())
         proof = json.loads(validation.read_text())
-        if report.get('version') != VERSION or proof.get('status') != 'passed':
+        if report.get('version') not in (VERSION, 'causal-swing-closing-book-1') or proof.get('status') != 'passed':
             continue
         if report.get('status') != 'built_pending_quality_acceptance':
             continue
         if proof.get('database') != report.get('database'):
             continue
         result.append({'id': report['database'], 'ticker': report['ticker'],
-            'version': VERSION, 'start': report['requested_start'],
+            'version': report['version'], 'start': report['requested_start'],
             'end': report['actual_end'], 'fingerprint': report['fingerprint'],
             'runtime': str(path.parent)})
     return result
@@ -142,6 +142,12 @@ def transition(state, eligible, price, volatility, lower, upper, tick, known_us)
 
 
 class BookCursor:
+    def __new__(cls, build_id, ticker, fingerprint=None):
+        if resolve(build_id).get('version', VERSION) == 'causal-swing-closing-book-1':
+            from .swing_book_cursor import SwingBookCursor
+            return SwingBookCursor(build_id,ticker,fingerprint,normalized=cls.__name__=='NormalizedBookCursor')
+        return super().__new__(cls)
+
     def __init__(self, build_id, ticker, fingerprint=None):
         self.build = resolve(build_id)
         if fingerprint is not None and fingerprint != self.build['fingerprint']:

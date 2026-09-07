@@ -3507,7 +3507,7 @@ class ReplayRunController:
             cursors[key] = BookCursor(self.definition.experimental_structure_book, ticker,
                                      self.definition.experimental_structure_fingerprint)
             self._record_data_authority('experimental_structure_book', {
-                'authority': 'clickhouse-closing-book-1',
+                'authority': cursors[key].build['version'],
                 'database': self.definition.experimental_structure_book,
                 'fingerprint': self.definition.experimental_structure_fingerprint,
                 'continuation': 'completed-second causal observations; independent frame/event cursors',

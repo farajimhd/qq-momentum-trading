@@ -918,13 +918,14 @@ function pushUnifiedStructureLevels(
   let latestRank = 0;
   segments.forEach(({ end, latest, level, start }) => {
     if (!Number.isFinite(start) || !(start > 0) || !(chartEnd > start)) return;
-    if (level.book_version === "clickhouse-closing-book-1") {
+    if (["clickhouse-closing-book-1", "causal-swing-closing-book-1"].includes(String(level.book_version))) {
       const support = level.side > 0;
+      const bookLabel = level.book_version === "causal-swing-closing-book-1" ? "Swing level book" : "Experimental ClickHouse level book";
       zones.push({ annotationKind: "unified-structure-level", axisLabelDefault: latest && latestRank++ < 4,
         color: support ? "var(--success)" : "var(--danger)",
         compactLabel: `${support ? "S" : "R"} · P${Number(level.prominence ?? 0).toFixed(2)}`,
-        label: `${support ? "Support" : "Resistance"} · ${level.lifecycle.replaceAll("_", " ")} · reaction prominence ${Number(level.prominence ?? 0).toFixed(2)} · Experimental ClickHouse`,
-        legendLabel: "Experimental ClickHouse level book", displayItemId: "indicator.qmd_unified_structure",
+        label: `${support ? "Support" : "Resistance"} · ${level.lifecycle.replaceAll("_", " ")} · prominence ${Number(level.prominence ?? 0).toFixed(2)} · ${bookLabel}`,
+        legendLabel: bookLabel, displayItemId: "indicator.qmd_unified_structure",
         settingsId: level.load_contract ? "indicator.qmd_unified_structure.merged-pnorm-v1" : "indicator.qmd_unified_structure.clickhouse-v1", defaultVisible: true,
         prominence: level.prominence, p_norm: level.p_norm, loadContract: level.load_contract, levelPrice: level.price,
         start, end, latest, extendToRightEdge: latest, lower: level.lower, upper: level.upper,
@@ -1085,7 +1086,7 @@ function isQmdUnifiedStructureLevel(value: unknown): value is QmdUnifiedStructur
     && (Number(row.side) === 1 || Number(row.side) === -1)
     && Number(row.lower) > 0
     && Number(row.upper) >= Number(row.lower)
-    && (row.book_version === "clickhouse-closing-book-1" ? Number.isFinite(row.prominence) : Number.isFinite(Number(row.hold_probability)))
+    && (["clickhouse-closing-book-1", "causal-swing-closing-book-1"].includes(String(row.book_version)) ? Number.isFinite(row.prominence) : Number.isFinite(Number(row.hold_probability)))
     && Array.isArray(row.timeframes)
     && Array.isArray(row.sources);
 }

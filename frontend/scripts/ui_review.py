@@ -2616,6 +2616,10 @@ def capture(args: argparse.Namespace) -> int:
                         page.wait_for_timeout(250)
                         if baseline != pane.screenshot():
                             hindsight_issue = 'Hindsight toggle changed the chart viewport or underlying rendering'
+                    if args.swing_book_selector and scenario['page']=='backtest-trading':
+                        page.get_by_role('button',name='Level book',exact=True).click()
+                        for ticker in ('JUNS','SUGP'):
+                            page.get_by_role('option',name=re.compile(r'^Swing book · '+ticker+r' · ')).wait_for(state='visible',timeout=args.timeout_ms)
                     page.screenshot(path=str(screenshot_path), full_page=True)
                     issues: list[str] = []
                     if hindsight_issue:
@@ -2752,6 +2756,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--stub-chart-history", action="store_true", help="use deterministic chart history for frontend-only renderer and interaction QA")
     result.add_argument("--hindsight-positions", action="store_true", help="generate real hindsight positions, capture the overlay and verify reversible keyboard toggling")
     result.add_argument('--swing-structure-fixture', action='store_true', help='validate swing controls with synthetic segments; never calculate real levels')
+    result.add_argument('--swing-book-selector',action='store_true',help='verify published JUNS/SUGP swing books in the Backtest selector; never launch a run')
     result.add_argument("--canvas-charts-quotes", action="store_true", help="seed the Charts & Quotes container in Canvas focus review")
     result.add_argument("--canvas-position-manager", action="store_true", help="seed the Position Manager container in Canvas focus review")
     result.add_argument("--stub-split-events", action="store_true", help="use a deterministic stock-split event for daily chart QA")

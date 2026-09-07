@@ -2880,7 +2880,7 @@ function LegendEditor({
       {item.itemKind === "zone" && item.supportsPNormFilter ? (
         <fieldset className="legend-unified-filters"><legend>Normalized prominence</legend>
           <label className="legend-filter-control">
-            <span className="legend-filter-control-copy"><span>Minimum p_norm</span><small>Display only. Set the strategy threshold in the Backtest launch form.</small></span>
+            <span className="legend-filter-control-copy"><span>Minimum p_norm</span><small>Display only. Zero also shows levels without a prior-session normalization score.</small></span>
             <span className="legend-range-control"><input aria-label="Minimum p_norm" type="range" min={0} max={1} step={0.01}
               value={item.minimumPNorm ?? 0.5} onChange={(event) => onUpdate({ minimumPNorm: Number(event.target.value) })} />
               <output>{(item.minimumPNorm ?? 0.5).toFixed(2)}</output></span>
@@ -5262,7 +5262,7 @@ function priceZoneMeetsUnifiedFilters(zone: PriceZone, settings: ResolvedPriceZo
   const stateVisible = zone.latest ? settings.showUnifiedActive : settings.showUnifiedBroken;
   const flipVisible = !(Number(zone.roleFlipCount) > 0) || settings.showUnifiedRoleFlipped;
   if (zone.loadContract) return roleVisible && stateVisible && flipVisible
-    && Number.isFinite(zone.p_norm) && Number(zone.p_norm) >= settings.minimumPNorm;
+    && (settings.minimumPNorm <= 0 || (Number.isFinite(zone.p_norm) && Number(zone.p_norm) >= settings.minimumPNorm));
   if (Number.isFinite(zone.prominence)) return roleVisible && stateVisible && flipVisible
     && Number(zone.prominence) >= settings.minimumProminence;
   return roleVisible && stateVisible && flipVisible
