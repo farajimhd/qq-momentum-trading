@@ -156,6 +156,10 @@ class SwingStructure:
             self.stalls[side] = candidate
         self.approach.append((t,close,high,low))
 
+    def _expired(self, level, t):
+        ttl = self.settings.local_lifetime_seconds if level['scale']=='local' else self.settings.major_lifetime_seconds
+        return t-level['last_test'] >= ttl
+
     def observe(self, t, high, low, close):
         if not all(isfinite(x) for x in (t, high, low, close)) or low <= 0 or not low <= close <= high or t <= self.last_time:
             raise ValueError('Require ordered distinct completed bars with valid positive OHLC')
@@ -165,8 +169,7 @@ class SwingStructure:
         # Robust prior-only volatility is capped before freezing each extreme.
         volatility = median(self.ranges) if self.ranges else 0.
         for key, level in list(self.active.items()):
-            ttl = self.settings.local_lifetime_seconds if level['scale'] == 'local' else self.settings.major_lifetime_seconds
-            if t-level['last_test'] >= ttl:
+            if self._expired(level, t):
                 self._publish(level, t, 'expired')
                 del self.active[key]
                 continue

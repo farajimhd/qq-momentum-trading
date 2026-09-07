@@ -1,6 +1,6 @@
 # Swing closing-book validation
 
-`causal-swing-closing-book-1` reuses the accepted `causal-session-swing-v4`
+`causal-swing-closing-book-2` reuses the accepted `causal-session-swing-v4`
 detector. It is an opt-in Backtest book, not a Live promotion or a replacement
 for retained v18/legacy ClickHouse builds.
 
@@ -27,10 +27,18 @@ after aggregation and against the revision used by the closing build.
 ## State and storage
 
 Each session resets transient pivot/stall/volatility candidates, while carrying
-the prior closing levels and unique-ID sequence. The existing local/major
-lifetimes remain 1,800/7,200 seconds; overnight and non-trading-day gaps pause
-the expiry clock. Inactive, pending, or expired levels are not closing survivors.
-Expiry at 20:00 is checked even if the final trade occurred earlier.
+the prior closing levels and unique-ID sequence. Major levels no longer expire
+from elapsed time alone. Local levels retain their 1,800-second session-time
+lifetime. Version 1 retains its original 7,200-second major lifetime so existing
+backtests reproduce their pinned contract.
+
+Confirmed breaks remove a major level from the active strategy/chart output.
+If it survived an earlier close, its compact dormant state remains persisted
+for a subsequent failed-break recovery or confirmed retest/role reversal.
+New levels broken before their first close are not persisted. Repeated nearby
+same-role pivots reinforce the existing anchor; overlap merging remains at load
+time. Retention alone does not guarantee a sparse book: measure the active,
+merged population and score distribution before adding a retirement rule.
 
 Only major levels are published to the strategy/chart. Compact surviving local
 levels are also stored because they affect subsequent detector state. There
@@ -67,7 +75,7 @@ for this new book. Same-role overlapping merges and frozen prior-session
 min/max normalization remain at load time. An empty prior major book yields
 `p_norm=null`; it does not invent a cross-sectional score.
 
-For geometry validation, select **Backtest → Level book → Swing book** for the
+For geometry validation, select **Backtest → Level book → Swing book v2** for the
 ticker and set the structural indicator's **Minimum p_norm** to **0**. Zero
 disables the display threshold, including for unscored levels. This does not
 relax strategy gates. Do not enable the session-only Swing structure overlay

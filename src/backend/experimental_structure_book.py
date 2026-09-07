@@ -32,7 +32,7 @@ def builds():
             continue
         report = json.loads(path.read_text())
         proof = json.loads(validation.read_text())
-        if report.get('version') not in (VERSION, 'causal-swing-closing-book-1') or proof.get('status') != 'passed':
+        if report.get('version') not in (VERSION, 'causal-swing-closing-book-1', 'causal-swing-closing-book-2') or proof.get('status') != 'passed':
             continue
         if report.get('status') != 'built_pending_quality_acceptance':
             continue
@@ -143,7 +143,7 @@ def transition(state, eligible, price, volatility, lower, upper, tick, known_us)
 
 class BookCursor:
     def __new__(cls, build_id, ticker, fingerprint=None):
-        if resolve(build_id).get('version', VERSION) == 'causal-swing-closing-book-1':
+        if resolve(build_id).get('version', VERSION) in ('causal-swing-closing-book-1', 'causal-swing-closing-book-2'):
             from .swing_book_cursor import SwingBookCursor
             return SwingBookCursor(build_id,ticker,fingerprint,normalized=cls.__name__=='NormalizedBookCursor')
         return super().__new__(cls)

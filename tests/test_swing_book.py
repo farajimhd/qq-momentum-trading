@@ -4,14 +4,14 @@ from unittest.mock import patch
 
 import pytest
 
-from src.market_engine.swing_book import SwingBook, VERSION
+from src.market_engine.swing_book import SwingBook, VERSION, LEGACY_VERSION
 from src.market_engine.swing_structure import SwingStructure
 from src.backend.swing_book_source import bar_sql, session_bounds, source_metadata
 from src.backend.swing_book_cursor import SwingBookCursor, SwingChartTimeline
 
 
-def seed():
-    engine = SwingBook()
+def seed(version=VERSION):
+    engine = SwingBook(version=version)
     engine._found({'scale':'major'},(10.,1.,.3),'resistance',2.)
     return engine.closing_state(10.)
 
@@ -27,14 +27,14 @@ def test_compact_kernel_matches_accepted_unseeded_detector():
 
 
 def test_overnight_pause_preserves_remaining_lifetime_not_a_fresh_lifetime():
-    original = seed()
-    e = SwingBook(original,100000.)
+    original = seed(LEGACY_VERSION)
+    e = SwingBook(original,100000.,version=LEGACY_VERSION)
     assert e.active[1]['last_test']==99992.
     e.observe(100001.,9.,9.,9.)
     assert 1 in e.active
     e.observe(107192.,9.,9.,9.)
     assert 1 not in e.active
-    assert original==seed()
+    assert original==seed(LEGACY_VERSION)
 
 
 def test_split_versions_preserve_prior_prices_and_evidence_times():
@@ -50,11 +50,47 @@ def test_split_versions_preserve_prior_prices_and_evidence_times():
 def test_closing_only_survivors_and_no_visual_evidence():
     e = SwingBook(seed(),100.)
     e.active[1]['state']='awaiting_retest'
-    assert e.closing_state(101.)['levels']==[]
+    assert e.snapshot()['unified_levels']==[]
+    assert len(e.closing_state(101.)['levels'])==1
     e.active[1]['state']='active'
-    assert e.closing_state(8000.)['levels']==[]
+    assert len(e.closing_state(8000.)['levels'])==1
     with pytest.raises(ValueError):
         SwingBook(seed(),0.)
+
+
+def test_major_survives_months_but_local_expiry_remains():
+    e=SwingBook(seed(),100.)
+    e._found({'scale':'local'},(8.,101.,.1),'support',102.)
+    e.observe(180*86400.,9.,9.,9.)
+    assert 1 in e.active
+    assert all(l['scale']=='major' for l in e.active.values())
+    assert e.snapshot()['unified_levels'][0]['price']==10.
+
+
+def test_break_hides_anchor_then_next_session_retest_flips_same_id():
+    e=SwingBook(seed(),100.)
+    e.observe(101.,11.,11.,11.)
+    e.observe(102.,11.,11.,11.)
+    assert e.snapshot()['unified_levels']==[]
+    closed=e.closing_state(103.)
+    restored=SwingBook(closed,1000.)
+    assert restored.snapshot()['unified_levels']==[]
+    restored.observe(1001.,10.01,9.99,10.)
+    assert restored.snapshot()['unified_levels']==[]
+    restored.observe(1002.,10.5,10.5,10.5)
+    level=next(r for r in restored.snapshot()['unified_levels'] if r['unified_level_id']=='1')
+    assert level['side']==1 and level['confirmed_at_ms']==1002000
+    assert closed['levels'][0]['side']=='resistance'
+
+
+def test_transient_broken_major_is_not_persisted_and_repeated_pivot_reinforces():
+    e=SwingBook()
+    e._found({'scale':'major'},(10.,1.,.3),'resistance',2.)
+    e._found({'scale':'major'},(10.,3.,.3),'resistance',4.)
+    assert len(e.active)==1
+    e.observe(5.,11.,11.,11.)
+    e.observe(6.,11.,11.,11.)
+    assert e.closing_state(7.)['levels']==[]
 
 
 def test_no_same_bar_confirmation_and_new_ids_follow_carry():

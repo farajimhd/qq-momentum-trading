@@ -28,7 +28,7 @@ def inputs(build_id, ticker, session, fingerprint):
     if markers:
         marker = markers[0]
         source = rows(f"SELECT state_json FROM {build_id}.book FINAL WHERE valid_from_us={int(marker['closed_at']*1000000)} ORDER BY level_id")
-        seed = dict(version=VERSION,closed_at=float(marker['closed_at']),sequence=int(marker['sequence']),
+        seed = dict(version=build['version'],closed_at=float(marker['closed_at']),sequence=int(marker['sequence']),
                     levels=[json.loads(r['state_json']) for r in source])
         from hashlib import sha256
         digest = sha256(json.dumps(seed,sort_keys=True,separators=(',',':')).encode()).hexdigest()
@@ -65,7 +65,7 @@ class SwingBookCursor:
             if session!=self.session or stamp<self.at:
                 seed, close, self.factor, self.bars = inputs(self.build['id'],self.ticker,session,self.build['fingerprint'])
                 opening, _ = session_bounds(session)
-                self.engine = SwingBook(seed,opening.timestamp(),self.factor)
+                self.engine = SwingBook(seed,opening.timestamp(),self.factor,version=self.build['version'])
                 self.index, self.session = 0, session
                 self.basis = calibration(self.engine.snapshot()['unified_levels'],close*self.factor) if close and close>0 else None
                 if self.basis is not None:
