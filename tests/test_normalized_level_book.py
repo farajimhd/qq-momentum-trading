@@ -69,13 +69,18 @@ class ProximityMergeTests(unittest.TestCase):
         self.assertEqual(len(merge_levels([level('a',1,1,1,1),level('b',1.01,1.01,1.01,1)])),2)
     def test_price_scale_invariance(self):
         for scale in (.01,1,100):
-            self.assertEqual(len(merge_levels([level('a',6.5*scale,6.54*scale,6.52*scale,2),level('b',6.55*scale,6.6*scale,6.58*scale,4)])),1)
+            self.assertEqual(len(merge_levels([level('a',6.5*scale,6.54*scale,6.52*scale,2),level('b',6.55*scale,6.6*scale,6.58*scale,4)])),2)
 
-    def test_new_sessions_use_20_bps_and_old_reviews_keep_35(self):
+    def test_new_sessions_only_overlap_and_old_reviews_keep_proximity(self):
         rows=[level('a',6.50,6.54,6.52,2),level('b',6.56,6.60,6.58,4)]
         current=transform(rows,calibration(rows,6.5))
         prior=transform(rows,calibration(rows,6.5,contract='merged-point-minmax-v2'))
         self.assertEqual(len(current['unified_levels']),2)
-        self.assertEqual(current['normalization']['merge_gap_bps'],20)
+        self.assertEqual(current['normalization']['merge_gap_bps'],0)
         self.assertEqual(len(prior['unified_levels']),1)
         self.assertEqual(prior['unified_levels'][0]['merge_gap_bps'],35)
+        nearby=[level('a',6.50,6.54,6.52,2),level('b',6.55,6.60,6.58,4)]
+        self.assertEqual(len(transform(nearby,calibration(nearby,6.5))['unified_levels']),2)
+        old=transform(nearby,calibration(nearby,6.5,contract='merged-point-minmax-v3'))
+        self.assertEqual(len(old['unified_levels']),1)
+        self.assertEqual(old['normalization']['merge_gap_bps'],20)
