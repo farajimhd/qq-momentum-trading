@@ -8,9 +8,10 @@ type Segment = { level_id: number; price: number; lower: number; upper: number; 
   scale: 'local' | 'major'; valid_from: number; valid_to: number | null; state: string };
 type Result = { segments: Segment[]; session_end: number; counts: Record<string, number>; active_levels: number;
   timing: { total_seconds: number; compute_seconds: number } };
-const defaults = { reversal_bps: 50, volatility_multiple: 2, major_multiple: 3 };
+const defaults = { reversal_bps: 50, volatility_multiple: 2, major_multiple: 3, volatility_cap_multiple: 2 };
 const fields = [['reversal_bps', 'Minimum reversal (bps)', 10, 500, 10],
-  ['volatility_multiple', 'Volatility multiple', .5, 6, .5], ['major_multiple', 'Major swing multiple', 1, 6, .5]] as const;
+  ['volatility_multiple', 'Volatility multiple', .5, 6, .5], ['major_multiple', 'Major swing multiple', 1, 6, .5],
+  ['volatility_cap_multiple', 'Volatility cap (× floor)', 1, 4, .5]] as const;
 const EMPTY: Segment[] = [];
 
 export function useSwingStructure(ticker: string, sessionDate?: string) {
@@ -45,7 +46,7 @@ export function useSwingStructure(ticker: string, sessionDate?: string) {
       </button>
       <button type="button" className="toolbar-button" aria-label="Swing structure settings" aria-haspopup="dialog" aria-expanded={Boolean(anchor)} onClick={e => setAnchor(anchor ? null : e.currentTarget)}><SlidersHorizontal size={15} /></button>
       {anchor ? <HindsightDetails anchor={anchor} onClose={close} title="Swing structure prototype">
-        <p className="chart-settings-help">Session only. Levels start after reversal confirmation. Dashed lines await breakout/retest confirmation. No prior-session levels; strategy unchanged.</p>
+        <p className="chart-settings-help">Session only. Levels start only after confirmation. Dashed lines await breakout/retest confirmation. No prior-session levels; strategy unchanged.</p>
         <div className="hindsight-summary" role="status">{current.error || (current.busy ? 'Reading canonical one-second bars…' : current.result ?
           `${current.result.counts.confirmed_major ?? 0} major / ${current.result.counts.confirmed_local ?? 0} local levels · ${current.result.counts.expired ?? 0} retired · ${current.result.timing.total_seconds.toFixed(2)}s total (${current.result.timing.compute_seconds.toFixed(3)}s calculation)` : 'Generate a preview to inspect this session.')}</div>
         <label className="chart-setting-row">Show local swings<input type="checkbox" checked={showLocal} onChange={e => setShowLocal(e.target.checked)} /></label>
@@ -53,7 +54,7 @@ export function useSwingStructure(ticker: string, sessionDate?: string) {
           <label className="chart-setting-row" key={label}>{label}<span className="chart-setting-inline"><input aria-label={label} type="range" min={0} max={100} value={value} onChange={e => setter(e.target.valueAsNumber)} /><b>{value}%</b></span></label>)}
         <form className="chart-settings-section" onSubmit={e => { e.preventDefault(); generate(); }}>
           {fields.map(([key, label, min, max, step]) => <label className="chart-setting-row" key={key}>{label}<span className="chart-setting-inline"><input type="range" aria-label={label} min={min} max={max} step={step} value={settings[key]} onChange={e => setSettings(s => ({ ...s, [key]: e.target.valueAsNumber }))} /><b>{settings[key]}</b></span></label>)}
-          <p className="chart-settings-help">Local reversal = the larger of the bps floor, 2 ticks, and volatility × multiple. Major swings multiply that distance. Volatility is the median true range of the preceding 30 observed seconds; thresholds adapt as new bars close. Untested local levels expire after 30 minutes, major after 2 hours.</p>
+          <p className="chart-settings-help">Reversal distance freezes at each new extreme. Prior median volatility is capped relative to the larger of the bps floor and 2 ticks; major swings multiply that distance. Confirmation requires price to move away. Repeated boundary tests can also confirm a major level: 3 tests within 15 seconds after an approach, without breaking through. Untested local levels expire after 30 minutes, major after 2 hours.</p>
           <button className="toolbar-button hindsight-apply" type="submit" disabled={current.busy}>Apply and preview</button>
         </form>
       </HindsightDetails> : null}

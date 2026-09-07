@@ -2507,7 +2507,7 @@ def capture(args: argparse.Namespace) -> int:
                         dialog = page.get_by_role('dialog', name='Swing structure prototype', exact=True)
                         dialog.get_by_text('2 major / 1 local levels', exact=False).wait_for(timeout=15000)
                         dialog.get_by_role('checkbox', name='Show local swings').check()
-                        for label in ['Price opacity','Band opacity','Minimum reversal (bps)','Volatility multiple','Major swing multiple']:
+                        for label in ['Price opacity','Band opacity','Minimum reversal (bps)','Volatility multiple','Major swing multiple','Volatility cap (× floor)']:
                             slider = dialog.get_by_role('slider',name=label,exact=True)
                             box = slider.bounding_box()
                             parent = dialog.bounding_box()

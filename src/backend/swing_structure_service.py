@@ -23,6 +23,7 @@ class SwingRequest(BaseModel):
     reversal_bps: float = Field(default=50, ge=10, le=500, allow_inf_nan=False)
     volatility_multiple: float = Field(default=2, ge=.5, le=6, allow_inf_nan=False)
     major_multiple: float = Field(default=3, ge=1, le=6, allow_inf_nan=False)
+    volatility_cap_multiple: float = Field(default=2, ge=1, le=4, allow_inf_nan=False)
 
 
 def calculate(request):
@@ -52,7 +53,8 @@ def calculate(request):
         return left.timestamp(), right.timestamp(), rows
 
     engine = SwingStructure(SwingSettings(reversal_bps=request.reversal_bps,
-        volatility_multiple=request.volatility_multiple, major_multiple=request.major_multiple))
+        volatility_multiple=request.volatility_multiple, major_multiple=request.major_multiple,
+        volatility_cap_multiple=request.volatility_cap_multiple))
     compute_seconds = 0.
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix='swing-preview-bars') as readers:
         for left, right, rows in readers.map(read, range(4)):

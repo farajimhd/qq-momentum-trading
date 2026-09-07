@@ -99,8 +99,54 @@ class SwingTests(unittest.TestCase):
             e.observe(t,hi,lo,cl)
         for t in range(5,16): e.observe(t,11.82,11.8,11.81)
         found = [s for s in e.segments if s['scale']=='major' and s['side']=='resistance' and s['price']==12.1]
-        self.assertTrue(found)
-        self.assertLessEqual(found[0]['confirmed_at'],15)
+        self.assertEqual(found, [])  # Lower volatility alone cannot confirm.
+        self.assertAlmostEqual(e.detectors[1]['high'][2], .363)
+        e.observe(16,11.7,11.7,11.7)
+        found = [s for s in e.segments if s['scale']=='major' and s['side']=='resistance' and s['price']==12.1]
+        self.assertEqual(found[0]['confirmed_at'],16)
+
+    def test_no_confirmation_on_flat_or_recovering_close(self):
+        e = SwingStructure()
+        for t,p in enumerate([10,10.2,10.4],1): e.observe(t,p,p,p)
+        threshold = e.detectors[1]['high'][2]
+        for t in range(4,40): e.observe(t,10.35,10.35,10.35)
+        self.assertEqual(e.detectors[1]['high'][2],threshold)
+        self.assertFalse(any(s['price']==10.4 and s['reason']=='reversal_confirmed' for s in e.segments))
+
+    def test_stalled_boundary_without_reversal_and_support_symmetry(self):
+        for sign in (1,-1):
+            e = SwingStructure()
+            transform = lambda p: 10+sign*(p-10)
+            e.observe(1,10,10,10)
+            for t in range(2,5):
+                p=transform(10.3); c=transform(10.295)
+                e.observe(t,max(p,c),min(p,c),c)
+            found=[s for s in e.segments if s['reason']=='boundary_tests_confirmed']
+            self.assertEqual(len(found),1)
+            self.assertEqual(found[0]['side'],'resistance' if sign==1 else 'support')
+            self.assertEqual(found[0]['confirmed_at'],4)
+            self.assertIsNone(found[0]['reversal_distance'])
+
+    def test_crossing_invalidates_stall_candidate(self):
+        e=SwingStructure()
+        for t,p in [(1,10),(2,10.3),(3,10.3),(4,10.5),(5,10.3)]: e.observe(t,p,p,p)
+        self.assertFalse(any(s['price']==10.3 and s['reason']=='boundary_tests_confirmed' for s in e.segments))
+
+    def test_sparse_tests_do_not_accumulate_across_long_gap(self):
+        e=SwingStructure()
+        for t,p in [(1,10),(2,10.3),(3,10.3),(30,10.3)]: e.observe(t,p,p,p)
+        self.assertFalse(any(s['reason']=='boundary_tests_confirmed' for s in e.segments))
+
+    def test_juns_three_failed_high_tests(self):
+        e=SwingStructure()
+        # Canonical JUNS 2026-08-21 07:13:48–58 ET, expressed as elapsed seconds.
+        rows=[(6.02,5.79,6.02),(6.08,6.05,6.05),(6.08,6.05,6.077),
+              (6.2,6.08,6.1999),(6.5,6.186,6.5),(6.57,6.39,6.4997),
+              (6.49,6.4,6.472),(6.7,6.49,6.6),(6.88,6.6,6.6),
+              (6.85,6.62,6.67),(6.8497,6.62,6.62)]
+        for t,(hi,lo,cl) in enumerate(rows,48): e.observe(t,hi,lo,cl)
+        found=[s for s in e.segments if s['price']==6.88 and s['scale']=='major']
+        self.assertEqual((found[0]['confirmed_at'],found[0]['reason']),(58,'boundary_tests_confirmed'))
 
     def test_repeated_contacts_do_not_duplicate_chart_segments(self):
         e = self.engine()

@@ -1,6 +1,6 @@
 # Session swing structure preview
 
-`causal-session-swing-v2` is an opt-in chart prototype. It neither replaces the
+`causal-session-swing-v3` is an opt-in chart prototype. It neither replaces the
 existing historical book nor changes strategy decisions. No historical campaign
 or persisted book is created. Click **Swing structure** in a historical chart;
 the adjacent settings button exposes scale/reversal and opacity sliders.
@@ -9,16 +9,20 @@ the adjacent settings button exposes scale/reversal and opacity sliders.
 
 The shared Python kernel consumes ordered completed one-second OHLC bars. It
 tracks directional-change extrema independently at local and major scales.
-Local reversal distance is `max(2 ticks, price * 50 bps, 2 * prior volatility)`.
+Let `floor = max(2 ticks, extreme price * 50 bps)`. Local reversal distance is
+`max(floor, min(2 * prior volatility, 2 * floor))`.
 Volatility is median true range of the previous 30 observed bars. Major distance
 is three times local distance. These are provisional configurable defaults,
 not thresholds fitted to JUNS or SUGP.
 
-Reversal distance adapts at each completed bar using prior-only volatility and
-the candidate extreme's price. It is not frozen at an opening volatility spike.
+Reversal distance freezes at the candidate extreme, using prior-only robust
+volatility capped at twice the floor (configurable). The cap prevents opening
+spikes from locking confirmation behind an excessive distance. Falling volatility
+cannot lower an existing candidate's threshold and cause a confirmation.
 A higher high or lower low
 replaces the candidate. Confirmation requires a subsequent bar closing beyond
-the reversal distance. A bar cannot confirm its own extreme, because OHLC does
+the reversal distance AND moving away from the extreme versus the previous close.
+A flat or recovering close cannot confirm a reversal. A bar cannot confirm its own extreme, because OHLC does
 not provide high/low ordering. `pivot_at` is the extreme bar's end, not an exact
 trade timestamp; `confirmed_at` and `valid_from` are the causal availability.
 The chart starts lines at confirmation, never at the earlier pivot.
@@ -27,6 +31,27 @@ Levels use the observed extreme as price, with half-width `max(tick, 2 bps)`.
 A nearby same-role, same-scale active pivot reinforces the anchored level;
 it does not average prices or union connected bands. Opposite roles and scales
 remain separate. Major swings are displayed by default; local swings are optional.
+
+## Failed boundary tests
+
+A second, symmetric detector identifies ceilings/floors tested without a large
+reversal. It keeps one pending candidate per side and a 30-second approach window.
+A candidate must be near that window's outer high/low and must have approached
+from the inside by at least the major-scale bps/tick floor. This prevents quiet
+flat trading or arbitrary internal prices from creating a new structural level.
+
+Three completed-bar tests within 15 seconds, spanning at least two seconds,
+confirm the boundary. Tests must stay within `max(3 ticks, 10 bps)` of the fixed
+anchor; a close beyond it by more than one tick invalidates the candidate.
+A new extreme beyond the tolerance starts a new candidate instead of widening
+the old one. The normal narrow band remains anchored at the first boundary test.
+Confirmed boundary levels are major and share the existing role/expiry lifecycle.
+Same-role/same-scale matches reinforce the existing level, not a parallel copy.
+
+The visual segment records `confirmation_kind` and frozen `reversal_distance`
+(null for boundary-test confirmation), so diagnostics distinguish the mechanisms.
+This detector uses no future bars or MACD labels. Its 30-second deque and two
+pending candidates keep its memory and per-bar work bounded.
 
 An active level breaks after two completed closes beyond its far bound plus
 one tick. Its original role remains pending. A later bar must touch the band,
@@ -84,3 +109,10 @@ The default 20,000 guard correctly rejected it. V2 retains that guard and produc
 13,961 visual segments in a memory-only preview. SUGP produced 5,993 segments;
 its $3.20 major support confirmed at 04:00:48 ET instead of 04:10:34. These are
 diagnostic session checks, not a historical campaign or trading-quality acceptance.
+
+V3 replaces V2's adaptive threshold after the JUNS $6.32 case showed that a
+shrinking threshold could confirm while price recovered. With the robust cap
+and a fixed distance of $0.1896, that resistance confirms on the actual decline
+at 07:09:39 ET. JUNS tests at 07:13:56, :57 and :58 confirm the $6.88 ceiling
+at 07:13:58 through the boundary-test detector. Full memory-only session previews
+returned 19,629 JUNS / 8,309 SUGP visual segments, within the unchanged limit.
