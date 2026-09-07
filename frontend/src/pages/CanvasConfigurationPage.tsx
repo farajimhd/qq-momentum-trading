@@ -1,3 +1,5 @@
+import { BacktestRecoveryFailure } from "../app/components/BacktestRecoveryFailure";
+import { FailedBacktestError, openBacktestSetup, recoverBacktest } from "../app/backtestRecovery";
 import { Activity, Check, Clock3, Globe2, Link2, MapPin, Maximize2, Minimize2, PanelRightOpen, Pause, Play, RefreshCcw, Search, Save, Settings2, ShieldCheck, TriangleAlert, Unlink } from "lucide-react";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
@@ -292,6 +294,7 @@ function ReplayCanvasFocusPage({ focusToken, runId, runMode }: { focusToken?: st
   });
   const [run, setRun] = useState<CanvasReplayRun | null>(null);
   const [error, setError] = useState("");
+  const [failed, setFailed] = useState(false);
   const mergeFocusRun = useCallback((update: CanvasReplayRun) => {
     setRun((current) => {
       const latest = latestReplayRun(current, update);
@@ -307,23 +310,12 @@ function ReplayCanvasFocusPage({ focusToken, runId, runMode }: { focusToken?: st
 
   useEffect(() => {
     let cancelled = false;
-    const loadRun = async () => {
-      try {
-        // A local focus handoff is optional presentation state. Portable links
-        // recover the authoritative run and its full saved Canvas profile.
-        return await api<CanvasReplayRun>(`/api/trading/${runMode}/runs/${encodeURIComponent(runId)}${handoff ? "?compact=true" : ""}`, { timeoutMs: 20_000 });
-      } catch (reason) {
-        const status = typeof reason === "object" && reason && "status" in reason ? Number((reason as ApiError).status) : 0;
-        if (runMode !== "backtest" || status !== 404) throw reason;
-        return api<CanvasReplayRun>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/review`, {
-          method: "POST",
-          timeoutMs: 60_000,
-        });
-      }
-    };
+    const loadRun = () => runMode === "backtest"
+      ? recoverBacktest<CanvasReplayRun>(runId, undefined, Boolean(handoff))
+      : api<CanvasReplayRun>(`/api/trading/${runMode}/runs/${encodeURIComponent(runId)}${handoff ? "?compact=true" : ""}`, { timeoutMs: 20_000 });
     loadRun()
       .then((payload) => { if (!cancelled) mergeFocusRun(payload); })
-      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
+      .catch((reason) => { if (!cancelled) { setFailed(reason instanceof FailedBacktestError); setError(reason instanceof Error ? reason.message : String(reason)); } });
     return () => { cancelled = true; };
   }, [handoff, mergeFocusRun, runId, runMode]);
 
@@ -340,7 +332,8 @@ function ReplayCanvasFocusPage({ focusToken, runId, runMode }: { focusToken?: st
     },
   });
 
-  if (error && !run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
+  if (failed && !run) return <div className="canvas-config-page canvas-focus-page"><BacktestRecoveryFailure error={error} onSetup={openBacktestSetup} /></div>;
+  if (error && !run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error" role="alert">{error}{runMode === "backtest" ? <button type="button" onClick={openBacktestSetup}>Return to setup</button> : null}</div></div>;
   if (!run) return <div className="canvas-config-page canvas-focus-page"><LoadingState fill label="Loading Replay workspace" /></div>;
   return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false} modeControls={<ReplayFocusTransportStatus run={run} />} readOnly={runMode !== "replay"} replayRun={run} runtimeWorkspaceId={handoff ? focusToken : `${runId}.charts`} transient />;
 }

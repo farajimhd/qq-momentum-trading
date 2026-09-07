@@ -16,6 +16,48 @@ from urllib.parse import quote
 
 @unittest.skipUnless(os.environ.get("BACKTEST_RECOVERY_RUN_ID"), "opt-in browser regression")
 class BacktestRecoveryBrowserTests(unittest.TestCase):
+    def test_failed_run_reports_cause_without_review_or_retry(self) -> None:
+        from playwright.sync_api import sync_playwright
+
+        base = os.environ.get("BACKTEST_RECOVERY_URL", "http://127.0.0.1:5173").rstrip("/")
+        run_id = os.environ["BACKTEST_RECOVERY_RUN_ID"]
+        path = f"/api/trading/backtest/runs/{run_id}"
+        failure = {"run_id": run_id, "status": "failed", "error": "Canonical 1s warm-up required"}
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                for resident in (False, True):
+                    for route_name in ("backtest-trading", "canvas-focus"):
+                        with self.subTest(resident=resident, route=route_name):
+                            context = browser.new_context()
+                            mutations = []
+                            def handle(route):
+                                url = route.request.url.split("?")[0]
+                                if route.request.method != "GET":
+                                    mutations.append(url)
+                                    route.fulfill(status=409, json={"detail": "No mutations allowed"})
+                                elif url.endswith(path):
+                                    route.fulfill(status=200 if resident else 404, json=failure if resident else {"detail": "Not resident"})
+                                elif url.endswith("/api/trading/backtest/runs"):
+                                    route.fulfill(json={"rows": [failure]})
+                                else:
+                                    route.continue_()
+                            context.route("**/api/trading/backtest/runs**", handle)
+                            page = context.new_page()
+                            key = "backtest_run" if route_name == "backtest-trading" else "replay_run"
+                            page.goto(f"{base}/?{key}={run_id}&historical_mode=backtest#{route_name}")
+                            page.get_by_text("Backtest failed", exact=True).wait_for()
+                            self.assertEqual(page.get_by_role("button", name="Retry connection").count(), 0)
+                            page.get_by_text("Original failure details", exact=True).click()
+                            page.get_by_text("Canonical 1s warm-up required", exact=False).wait_for()
+                            page.get_by_role("button", name="Return to setup", exact=True).click()
+                            page.wait_for_function("!new URL(location.href).searchParams.has(\"backtest_run\") && !new URL(location.href).searchParams.has(\"replay_run\")")
+                            self.assertIsNone(page.evaluate("sessionStorage.getItem('backtest.active-run.v1')"))
+                            self.assertEqual(mutations, [])
+                            context.close()
+            finally:
+                browser.close()
+
     def test_reload_polling_paging_and_connection_failure(self) -> None:
         from playwright.sync_api import sync_playwright
 

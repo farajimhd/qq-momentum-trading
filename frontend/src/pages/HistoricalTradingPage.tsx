@@ -1,8 +1,10 @@
+import { BacktestRecoveryFailure } from "../app/components/BacktestRecoveryFailure";
 import { ArrowLeft, CheckCircle2, CircleStop, Gauge, Pause, Play, RefreshCcw, Square, TriangleAlert, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { api, type ApiError } from "../api/client";
+import { api } from "../api/client";
 import "./HistoricalWorkspace.css";
+import { FailedBacktestError, recoverBacktest } from "../app/backtestRecovery";
 import { TradingLaunchEvidence, TradingModeLaunch, TradingModeSelectField } from "../app/components/TradingModeLaunch";
 import { usePollingTask } from "../app/hooks/usePollingTask";
 import type { CanvasReplayRun } from "../app/replayRun";
@@ -134,6 +136,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [run, setRun] = useState<BacktestRun | null>(null);
   const [selectedRunId, setSelectedRunId] = useState(readSelectedRun);
   const [restoreError, setRestoreError] = useState("");
+  const [restoreFailed, setRestoreFailed] = useState(false);
   const [restoreAttempt, setRestoreAttempt] = useState(0);
   const [results, setResults] = useState<BacktestResults | null>(null);
   const [comparison, setComparison] = useState<BacktestComparison | null>(null);
@@ -165,18 +168,15 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     if (run?.run_id === selectedRunId) return;
     const controller = new AbortController();
     setRestoreError("");
-    const restore = async () => {
-      const path = `/api/trading/backtest/runs/${encodeURIComponent(selectedRunId)}`;
-      try {
-        return await api<BacktestRun>(path, { signal: controller.signal, timeoutMs: 20_000 });
-      } catch (reason) {
-        if ((reason as ApiError)?.status !== 404 || controller.signal.aborted) throw reason;
-        // Rehydrate saved results only; never create or resume an execution.
-        return api<BacktestRun>(`${path}/review`, { method: "POST", signal: controller.signal, timeoutMs: 60_000 });
-      }
-    };
-    void restore().then((value) => { if (!controller.signal.aborted) setRun(value); })
-      .catch((reason) => { if (!controller.signal.aborted) setRestoreError(reason instanceof Error ? reason.message : String(reason)); });
+    setRestoreFailed(false);
+    void recoverBacktest<BacktestRun>(selectedRunId, controller.signal)
+      .then((value) => { if (!controller.signal.aborted) setRun(value); })
+      .catch((reason) => {
+        if (!controller.signal.aborted) {
+          setRestoreFailed(reason instanceof FailedBacktestError);
+          setRestoreError(reason instanceof Error ? reason.message : String(reason));
+        }
+      });
     return () => controller.abort();
   }, [selectedRunId, restoreAttempt]);
 
@@ -416,10 +416,11 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     />;
   }
 
+  if (selectedRunId && restoreFailed) return <div className="canvas-config-page"><BacktestRecoveryFailure error={restoreError} onSetup={returnToSetup} /></div>;
   if (selectedRunId) return <div className="canvas-config-page">
     <div className={restoreError ? "canvas-inline-error" : "historical-canvas-run-state"} role={restoreError ? "alert" : "status"}>
-      {restoreError ? `Could not reconnect to backtest: ${restoreError}` : "Reconnecting to your backtest…"}
-      {restoreError ? <button className="button secondary compact" onClick={() => setRestoreAttempt((value) => value + 1)} type="button">Retry connection</button> : null}
+      {restoreError ? restoreFailed ? restoreError : `Could not reconnect to backtest: ${restoreError}` : "Reconnecting to your backtest…"}
+      {restoreError && !restoreFailed ? <button className="button secondary compact" onClick={() => setRestoreAttempt((value) => value + 1)} type="button">Retry connection</button> : null}
       <button className="button secondary compact" onClick={returnToSetup} type="button">Return to setup</button>
     </div>
   </div>;
