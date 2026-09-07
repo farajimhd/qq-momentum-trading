@@ -1,8 +1,35 @@
 # Swing closing-book validation
 
-`causal-swing-closing-book-2` reuses the accepted `causal-session-swing-v4`
+`causal-swing-closing-book-3` reuses the accepted `causal-session-swing-v4`
 detector. It is an opt-in Backtest book, not a Live promotion or a replacement
 for retained v18/legacy ClickHouse builds.
+
+## Historical qualification in v3
+
+The session detector still publishes its confirmed intraday swings. A new
+major level carries into later sessions only when it survives the close and:
+
+- Its observed close-price departure reaches the maximum of 3% of its price,
+  six times prior 30-bar median true range, 15% of the session range, and three
+  price ticks; or
+- It has two independent retests, each separated by a whole bar outside the
+  band and a material departure. The departure threshold is the maximum of
+  1% of price, three times prior median true range, 5% of the range observed
+  when the level was confirmed, and two ticks. The best departure must also
+  reach 5% of the completed session range for closing qualification.
+
+Birth thresholds use only prior observed bars. Completed-session range is used
+only to select the next session's seed, never to rewrite the current session's
+earlier output. Untouched qualified anchors do not expire from age. Two
+accepted breaks without an intervening independent material retest retire an
+anchor; a material retest resets that crossing counter. Retirement ends future
+use, while prior persisted intervals remain available as of their own dates.
+Split adjustment scales the added dollar-distance fields along with geometry.
+
+These fixed prototype rules are not optimized against P&L or asserted to be
+calibrated trading signals. V1/v2 behavior and source identities remain
+available. Prominence and p_norm are unchanged. The chart legend now reports
+active filtered levels instead of counting all historical drawing segments.
 
 ## Input and causality
 
@@ -77,7 +104,7 @@ for this new book. Same-role overlapping merges and frozen prior-session
 min/max normalization remain at load time. An empty prior major book yields
 `p_norm=null`; it does not invent a cross-sectional score.
 
-For geometry validation, select **Backtest → Level book → Swing book v2** for the
+For geometry validation, select **Backtest → Level book → Swing book v3** for the
 ticker and set the structural indicator's **Minimum p_norm** to **0**. Zero
 disables the display threshold, including for unscored levels. This does not
 relax strategy gates. Do not enable the session-only Swing structure overlay

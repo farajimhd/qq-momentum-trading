@@ -95,7 +95,7 @@ def chart_rows(build_id, ticker, start, end, fingerprint=None, *, after=None, co
     with _LOCK:
         timeline = _CACHE.get(key)
         if timeline is None:
-            if build.get('version') in ('causal-swing-closing-book-1', 'causal-swing-closing-book-2'):
+            if build.get('version') in ('causal-swing-closing-book-1', 'causal-swing-closing-book-2', 'causal-swing-closing-book-3'):
                 from .swing_book_cursor import SwingChartTimeline
                 timeline = SwingChartTimeline(build_id,ticker,start,build['fingerprint'],contract)
             else:

@@ -4540,7 +4540,9 @@ function buildPriceZoneLegendItems(
       supportsProminenceFilter: itemZones.some((zone) => Number.isFinite(zone.prominence)),
       supportsUnifiedFilters,
       unifiedRelativeQualitySummary,
-      value: itemZones.some((zone) => zone.annotationKind === "signal-episode-range")
+      value: itemZones.some((zone) => Boolean(zone.loadContract))
+        ? `${selectedZones.filter((zone) => zone.latest).length.toLocaleString("en-US")} active`
+        : itemZones.some((zone) => zone.annotationKind === "signal-episode-range")
         ? `${episodeIds.size} episode${episodeIds.size === 1 ? "" : "s"}`
         : selectedZones.length === presetZoneCount
           ? `${selectedZones.length.toLocaleString("en-US")} level${selectedZones.length === 1 ? "" : "s"}`

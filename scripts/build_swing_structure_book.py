@@ -20,7 +20,7 @@ import time
 import prototype_structure_book_clickhouse as P
 from build_structure_book_clickhouse import canonical_splits
 from src.backend.swing_book_source import read_session, session_bounds, NY, HISTORICAL_POLICY
-from src.market_engine.swing_book import VERSION, SwingBook, project
+from src.market_engine.swing_book import QUALIFIED_VERSION as VERSION, SwingBook, project, PRICE_STATE_FIELDS
 
 
 def encode(value):
@@ -47,8 +47,8 @@ def split_versions(previous_rows,factor,boundary):
     adjusted = []
     for row in previous_rows:
         state = json.loads(row['state_json'])
-        for field in ('price','lower','upper','reversal_distance'):
-            if state[field] is not None:
+        for field in PRICE_STATE_FIELDS:
+            if state.get(field) is not None:
                 state[field] *= factor
         adjusted.append(dict(row,price=state['price'],lower=state['lower'],upper=state['upper'],
             valid_from_us=boundary,valid_to_us=None,state_json=encode(state),revision=1))
@@ -120,7 +120,7 @@ def run(ticker, args):
                 seed['closed_at'] < session_bounds(s['execution_date'])[0].timestamp() <= opening.timestamp())]
             for split in applicable:
                 factor *= float(split['split_from'])/float(split['split_to'])
-            engine = SwingBook(seed, opening.timestamp(), factor)
+            engine = SwingBook(seed, opening.timestamp(), factor, version=VERSION)
             for split in applicable:
                 boundary = int(session_bounds(split['execution_date'])[0].timestamp()*1000000)
                 ratio = float(split['split_from'])/float(split['split_to'])
