@@ -3,6 +3,7 @@ import { macdBpsPoints } from "./macdBps";
 import { HindsightPrimitive, useHindsightPositions } from "./HindsightPositions";
 import { SwingStructurePrimitive, useSwingStructure } from "./SwingStructure";
 import { StructureGapPrimitive, useStructureGaps } from "./StructureGaps";
+import { structureTimeCoordinate } from "./structureTimeCoordinate";
 import { STRATEGY_ENTRY_REFERENCE_BACKING, STRATEGY_ENTRY_REFERENCE_COLOR } from "../theme";
 import {
   type AutoscaleInfo,
@@ -21,6 +22,7 @@ import {
   type ISeriesPrimitive,
   type LineWidth,
   type LogicalRange,
+  type Logical,
   type SeriesMarker,
   type SeriesType,
   type Time
@@ -7367,21 +7369,9 @@ function xForStructureEventTime(
   candles: Candle[],
   candleDuration: number,
 ) {
-  if (!candles.length || !Number.isFinite(time)) return null;
-  const insertionIndex = lowerBoundCandleTime(candles, time);
-  if (insertionIndex < candles.length && candles[insertionIndex].time === time) {
-    return chart.timeScale().timeToCoordinate(candles[insertionIndex].time as Time);
-  }
-  const previousIndex = insertionIndex - 1;
-  if (
-    previousIndex >= 0
-    && time >= candles[previousIndex].time
-    && time < candles[previousIndex].time + candleDuration
-  ) {
-    return chart.timeScale().timeToCoordinate(candles[previousIndex].time as Time);
-  }
-  const nearest = candles[nearestCandleIndex(candles, time)];
-  return nearest ? chart.timeScale().timeToCoordinate(nearest.time as Time) : null;
+  return structureTimeCoordinate(time, candles, candleDuration,
+    stamp => chart.timeScale().timeToCoordinate(stamp as Time),
+    index => chart.timeScale().logicalToCoordinate(index as Logical));
 }
 
 function sessionRegionColor(region: Region, settings: ChartAppearanceSettings) {

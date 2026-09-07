@@ -2465,6 +2465,22 @@ def capture(args: argparse.Namespace) -> int:
                     if args.historical_run_id and scenario["page"] == "canvas-focus":
                         page.get_by_role("button", name=args.canvas_chart_timeframe, exact=True).click(timeout=args.timeout_ms)
                     page.wait_for_timeout(args.settle_ms)
+                    if args.structure_time_placement:
+                        page.evaluate("""async () => {
+                          const {structureTimeCoordinate:f}=await import('/src/app/components/structureTimeCoordinate.ts');
+                          const bars=[{time:100},{time:110}];
+                          const x=t=>t===100?0:t===110?100:null;
+                          const logical=i=>i*100;
+                          const check=(got,want)=>{if(got!==want)throw Error(`Structure time ${got} != ${want}`);};
+                          check(f(101,bars,1,x,logical),10);
+                          check(f(105,bars,60,x,logical),50);
+                          check(f(100,bars,1,x,logical),0);
+                          check(f(90,bars,1,x,logical),0);
+                          check(f(111,bars,1,x,logical),200);
+                          check(f(101,[{time:100}],1,x,logical),100);
+                          check(f(NaN,bars,1,x,logical),null);
+                          check(f(101,[],1,x,logical),null);
+                        }""")
                     metrics = page.evaluate("""() => {
                         const root = document.documentElement;
                         const shell = document.querySelector('.app-shell');
@@ -2800,6 +2816,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument('--swing-structure-fixture', action='store_true', help='validate swing controls with synthetic segments; never calculate real levels')
     result.add_argument('--structure-gaps-fixture', action='store_true', help='validate gap controls, causal cutoff and outcome visibility with deterministic fixtures')
     result.add_argument('--structure-gaps', action='store_true', help='calculate and inspect the real v4 gap preview on a historical chart')
+    result.add_argument('--structure-time-placement', action='store_true', help='verify exact confirmation placement across missing and coarse candles')
     result.add_argument('--swing-book-selector',action='store_true',help='verify published JUNS/SUGP swing books in the Backtest selector; never launch a run')
     result.add_argument('--swing-book-version',type=int,choices=(1,2,3,4),default=1,help='book version expected by the selector check')
     result.add_argument("--canvas-charts-quotes", action="store_true", help="seed the Charts & Quotes container in Canvas focus review")
