@@ -7,6 +7,7 @@ from src.trading_runtime import histogram_slope
 
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, time as clock_time, timedelta, timezone
+from decimal import Decimal, ROUND_FLOOR
 from enum import StrEnum
 from math import floor, inf, isfinite, nextafter
 from typing import Any, Mapping
@@ -895,6 +896,7 @@ def resolve_long_momentum_parameters(
         "volatility",
         "hybrid",
         "ordinal_qualified_support",
+        "last_red_candle_close",
         "third_resistance_below_session_high", "first_resistance_below_session_high",
     }:
         raise ValueError("Unsupported protective stop method")
@@ -2693,7 +2695,8 @@ class LongMomentumStrategyEngine:
         state["last_observed_at"] = observation.observed_at.isoformat()
         state["last_price"] = observation.price
         _record_macd_histogram_history(state, observation)
-        if parameters.get("entry_candle_confirmation", {}).get("slope_reentry_break_previous_high"):
+        if (parameters.get("entry_candle_confirmation", {}).get("slope_reentry_break_previous_high")
+                or parameters["protection"]["stop"]["method"] == "last_red_candle_close"):
             breakout_confirmation.record_candle(state, observation)
         if parameters.get("momentum_management", {}).get("histogram_slope_exit", {}).get("enabled"):
             histogram_slope.record(state, observation)
@@ -3364,6 +3367,7 @@ class LongMomentumStrategyEngine:
             reference,
             side=side,
             selection_evidence=protective_stop_selection,
+            candle_state=state,
         )
         if parameters.get("broken_level_stop_only") and (unified_trigger or {}).get("recovery_level"):
             recovered = dict(unified_trigger.get("level") or {})
@@ -3374,7 +3378,7 @@ class LongMomentumStrategyEngine:
                                          "selected_stop": stop}
         if stop <= 0:
             return self._result(
-                assignment, observation, "wait", ("first_resistance_stop_unavailable" if parameters["protection"]["stop"]["method"] == "first_resistance_below_session_high" else "third_resistance_stop_unavailable" if parameters["protection"]["stop"]["method"] == "third_resistance_below_session_high" else "qualified_support_unavailable"), 0.0, 1.0,
+                assignment, observation, "wait", ("last_red_candle_stop_unavailable" if parameters["protection"]["stop"]["method"] == "last_red_candle_close" else "first_resistance_stop_unavailable" if parameters["protection"]["stop"]["method"] == "first_resistance_below_session_high" else "third_resistance_stop_unavailable" if parameters["protection"]["stop"]["method"] == "third_resistance_below_session_high" else "qualified_support_unavailable"), 0.0, 1.0,
                 state, assignment.status,
                 metadata={"protective_stop_selection": protective_stop_selection},
             )
@@ -5406,7 +5410,8 @@ def _protection_profile_from_phase(
         trailing_rule = TrailingRuleType(
             str(trailing_raw.pop("rule_type", TrailingRuleType.NONE))
         )
-        if parameters["protection"]["trailing"].get("mode") in {"qualified_support", "fixed_support_distance", "third_resistance_below_session_high", "first_resistance_below_session_high"}:
+        if (parameters["protection"]["stop"].get("method") == "last_red_candle_close"
+                or parameters["protection"]["trailing"].get("mode") in {"qualified_support", "fixed_support_distance", "third_resistance_below_session_high", "first_resistance_below_session_high"}):
             trailing_rule = TrailingRuleType.NONE
             trailing_raw = {}
         if trailing_rule == TrailingRuleType.BROKER_AMOUNT and not trailing_raw.get("amount"):
@@ -7493,9 +7498,25 @@ def _initial_stop(
     side: str,
     selection_evidence: dict[str, Any] | None = None,
     entry_placement: bool = True,
+    candle_state: Mapping[str, Any] | None = None,
 ) -> float:
     stop = parameters["protection"]["stop"]
     method = str(stop.get("method") or "hybrid")
+    if method == "last_red_candle_close":
+        candle = dict((candle_state or {}).get("last_red_entry_candle") or {})
+        close, opening, stamp = (candle.get(k) for k in ("close", "open", "timestamp"))
+        valid = (side == "long" and all(isinstance(v, (int, float)) and isfinite(v)
+                 for v in (close, opening, stamp)) and 0 < close < opening
+                 and 0 < stamp < observation.observed_at.timestamp()
+                 and datetime.fromtimestamp(stamp, NEW_YORK).date() == observation.observed_at.astimezone(NEW_YORK).date())
+        tick = Decimal(str(parameters["execution"]["tick_size"]))
+        selected = float(((Decimal(str(close)) - tick) / tick).to_integral_value(rounding=ROUND_FLOOR) * tick) if valid else 0.0
+        valid = valid and 0 < selected < observation.price
+        if selection_evidence is not None:
+            selection_evidence.update(selection_mode=method, candle=candle, tick_size=float(tick),
+                selected_stop=selected if valid else 0.0,
+                reason="selected" if valid else "red_candle_missing_or_not_protective")
+        return selected if valid else 0.0
     direction = -1 if side == "long" else 1
     maximum_risk_pct = float(stop.get("maximum_risk_pct") or 15.0)
     maximum_risk = observation.price * (

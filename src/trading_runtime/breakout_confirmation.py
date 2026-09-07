@@ -30,6 +30,9 @@ def record_candle(state, observation):
     state["previous_entry_candle"] = latest
     state["latest_entry_candle"] = {"timestamp": timestamp, "high": observation.bar_high,
                                     "open": observation.bar_open, "close": observation.price}
+    if (observation.bar_open is not None and isfinite(observation.bar_open)
+            and isfinite(observation.price) and 0 < observation.price < observation.bar_open):
+        state["last_red_entry_candle"] = dict(state["latest_entry_candle"])
 
 
 def slope_reentry_confirmation(state, observation):
