@@ -118,7 +118,12 @@ def small_profit_filter(positions: list[dict]) -> dict:
 
 
 def merge_positions(positions: list[dict], bullish_intervals: list[tuple[float, float]], cost_bps: float = 5) -> list[dict]:
-    """Merge adjacent long trades, preserving raw rows and recomputing endpoint P&L."""
+    """Group adjacent trades, then exit at the group's highest eligible swing bid.
+
+    The optimal component exits already maximize eligible bids between their
+    entries and the following entries. Their maximum is the merged window peak.
+    Keep grouping independent of the shortened exit to avoid changing gap rules.
+    """
     starts = [start for start, _ in bullish_intervals]
     def episode(p):
         index = bisect_right(starts, p["entry_time"]) - 1
@@ -144,4 +149,13 @@ def merge_positions(positions: list[dict], bullish_intervals: list[tuple[float, 
         else:
             result.append(row)
         previous_episode = current_episode
+    by_number = {p["position_number"]: p for p in positions}
+    for row in result:
+        row["merge_window_end"] = row["exit_time"]
+        peak = max((by_number[n] for n in row["component_positions"]), key=lambda p: p["exit_price"])
+        profit = peak["exit_price"] * (1 - fee) - row["entry_price"] * (1 + fee)
+        row.update(exit_time=peak["exit_time"], exit_price=peak["exit_price"],
+                   exit_component_position=peak["position_number"],
+                   net_profit_per_share=profit,
+                   net_return_bps=profit / (row["entry_price"] * (1 + fee)) * 10_000)
     return result

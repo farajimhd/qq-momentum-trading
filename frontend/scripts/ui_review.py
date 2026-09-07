@@ -2496,6 +2496,8 @@ def capture(args: argparse.Namespace) -> int:
                     if args.hindsight_positions:
                         button = page.get_by_role("button", name="Hindsight positions", exact=True)
                         button.click(timeout=30_000)
+                        details_button = page.get_by_role('button', name='Hindsight statistics and filter', exact=True)
+                        details_button.click()
                         page.wait_for_function("""() => {
                             const text = document.querySelector('.hindsight-summary')?.textContent || '';
                             return text.includes('/share') || text.includes('Failed:');
@@ -2522,6 +2524,11 @@ def capture(args: argparse.Namespace) -> int:
                         page.mouse.move(0, 0)
                         page.wait_for_timeout(250)
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem + '__hindsight.png')), full_page=True)
+                        page.keyboard.press('Escape')
+                        if page.get_by_role('dialog', name='Hindsight statistics and filter').count():
+                            raise RuntimeError('Hindsight statistics did not close with Escape')
+                        if not details_button.evaluate('(el) => el === document.activeElement'):
+                            raise RuntimeError('Hindsight statistics did not restore focus')
                         button.click()
                         page.mouse.move(0, 0)
                         page.wait_for_timeout(250)

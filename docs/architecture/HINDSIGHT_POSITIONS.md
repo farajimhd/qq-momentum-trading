@@ -50,8 +50,11 @@ The toolbar is available on historical intraday Charts & Quotes views only.
 After optimization, adjacent positions merge if their gap is at most one second,
 or both fit within the same uninterrupted completed-1s MACD > signal interval.
 Negative MACD values are explicitly allowed. Non-positive endpoint net profit
-prevents merging. A merged position uses the first entry and last exit, charging
-costs once per side; component profits are never summed. Raw positions and source
+prevents merging. After groups are fixed, a merged position uses the first entry
+and the highest eligible component swing bid (earliest tie), charging costs once
+per side. MACD defines grouping, not the sell timestamp. The original group end
+is retained as `merge_window_end`; shortening the exit does not regroup later
+positions. Component profits are never summed. Raw positions and source
 component numbers remain in the response, together with merged counts.
 
 MACD comes from QMD History's canonical bars-stage 1s projection, in bounded hourly
@@ -69,7 +72,7 @@ entry cost. Ties at the cutoff are retained; fewer than four positions use only
 the 500 bps floor. The API retains the full sequence and exposes cutoff, removed/retained
 counts and retained net profit. The chart checkbox reversibly selects the subset
 without refetching. Original position numbers remain stable.
-The adjacent stats show total eligible positions found, the count after merging, and positions shown;
+The toolbar's statistics popover contains the filter checkbox, total eligible positions found, the count after merging, and positions shown;
 the found count remains visible when the overlay is hidden. This is a small-return
 filter, not a statistical significance test or a newly optimized constrained
 sequence. Displayed quote size is not proof of executable larger-order liquidity.

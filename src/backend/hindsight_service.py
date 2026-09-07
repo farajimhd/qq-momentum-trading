@@ -99,12 +99,13 @@ async def calculate(request: HindsightRequest, progress=lambda **kwargs: None) -
                   net_profit_per_share=sum(p["net_profit_per_share"] for p in merged),
                   unmerged_positions=originals, unmerged_position_count=len(originals),
                   merging={"short_gap_seconds": 1, "macd_rule": "completed 1s MACD > signal (including negative values)",
+                           "exit_rule": "highest eligible component swing bid; earliest tie",
                            "merged_away": len(originals) - len(merged), "macd_provenance": macd_provenance})
     return {**result, "profit_filter": small_profit_filter(result["positions"]),
             "max_spread_bps": request.max_spread_bps, "minimum_displayed_shares_per_side": 1,
             "ticker": request.ticker.upper(), "session_date": str(request.session_date),
             "start": start.isoformat(), "end": end.isoformat(), "cost_bps": request.cost_bps,
-            "algorithm": "long-one-share-quote-dp-v3", "hindsight_only": True,
+            "algorithm": "long-one-share-quote-dp-v4", "hindsight_only": True,
             "objective": "Merged profitable moves from the maximum-net-profit one-share sequence; filtered after merging",
             "execution_assumption": "Observed ask entries / bid exits; at least one share displayed per side; bounded midpoint spread; additional cost per side; no latency, queue or impact model",
             "source_revision": source.source_revision, "elapsed_seconds": monotonic() - started}

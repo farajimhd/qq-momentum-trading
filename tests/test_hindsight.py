@@ -173,6 +173,22 @@ def test_merging_short_gaps_and_macd_episodes_reprices_endpoints():
     assert len(merge_positions([a, b], [(0, 7)])) == 2
 
 
+def test_merged_exit_uses_earlier_swing_high_without_changing_group_boundaries():
+    from src.market_engine.hindsight import merge_positions
+    rows = [dict(position_number=i, entry_time=start, exit_time=end, entry_price=buy,
+                 exit_price=sell, net_profit_per_share=sell-buy, net_return_bps=100)
+            for i, start, end, buy, sell in [(44, 1, 2, 3.85, 4.31), (45, 2.5, 4, 4.0, 4.12),
+                                            (46, 4.5, 6, 4.0, 4.2), (47, 8, 9, 4.0, 4.3)]]
+    merged = merge_positions(rows, [])
+    assert len(merged) == 2
+    assert merged[0]['component_positions'] == [44, 45, 46]
+    assert merged[0]['exit_time'] == 2
+    assert merged[0]['exit_price'] == 4.31
+    assert merged[0]['merge_window_end'] == 6
+    assert merged[0]['net_profit_per_share'] == pytest.approx(4.31 * .9995 - 3.85 * 1.0005)
+    assert rows[1]['exit_price'] == 4.12
+
+
 def test_macd_intervals_include_negative_values_and_stop_at_gaps(monkeypatch):
     from datetime import datetime, timedelta
     from types import SimpleNamespace

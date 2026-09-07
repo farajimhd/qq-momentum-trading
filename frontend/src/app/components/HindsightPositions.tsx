@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Eye, EyeOff, LoaderCircle } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { Eye, EyeOff, LoaderCircle, SlidersHorizontal, X } from "lucide-react";
 import type { IChartApi, ISeriesApi, ISeriesPrimitive, IPrimitivePaneView, Time } from "lightweight-charts";
 import { api } from "../../api/client";
 
@@ -13,17 +14,54 @@ type Result = { positions: HindsightPosition[]; position_count: number; unmerged
 type Job = { id: string; status: "queued" | "running" | "completed" | "failed"; stage?: string; quotes: number; error?: string; result?: Result };
 const EMPTY: HindsightPosition[] = [];
 
+function HindsightDetails({ anchor, onClose, children }: { anchor: HTMLButtonElement; onClose: () => void; children: ReactNode }) {
+  const panel = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ left: 8, top: 8 });
+  useLayoutEffect(() => {
+    const place = () => {
+      const rect = anchor.getBoundingClientRect();
+      const box = panel.current?.getBoundingClientRect();
+      const zoom = panel.current ? Number.parseFloat(getComputedStyle(panel.current).zoom) || 1 : 1;
+      if (box) setPosition({ left: Math.max(8, Math.min(rect.left, window.innerWidth - box.width - 8)) / zoom,
+        top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - box.height - 8)) / zoom });
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    if (panel.current) observer.observe(panel.current);
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => { observer.disconnect(); window.removeEventListener("resize", place); window.removeEventListener("scroll", place, true); };
+  }, [anchor]);
+  useEffect(() => {
+    panel.current?.focus();
+    const pointer = (event: PointerEvent) => {
+      if (!panel.current?.contains(event.target as Node) && !anchor.contains(event.target as Node)) onClose();
+    };
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); anchor.focus(); } };
+    document.addEventListener("pointerdown", pointer);
+    document.addEventListener("keydown", key);
+    return () => { document.removeEventListener("pointerdown", pointer); document.removeEventListener("keydown", key); };
+  }, [anchor, onClose]);
+  return createPortal(<div ref={panel} className="chart-settings-slot hindsight-details" role="dialog" aria-label="Hindsight statistics and filter" tabIndex={-1} style={position}>
+    <div className="chart-settings-header"><b>Hindsight statistics</b><button type="button" className="toolbar-button" aria-label="Close hindsight statistics" onClick={() => { onClose(); anchor.focus(); }}><X size={14} /></button></div>
+    {children}
+  </div>, document.body);
+}
+
 export function useHindsightPositions(ticker: string, sessionDate?: string) {
   const identity = `${ticker}:${sessionDate ?? ""}`;
   const [state, setState] = useState<{ identity: string; job?: Job; visible: boolean; error?: string }>({ identity, visible: false });
   const [request, setRequest] = useState({ identity: "", nonce: 0 });
   const generation = useRef(0);
   const [hideSmallProfits, setHideSmallProfits] = useState(true);
+  const [detailsAnchor, setDetailsAnchor] = useState<HTMLButtonElement | null>(null);
+  const closeDetails = useCallback(() => setDetailsAnchor(null), []);
   const current = state.identity === identity ? state : { identity, visible: false };
   useEffect(() => {
     generation.current += 1;
     setState({ identity, visible: false });
     setRequest({ identity: "", nonce: 0 });
+    setDetailsAnchor(null);
   }, [identity]);
   useEffect(() => {
     if (request.identity !== identity || !sessionDate) return;
@@ -52,20 +90,24 @@ export function useHindsightPositions(ticker: string, sessionDate?: string) {
   const filter = result?.profit_filter;
   const displayedCount = hideSmallProfits && filter ? filter.retained_count : result?.position_count;
   const displayedProfit = hideSmallProfits && filter ? filter.retained_profit_per_share : result?.net_profit_per_share;
-  const title = `Hindsight only · ${sessionDate} 04:00–20:00 New York · one share, long-only · at least 1 share displayed on each side · spread ≤100 bps of midpoint · ask entries / bid exits + 5 bps per side · no latency or impact model. Merge gaps ≤1s or the same completed-1s MACD > signal interval (negative MACD allowed), retaining positive endpoint profit. Filter below the 25th percentile after merging. These merged/filtered moves are not a new profit optimum.`;
+  const title = `Hindsight only · ${sessionDate} 04:00–20:00 New York · one share, long-only · at least 1 share displayed on each side · spread ≤100 bps of midpoint · ask entries / bid exits + 5 bps per side · no latency or impact model. Merge gaps ≤1s or the same completed-1s MACD > signal interval (negative MACD allowed), retaining positive endpoint profit. Filter below the larger of 500 bps (5%) and the 25th percentile after merging. These merged/filtered moves are not a new profit optimum.`;
   const controls = sessionDate ? <div className="hindsight-controls">
     <button type="button" className="toolbar-button" aria-label="Hindsight positions" aria-pressed={current.visible} disabled={busy} title={title}
       onClick={() => result ? setState((value) => ({ ...value, visible: !value.visible })) : setRequest((n) => ({ identity, nonce: n.nonce + 1 }))}>
       {busy ? <LoaderCircle size={15} /> : current.visible ? <EyeOff size={15} /> : <Eye size={15} />}
       <span>{busy ? current.job?.stage === "macd" ? "Merging with MACD…" : "Finding positions…" : "Hindsight"}</span>
     </button>
+    <button type="button" className="toolbar-button" aria-label="Hindsight statistics and filter" aria-haspopup="dialog" aria-expanded={Boolean(detailsAnchor)} title="Hindsight statistics and filter" onClick={(event) => setDetailsAnchor(detailsAnchor ? null : event.currentTarget)}><SlidersHorizontal size={15} /></button>
+    {detailsAnchor ? <HindsightDetails anchor={detailsAnchor} onClose={closeDetails}>
     <span className="hindsight-summary" role="status" title={current.error || title}>
-      {current.error ? `Failed: ${current.error} — click Hindsight to retry` : busy ? `${(current.job?.quotes ?? 0).toLocaleString()} quotes` : result ? `${(result.unmerged_position_count ?? result.position_count).toLocaleString()} found · ${result.position_count.toLocaleString()} after merge · ${current.visible ? `${displayedCount?.toLocaleString()} shown · $${displayedProfit?.toFixed(3)}/share` : "overlay hidden"}` : ""}
+      {current.error ? `Failed: ${current.error} — click Hindsight to retry` : busy ? `${(current.job?.quotes ?? 0).toLocaleString()} quotes` : result ? `${(result.unmerged_position_count ?? result.position_count).toLocaleString()} found · ${result.position_count.toLocaleString()} after merge · ${current.visible ? `${displayedCount?.toLocaleString()} shown · $${displayedProfit?.toFixed(3)}/share` : "overlay hidden"}` : "Click Hindsight to generate positions for this session."}
     </span>
     {filter && current.visible ? <label className="hindsight-summary" title={title}>
       <input type="checkbox" checked={hideSmallProfits} onChange={(event) => setHideSmallProfits(event.target.checked)} /> Hide small profits
       {hideSmallProfits ? ` (<${filter.cutoff_bps.toFixed(1)} bps; ${filter.removed_count} hidden)` : ""}
     </label> : null}
+    <p className="chart-settings-help">Minimum net return: 5% (500 bps), or the session’s lower quartile if higher. Profits include 5 bps cost per side.</p>
+    </HindsightDetails> : null}
   </div> : null;
   const selected = useMemo(() => result && hideSmallProfits && filter ? result.positions.filter((p) => p.net_return_bps >= filter.cutoff_bps) : result?.positions, [result, hideSmallProfits, filter]);
   return { controls, positions: current.visible ? selected ?? EMPTY : EMPTY };
