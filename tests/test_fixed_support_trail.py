@@ -37,6 +37,14 @@ def test_entry_uses_nearest_support_and_third_resistance():
     assert S._initial_stop(replace(obs,structural_support_levels=()),p,None,side='long') == 0
 
 
+def test_resolved_policy_preserves_distant_support_without_price_cap():
+    p=S.resolve_long_momentum_parameters(configured(),revision=47)
+    assert not p['protection']['stop']['cap_initial_stop_distance']
+    obs=replace(market(),structural_support_levels=(row(80,1),))
+    assert S._initial_stop(obs,p,None,side='long')==80
+    assert S._trailing_amount(obs,p,stop=80)==23.3
+
+
 def test_trail_distance_is_frozen_and_target_never_advances():
     p=configured(); engine=S.LongMomentumStrategyEngine(revision=47)
     state={'entry_reference_price':103.3,'initial_stop':102,'active_stop':102,'trailing_amount':1.3,

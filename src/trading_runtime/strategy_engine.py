@@ -824,6 +824,10 @@ def resolve_long_momentum_parameters(
             section[key] = value
     if revision >= 45:
         parameters["protection"]["stop"]["cap_initial_stop_distance"] = True
+    if parameters["protection"]["trailing"].get("mode") == "fixed_support_distance":
+        if parameters["protection"]["stop"].get("method") != "ordinal_qualified_support":
+            raise ValueError("Fixed support-distance trailing requires a qualified support stop")
+        parameters["protection"]["stop"]["cap_initial_stop_distance"] = False
     if parameters.get("require_completed_entry_candle"):
         parameters["entry_candle_confirmation"].update(require_closed_bar=True, evaluate_macd_intrabar=False)
         parameters["structural_entry"].update(accept_live_price_above_entry_level=False, intrabar_after_completed_r3=False)
