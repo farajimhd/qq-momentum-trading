@@ -3,7 +3,7 @@ from __future__ import annotations
 from src.trading_runtime import breakout_confirmation
 
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
-from src.trading_runtime import histogram_slope, market_pressure, local_swing, swing_evidence, swing_momentum
+from src.trading_runtime import histogram_slope, market_pressure, local_swing, swing_evidence, swing_momentum, swing_gap
 
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, time as clock_time, timedelta, timezone
@@ -860,6 +860,8 @@ def resolve_long_momentum_parameters(
         swing_evidence.apply(parameters)
     if parameters.get("swing_momentum_contract"):
         swing_momentum.configure(parameters)
+    if parameters.get("swing_gap_contract"):
+        swing_gap.configure(parameters)
     execution = dict(parameters.get("execution") or {})
     slope_policy = parameters["momentum_management"].get("histogram_slope_exit")
     if slope_policy is not None:
@@ -3465,6 +3467,10 @@ class LongMomentumStrategyEngine:
                 state.pop('pending_capital_request',None)
                 return self._result(assignment,observation,'wait',reason,0.,1.,state,AssignmentStatus.WATCHING,
                     metadata={'swing_context':ctx,'stop':stop,'progress':state.get('swing_price_progress')})
+        gap_selection = swing_gap.select(observation, parameters) if parameters.get('swing_gap_contract') else None
+        if gap_selection and gap_selection['reason']:
+            return self._result(assignment, observation, 'wait', gap_selection['reason'], 0., 1.,
+                state, AssignmentStatus.WATCHING, metadata={'gap_selection': gap_selection})
         capital_request = _phase_capital_request(
             parameters,
             phase_name,
@@ -3506,6 +3512,11 @@ class LongMomentumStrategyEngine:
         if parameters.get("broken_level_stop_only") or parameters.get("local_swing_management") or parameters.get("swing_evidence_contract"):
             target = None
             profit_targets = []
+        if gap_selection:
+            target = gap_selection['target']
+            profit_targets = [target]
+            profit_target_selection = gap_selection
+            state['gap_selection'] = gap_selection
         profit_policy = dict(parameters["protection"].get("profit_ladder") or {})
         minimum_entry_target_gap_bps = max(
             0.0,
@@ -5426,6 +5437,12 @@ def _protection_profile_from_phase(
         if isinstance(value, (int, float)) and float(value) > 0
     ]
     configured_slices = [dict(raw) for raw in configured.get("slices") or []]
+    if parameters.get('swing_gap_contract'):
+        configured_slices = [dict(configured_slices[0])] if configured_slices else []
+        for raw in configured_slices:
+            raw.update(quantity_fraction=1., strategy_profit_target_index=0,
+                       use_strategy_profit_target=True, stop={'rule_type': 'fixed_price'},
+                       trailing={'rule_type': 'none'})
     if parameters.get("broken_level_stop_only"):
         # One fully protected position, with no attached fixed-profit order.
         configured_slices = [dict(configured_slices[0])] if configured_slices else []
@@ -7079,6 +7096,8 @@ def _matching_momentum_management_route(
     gain_pct: float,
     side: str,
 ) -> dict[str, Any] | None:
+    if parameters.get('swing_gap_contract'):
+        return None
     if parameters.get('swing_momentum_contract') and state.get('swing_resistance_exit'):
         return {'route_id':'swing-resistance-rejection','name':'Failed v4 resistance test',
                 'mechanism':'swing_resistance_rejected','position_fraction':1.,
@@ -7618,6 +7637,11 @@ def _initial_stop(
     candle_state: Mapping[str, Any] | None = None,
 ) -> float:
     stop = parameters["protection"]["stop"]
+    if parameters.get('swing_gap_contract'):
+        selected = swing_gap.select(observation, parameters)
+        if selection_evidence is not None:
+            selection_evidence.update(selected)
+        return selected.get('stop', 0.) if side == 'long' else 0.
     method = str(stop.get("method") or "hybrid")
     if method == "local_swing_low":
         micro = local_swing.context(observation)
@@ -7870,6 +7894,8 @@ def _ratcheted_stop(
     side: str,
 ) -> float:
     current = float(state.get("active_stop") or state.get("initial_stop") or 0)
+    if parameters.get('swing_gap_contract'):
+        return current
     entry = float(state.get("entry_reference_price") or observation.average_price or observation.price)
     gain_pct = (
         (observation.price / entry - 1) * 100
@@ -8063,6 +8089,11 @@ def _structural_profit_targets(
     qualified_levels_out: list[dict[str, Any]] | None = None,
 ) -> list[float]:
     """Build causal targets from level-book resistance/support evidence."""
+    if parameters.get('swing_gap_contract'):
+        selected = swing_gap.select(observation, parameters)
+        if selection_evidence is not None:
+            selection_evidence.update(selected)
+        return [selected['target']] if not selected['reason'] and side == 'long' else []
     if parameters.get("local_swing_management"):
         return []
     policy = dict(parameters["protection"].get("profit_ladder") or {})
