@@ -18,6 +18,11 @@ def runner_policy(parameters):
     return policy if parameters.get('swing_gap_contract') and policy.get('enabled') else None
 
 
+def tracks_reclaims(parameters):
+    return bool(parameters.get('swing_gap_contract') and (
+        parameters['swing_gap_contract'] == CONTRACT or parameters.get('gap_reclaim_failed_support')))
+
+
 def configure(parameters):
     if parameters['swing_gap_contract'] not in (CONTRACT, CLUSTER_CONTRACT, LEGACY_CONTRACT) or not parameters.get('swing_evidence_contract'):
         raise ValueError('Gap strategy requires the causal MACD evidence contract')
@@ -37,7 +42,7 @@ def configure(parameters):
         fraction = parameters['gap_management'].get('take_profit_fraction')
         if not isinstance(fraction, (int, float)) or not isfinite(fraction) or not 0 < fraction < 1:
             raise ValueError('Gap management requires a partial target fraction between zero and one')
-    if parameters['swing_gap_contract'] == CONTRACT:
+    if tracks_reclaims(parameters):
         from . import gap_continuation
         parameters['gap_continuation'] = dict(gap_continuation.DEFAULTS, **parameters.get('gap_continuation', {}))
         gap_continuation.validate(parameters['gap_continuation'])
@@ -104,6 +109,10 @@ def select(observation, parameters, state=None):
         return dict(reason='gap_support_minimum_distance_unavailable')
     stop, support = max(eligible, key=lambda item: item[0])
     result = dict(stop=stop, support=support, reason='gap_setup_unavailable')
+    if parameters.get('gap_reclaim_failed_support'):
+        from .gap_continuation import key
+        if key(support) in ((state or {}).get('gap_evidence') or {}).get('failed', {}):
+            return dict(result, reason='gap_failed_support_waiting_reclaim')
     vwap = observation.execution_vwap
     if vwap is None or not isfinite(vwap) or price <= vwap:
         return dict(result, reason='gap_price_not_above_vwap')

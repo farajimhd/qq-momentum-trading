@@ -70,6 +70,27 @@ def test_bid_must_clear_stop_without_changing_valid_baseline_entries():
     assert result.evaluation.intents[0].metadata['gap_require_valid_stop_on_entry']
 
 
+def test_failed_support_waits_for_reclaim_without_selecting_a_deeper_stop():
+    from src.trading_runtime import gap_continuation as C
+    p = parameters()
+    p['gap_reclaim_failed_support'] = True
+    p = S.resolve_long_momentum_parameters(p, revision=47)
+    m = market()
+    baseline = G.select(m, parameters())
+    assert G.select(m, p) == baseline
+    support = baseline['support']
+    state = {'gap_evidence': {'failed': {C.key(support): NOW.timestamp()-3}}}
+    denied = G.select(m, p, state)
+    assert denied['reason'] == 'gap_failed_support_waiting_reclaim'
+    assert denied['stop'] == baseline['stop']
+    rows = G.levels(m, p['swing_gap'])
+    touch = replace(m, observed_at=NOW-timedelta(seconds=1), price=support['upper'],
+                    bar_low=support['lower'], bar_high=support['upper'], source_timeframe='1s', evaluation_events=('bar_close',))
+    C.observe(touch, p, state, rows)
+    C.observe(replace(m, bar_low=m.price, bar_high=m.price, source_timeframe='1s', evaluation_events=('bar_close',)),p,state,rows)
+    assert G.select(m, p, state) == baseline
+
+
 def test_partial_runner_management_keeps_baseline_entry_and_target_selection():
     baseline = parameters()
     runner = dict(baseline, gap_management={'enabled': True, 'take_profit_fraction': .5, 'complete_partial_target': True})

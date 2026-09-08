@@ -2670,7 +2670,7 @@ class LongMomentumStrategyEngine:
             assignment.parameters,
             revision=self.revision,
         )
-        if parameters.get('swing_gap_contract') == swing_gap.CONTRACT:
+        if swing_gap.tracks_reclaims(parameters):
             gap_continuation.observe(observation, parameters, state, swing_gap.levels(observation, parameters['swing_gap']))
         if parameters.get("completed_macd_setup"):
             closed = "bar_close" in observation.evaluation_events and observation.source_timeframe in {"", "1s"}
@@ -6125,7 +6125,7 @@ class AssignedLongMomentumStrategy:
                 status = AssignmentStatus.MANAGING
             elif action in {"exit", "take_profit", "cover"}:
                 fill_role = str(getattr(snapshot, "fill_role", "") or "")
-                if (assignment.parameters.get('swing_gap_contract') == swing_gap.CONTRACT and incremental_fill > 0
+                if (swing_gap.tracks_reclaims(assignment.parameters) and incremental_fill > 0
                         and (fill_role in {'protective_stop', 'trailing_stop', 'protective_exit'}
                              or fill_role == 'managed_exit' and state.get('last_exit_reason') == 'protective_stop')):
                     anchor = (state.get('trailing_support_selection') or state.get('gap_selection') or {}).get('support')
