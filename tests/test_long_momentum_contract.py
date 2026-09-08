@@ -657,6 +657,24 @@ class RuntimeExitContractTests(unittest.IsolatedAsyncioTestCase):
         runtime.portfolio.approve.assert_not_awaited()
         self.assertEqual(result[0]["decision"]["held_quantity"], 0)
 
+    async def test_cancel_entry_preserves_filled_position(self):
+        from src.trading_runtime.runtime import TradingRuntime
+        from src.trading_runtime.signals import StrategyEvaluation
+        runtime = TradingRuntime.__new__(TradingRuntime)
+        runtime.run_id = "test"
+        runtime.config = SimpleNamespace(strategy_id="long", strategy_revision=37)
+        runtime.journal = TradingJournal(Path(":memory:"))
+        self.addCleanup(runtime.journal.close)
+        runtime.intent_planner = object()
+        runtime.order_manager = SimpleNamespace(cancel_entry_acquisition=AsyncMock(), reconcile=AsyncMock())
+        runtime.portfolio = SimpleNamespace(approve=AsyncMock())
+        request = replace(oms_helpers.intent(action="exit"), action="cancel_entry", quantity=0)
+        result = await runtime._execute_intents(StrategyEvaluation(intents=(request,)), "DU1", None)
+        runtime.order_manager.cancel_entry_acquisition.assert_awaited_once()
+        runtime.order_manager.reconcile.assert_awaited_once()
+        runtime.portfolio.approve.assert_not_awaited()
+        self.assertEqual(result[0]["decision"]["status"], "acquisition_cancellation_requested")
+
     async def test_working_exit_is_counted_before_any_duplicate_sell(self):
         from src.trading_runtime.runtime import TradingRuntime
         from src.trading_runtime.signals import StrategyEvaluation

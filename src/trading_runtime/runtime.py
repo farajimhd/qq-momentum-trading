@@ -598,6 +598,15 @@ class TradingRuntime:
                     "strategy_revision": self.config.strategy_revision,
                 },
             )
+            if intent.action == 'cancel_entry':
+                if self.order_manager is None:
+                    raise RuntimeError('Entry cancellation requires order management')
+                await self.order_manager.cancel_entry_acquisition(
+                    replace(intent, action='exit', metadata={**intent.metadata, 'cancel_entry_acquisition': True}),
+                    account_id=account_id)
+                await self.order_manager.reconcile()
+                results.append({'decision': {'status': 'acquisition_cancellation_requested'}, 'order_group': None})
+                continue
             if intent.metadata.get("cancel_entry_acquisition") and self.order_manager is not None:
                 await self.order_manager.cancel_entry_acquisition(intent, account_id=account_id)
                 await self._refresh_portfolio_from_broker()

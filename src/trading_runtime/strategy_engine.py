@@ -2660,6 +2660,24 @@ class LongMomentumStrategyEngine:
         self.revision = revision
 
     def evaluate(self, assignment: StrategyAssignment, observation: StrategyObservation) -> StrategyEngineResult:
+        result = self._evaluate(assignment, observation)
+        if assignment.parameters.get('v5_breakout_contract') == v5_breakout.MACD_GAP_CONTRACT:
+            from .v5_macd_gap import acquisition_valid
+            valid = acquisition_valid(observation, assignment.parameters)
+            previous = assignment.state.get('acquisition_invalid', False)
+            result.state['acquisition_invalid'] = not valid
+            if (not valid and not previous
+                    and (observation.position_quantity > 0 or assignment.status == AssignmentStatus.ENTRY_PENDING)
+                    and not any(i.action == 'exit' for i in result.evaluation.intents)):
+                cancel = StrategyIntent(intent_id=str(uuid4()), ticker=observation.ticker,
+                    event_time=observation.observed_at, action='cancel_entry', quantity=0,
+                    reference_price=observation.price, reason='entry_gate_invalidated',
+                    metadata={'assignment_id': assignment.assignment_id})
+                result = replace(result, evaluation=replace(result.evaluation,
+                    intents=(cancel, *result.evaluation.intents)))
+        return result
+
+    def _evaluate(self, assignment: StrategyAssignment, observation: StrategyObservation) -> StrategyEngineResult:
         if assignment.strategy_revision != self.revision:
             raise ValueError(
                 "Strategy assignment revision does not match Long Momentum executor revision"

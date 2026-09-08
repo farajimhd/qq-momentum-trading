@@ -42,12 +42,12 @@ def test_reentry_uses_period_max_and_resets_on_macd_close():
             position_quantity=qty, source_timeframe='1s', evaluation_events=('bar_close',)),p,state)
     assert V.select(replace(o,price=103.5),p,state)['reason'] == 'v5_period_high_not_reclaimed'
     assert V.select(replace(o,price=103.9),p,state)['reason'] == ''
-    V.observe(replace(o,observed_at=NOW+timedelta(seconds=3),macd_line=-1,macd_signal=0),p,state)
+    V.observe(replace(o,observed_at=NOW+timedelta(seconds=3),macd_line=-1,macd_signal=0,source_timeframe='1s',evaluation_events=('bar_close',)),p,state)
     V.observe(replace(o,observed_at=NOW+timedelta(seconds=4)),p,state)
     assert V.select(o,p,state)['reason'] == ''
 
 
-def test_only_completed_lower_bound_cross_raises_stop():
+def test_only_completed_upper_bound_cross_raises_stop():
     p, state, o = setup()
     state.update(active_stop=98, initial_stop=98)
     for offset, price, closed in ((1,103.4,True),(1.5,103.6,False)):
@@ -56,7 +56,7 @@ def test_only_completed_lower_bound_cross_raises_stop():
                   evaluation_events=('bar_close',) if closed else ('market_data_update',))
         V.observe(m,p,state); state['active_stop']=V.manage(m,p,state)
     initial=state['active_stop']
-    m=replace(m,observed_at=NOW+timedelta(seconds=2),source_timeframe='1s',evaluation_events=('bar_close',))
+    m=replace(m,observed_at=NOW+timedelta(seconds=2),price=103.7,source_timeframe='1s',evaluation_events=('bar_close',))
     V.observe(m,p,state)
     assert V.manage(m,p,state)>initial
 
@@ -87,3 +87,27 @@ def test_engine_exits_on_provisional_forming_resistance():
         state = result.state
     assert any(i.action == 'exit' and i.reason == 'forming_resistance'
                for i in result.evaluation.intents)
+
+
+def test_first_midperiod_entry_requires_body_high_despite_intrabar_recross():
+    p, state, o = setup()
+    V.observe(replace(o, observed_at=NOW+timedelta(seconds=1), bar_open=104,
+        price=103.5, source_timeframe='1s', evaluation_events=('bar_close',)),p,state)
+    V.observe(replace(o, observed_at=NOW+timedelta(seconds=1.1),macd_line=-1),p,state)
+    V.observe(replace(o, observed_at=NOW+timedelta(seconds=1.2)),p,state)
+    assert not state['v5_breakout_state'].get('exited')
+    assert V.select(replace(o,price=103.9),p,state)['reason']=='v5_period_high_not_reclaimed'
+    assert V.select(replace(o,price=104.1,ask=104.11),p,state)['reason']==''
+
+
+def test_vwap_buffer_and_cancel_unfilled_entry():
+    p, state, o = setup()
+    assert not M.acquisition_valid(replace(o,price=100.05,execution_vwap=100),p)
+    assert M.acquisition_valid(replace(o,price=100.11,execution_vwap=100),p)
+    engine=S.LongMomentumStrategyEngine(revision=47)
+    entered=engine.evaluate(assignment(strategy_revision=47,parameters=p,state=state),o)
+    result=engine.evaluate(assignment(strategy_revision=47,parameters=p,state=entered.state,
+        status=S.AssignmentStatus.MANAGING),replace(o, observed_at=NOW+timedelta(seconds=1),
+        position_quantity=100,average_price=103.3,macd_line=-1,macd_signal=0))
+    assert any(i.action=='cancel_entry' for i in result.evaluation.intents)
+    assert not any(i.action=='exit' for i in result.evaluation.intents)

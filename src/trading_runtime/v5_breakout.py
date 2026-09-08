@@ -42,6 +42,8 @@ def configure(parameters):
         if type(settings[key]) is not int:
             raise ValueError(key+' must be an integer')
     parameters['v5_breakout'] = settings
+    if parameters.get('v5_breakout_contract') == MACD_GAP_CONTRACT:
+        settings.setdefault('vwap_offset_bps', 10.)
     if staged(parameters):
         settings['entry_resistance_count'] = 4
         settings.setdefault('initial_stop_pct', 5.)
@@ -184,7 +186,7 @@ def evidence(observation, state):
     if data.get('contract') == MACD_GAP_CONTRACT:
         return dict(observed_at=observation.observed_at.isoformat(), price=observation.price,
             contract=data['contract'], macd_open=data.get('macd_open'),
-            reentry_restricted=data.get('exited'), prior_period_max_close=data.get('prior_max'),
+            reentry_restricted=data.get('exited'), prior_period_body_high=data.get('prior_max'),
             crossed_lower=[r['lower'] for r in data.get('crossed', [])],
             forming_resistance=data.get('forming'))
     breakout = data.get('breakout') or {}

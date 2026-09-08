@@ -1,4 +1,4 @@
-"""Causal MACD-period entries, lower-bound protection and gap-sized targets."""
+"""Causal MACD-period entries, upper-bound breaks, lower-bound protection and gap-sized targets."""
 from collections import deque
 from math import floor
 
@@ -9,15 +9,21 @@ from .v5_hod_ladder import target
 CONTRACT = 'swing-v5-macd-gap-1'
 
 
+def acquisition_valid(o, p):
+    return (o.macd_line is not None and o.macd_signal is not None
+            and o.macd_line > o.macd_signal and o.execution_vwap is not None
+            and o.price > o.execution_vwap * (1+p.get('v5_breakout', {}).get('vwap_offset_bps', 10)/10000))
+
+
 def observe(o, p, state):
     now = o.observed_at.timestamp()
     d = state.setdefault('v5_breakout_state', dict(contract=CONTRACT))
     if now < d.get('observed_at', 0):
         return
     opened = o.macd_line is not None and o.macd_signal is not None and o.macd_line > o.macd_signal
-    if not opened:
-        d.update(period_max=None, exited=False)
-    elif not d.get('macd_open'):
+    closed = o.source_timeframe == '1s' and 'bar_close' in o.evaluation_events
+    # Only a completed bearish bar closes the period; intrabar noise does not.
+    if closed and o.macd_line is not None and o.macd_signal is not None and not opened:
         d.update(period_max=None, exited=False)
     if d.get('holding') and o.position_quantity <= 0 and opened:
         d['exited'] = True
@@ -28,9 +34,9 @@ def observe(o, p, state):
     closed = o.source_timeframe == '1s' and 'bar_close' in o.evaluation_events
     if closed and now > d.get('closed_at', 0):
         previous = d.get('closed_price')
-        d['crossed'] = [r for r in prior if previous is not None and previous <= r['lower'] < o.price]
+        d['crossed'] = [r for r in prior if previous is not None and previous <= r['upper'] < o.price]
         if opened:
-            d['period_max'] = max(d.get('period_max') or o.price, o.price)
+            d['period_max'] = max(d.get('period_max') or o.price, o.price, o.bar_open or o.price)
         # Reuse the structural detector's bounded stall state. Three tests at
         # an approached ceiling designate a provisional, not qualified, level.
         if o.bar_high is not None and o.bar_low is not None:
@@ -71,9 +77,9 @@ def select(o, p, state):
     d = state.get('v5_breakout_state', {})
     if not d.get('macd_open'):
         return dict(reason='v5_macd_not_open')
-    if not o.execution_vwap or o.price <= o.execution_vwap:
+    if not o.execution_vwap or o.price <= o.execution_vwap * (1+p['v5_breakout'].get('vwap_offset_bps', 10)/10000):
         return dict(reason='v5_price_not_above_vwap')
-    if d.get('exited') and (d.get('prior_max') is None or o.price <= d['prior_max']):
+    if d.get('prior_max') is not None and o.price <= d['prior_max']:
         return dict(reason='v5_period_high_not_reclaimed')
     selected = choose_target(d.get('decision_levels', []), max(o.price, o.ask), p)
     if not selected:

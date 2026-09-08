@@ -555,6 +555,12 @@ class LivePositionPrimitive implements ISeriesPrimitive<Time> {
     this.requestUpdate = requestUpdate;
   }
   detached() { clearOverlayLayer(this.layer); this.chart = null; this.series = null; this.requestUpdate = null; }
+  autoscaleInfo(): AutoscaleInfo | null {
+    if (!this.line) return null;
+    const prices = [this.line.price, this.line.stopPrice, ...(this.line.targetPrices ?? [])]
+      .filter((price): price is number => typeof price === 'number' && Number.isFinite(price) && price > 0);
+    return prices.length ? { priceRange: { minValue: Math.min(...prices), maxValue: Math.max(...prices) } } : null;
+  }
   paneViews() {
     return [{ zOrder: () => "top" as const, renderer: () => ({ draw: () => {
       if (!this.chart || !this.series) return;
@@ -576,9 +582,12 @@ class LivePositionPrimitive implements ISeriesPrimitive<Time> {
   }
   setState(candles: Candle[], line: LiveEntryLine | null) {
     const key = JSON.stringify(line && [line.price, line.quantity, line.pnl, line.stopPrice, line.targetPrices]);
+    const protectionChanged = JSON.stringify([line?.price, line?.stopPrice, line?.targetPrices])
+      !== JSON.stringify([this.line?.price, this.line?.stopPrice, this.line?.targetPrices]);
     this.dirty ||= key !== this.contentKey || line?.onClose !== this.line?.onClose;
     this.contentKey = key;
     this.candles = candles; this.line = line; this.requestUpdate?.();
+    if (protectionChanged) this.series?.applyOptions({});
   }
 }
 type OscillatorThresholdSettings = {
@@ -1509,6 +1518,18 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     updateCandleMarkers();
     drawCurrentRegions();
   }, [payload, visibleColumnKey, visibleSupervisionKey, liveEntryLineKey]);
+
+  useEffect(() => {
+    const scale = candleRef.current?.priceScale();
+    const range = scale?.getVisibleRange();
+    if (!range || !liveEntryLine) return;
+    const prices = [liveEntryLine.price, liveEntryLine.stopPrice, ...(liveEntryLine.targetPrices ?? [])]
+      .filter((price): price is number => typeof price === 'number' && Number.isFinite(price) && price > 0);
+    const padding = Math.max((range.to-range.from)*0.04, 0.01);
+    const from = Math.min(range.from, ...prices.map(price => price-padding));
+    const to = Math.max(range.to, ...prices.map(price => price+padding));
+    if (from < range.from || to > range.to) scale?.setVisibleRange({from, to});
+  }, [liveEntryLine?.price, liveEntryLine?.stopPrice, JSON.stringify(liveEntryLine?.targetPrices)]);
 
   useEffect(() => {
     if (!priceChartRef.current) return;

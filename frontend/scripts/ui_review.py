@@ -2566,6 +2566,10 @@ def capture(args: argparse.Namespace) -> int:
                                     loading:false,loadingEarlier:false,canLoadEarlier:false,loadEarlier:()=>{}}
                             }));
                             render();
+                            window.__outsideProtection=()=>{
+                                preview.orders=preview.orders.map(o=>({...o,stop_price:o.stop_price?9:undefined,limit_price:o.limit_price?14:undefined}));
+                                render();
+                            };
                             window.__advanceProtection=()=>{
                                 preview.orders=preview.orders.map(o=>({...o,stop_price:o.stop_price?10.6:undefined,limit_price:o.limit_price?11.7:undefined}));
                                 preview.as_of=iso(66); trim=30; window.__openProtectionLabels=[]; render();
@@ -2584,6 +2588,14 @@ def capture(args: argparse.Namespace) -> int:
                         page.locator('.live-position-protection-line[data-role="stop"][data-position-price="10.6"]').wait_for()
                         page.locator('.live-position-protection-line[data-role="target"][data-position-price="11.7"]').wait_for()
                         page.wait_for_function("window.__openProtectionLabels.some(x=>x.startsWith('R1')) && window.__openProtectionLabels.includes('SL') && window.__openProtectionLabels.includes('TP')")
+                        page.evaluate('window.__outsideProtection()')
+                        page.wait_for_timeout(1000)
+                        print('Protection geometry:',page.evaluate("Array.from(document.querySelectorAll('.live-position-protection-line')).map(n=>({price:n.dataset.positionPrice,top:n.getBoundingClientRect().top,height:window.innerHeight}))"))
+                        page.wait_for_function("""()=>['9','14'].every(p=>{
+                            const n=document.querySelector(`[data-position-price="${p}"].live-position-protection-line`);
+                            if(!n)return false;const r=n.getBoundingClientRect();
+                            return r.top>=0 && r.bottom<=window.innerHeight;
+                        })""")
                         if page.evaluate('window.__duplicateEvidenceRequests') != 0:
                             raise RuntimeError('Chart discarded atomic canvas evidence for a second request')
 

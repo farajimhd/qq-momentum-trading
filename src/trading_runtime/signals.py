@@ -30,6 +30,7 @@ from src.trading_runtime.taxonomy import (
 SignalDirection = Literal["bullish", "bearish", "neutral"]
 SignalState = Literal["triggered", "updated", "resolved", "expired"]
 StrategyAction = Literal[
+    "cancel_entry",
     "enter_long",
     "add_long",
     "reduce_long",
