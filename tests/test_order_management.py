@@ -1102,6 +1102,37 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             await manager.close()
             journal.close()
 
+    async def test_mixed_runner_repair_preserves_target_quantity(self):
+        broker = ReconciliationRaceBroker(position_quantity=10., live_orders=[])
+        with tempfile.TemporaryDirectory() as directory:
+            manager, journal = await self._manager(directory, broker, policy=BrokerCommunicationPolicy())
+            try:
+                broker._positions['DU1'][123] = _Position(conid=123, ticker='TEST', quantity=10., avg_cost=10.)
+                profile = ProtectionProfile(profile_id='mixed', revision=1, slices=(
+                    ProtectionSlice('target', .5, StopRule(StopRuleType.FIXED_PRICE, price=9.8), profit_target_price=10.5),
+                    ProtectionSlice('runner', .5, StopRule(StopRuleType.FIXED_PRICE, price=9.8), inherit_profit_target=False)))
+                request = replace(intent(quantity=10), protection_profile=profile, profit_target_price=10.5)
+                orders = [OrderRequest(acctId='DU1', conid=123, cOID='partial-'+name, ticker='TEST',
+                                      orderType='LMT', side='BUY', quantity=5, price=10.01) for name in ('target','runner')]
+                group = _ManagedOrderGroup(group_id='mixed', intent=request, account_id='DU1',
+                    plan=StrategyOrderPlan(tuple(orders)), state=OrderManagementState.PARTIALLY_FILLED,
+                    created_at=NOW, updated_at=NOW, orders=orders,
+                    broker_order_ids=['100','101'], broker_order_request_indexes={'100':0,'101':1},
+                    broker_order_roles={'100':'entry','101':'entry'}, broker_order_slices={'100':'target','101':'runner'},
+                    filled_by_broker_order={'100':5.,'101':5.}, filled_quantity=10., remaining_quantity=0.)
+                manager._groups[group.group_id] = group
+                await manager.reconcile_protection(group)
+                repairs = group.orders[2:]
+                self.assertEqual(sum(o.quantity for o in repairs if o.orderType=='LMT'), 5.)
+                self.assertEqual(sum(o.quantity for o in repairs if o.orderType=='STP'), 10.)
+                self.assertEqual(len(repairs), 3)
+                self.assertTrue(repairs[0].isSingleGroup)
+                self.assertTrue(repairs[1].isSingleGroup)
+                self.assertFalse(repairs[2].isSingleGroup)
+            finally:
+                await manager.close()
+                journal.close()
+
     async def test_sliced_entry_reconciliation_uses_only_causally_processed_slice(self) -> None:
         prefix = "strategy-1-v1-"
         slice_sizes = (60.0, 60.0, 60.0, 59.0, 59.0)

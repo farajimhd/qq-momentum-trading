@@ -68,6 +68,25 @@ def test_partial_target_keeps_runner_instead_of_liquidating():
     assert not strategy.assignments()[0].state['profit_target_liquidation_required']
 
 
+@pytest.mark.parametrize('role,quantity,status,failed', [
+    ('protective_stop', 0, 'cancelled', False),
+    ('protective_stop', 50, 'filled', True),
+    ('managed_exit', 50, 'filled', True)])
+def test_only_actual_stop_exit_marks_support_failed(role, quantity, status, failed):
+    import asyncio
+    from types import SimpleNamespace
+    p, m = setup()
+    support = G.levels(m, p['swing_gap'])[0]
+    assigned = assignment(strategy_revision=47, parameters=p, status=S.AssignmentStatus.MANAGING,
+        state=dict(last_exit_reason='protective_stop', gap_selection=dict(support=support)))
+    strategy = S.AssignedLongMomentumStrategy([assigned])
+    asyncio.run(strategy.on_order_group_update(SimpleNamespace(action='exit', assignment_id=assigned.assignment_id,
+        fill_role=role, fill_incremental_quantity=quantity, slice_id='main',
+        state=status, updated_at=m.observed_at), aggregate_position_quantity=50))
+    evidence = strategy.assignments()[0].state.get('gap_evidence', {}).get('failed', {})
+    assert (C.key(support) in evidence) == failed
+
+
 def test_wick_touch_needs_later_departure_and_failed_support_reclaim():
     p, m = setup()
     rows = G.levels(m, p['swing_gap'])
@@ -99,6 +118,19 @@ def test_runner_protection_and_support_only_ratchet():
     assert [s.quantity_fraction for s in profile.slices] == [.5, .5]
     assert profile.slices[0].profit_target_price == pytest.approx(3.98)
     assert profile.slices[1].profit_target_price is None
+    from src.trading_runtime.execution_policies import protection_profile_from_payload
+    assert not protection_profile_from_payload(profile.payload()).slices[1].inherit_profit_target
+    from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner
+    from src.trading_runtime.domain import InstrumentContract
+    from tests.test_order_management import intent
+    request = replace(intent(quantity=100), reference_price=3.54, invalidation_price=3.4,
+                      profit_target_price=3.98, protection_profile=profile)
+    plan = IbkrStrategyOrderPlanner().plan(account_id='DU1', instrument=InstrumentContract(
+        instrument_id='conid:123', conid=123, symbol='TEST', security_type='STK', exchange='SMART', currency='USD'),
+        intent=request, strategy_id='test', strategy_revision=47)
+    targets = [o for o in plan.orders if o.side == 'SELL' and o.orderType == 'LMT']
+    assert len(targets) == 1 and targets[0].quantity == 50
+    assert sum(o.quantity for o in plan.orders if o.orderType == 'STP') == 100
     state = dict(active_stop=3.4, entry_at=(m.observed_at-timedelta(seconds=10)).isoformat())
     row = dict(level(3.48), structural_mature=True)
     assert C.ratchet(m, p, state, [row]) == pytest.approx(3.46)

@@ -245,6 +245,7 @@ class ProtectionSlice:
     stop: StopRule
     profit_target_price: float | None = None
     trailing: TrailingRule = field(default_factory=TrailingRule)
+    inherit_profit_target: bool = True
 
     def __post_init__(self) -> None:
         if not self.slice_id or not 0 < self.quantity_fraction <= 1:
@@ -396,6 +397,7 @@ def protection_profile_from_payload(payload: Mapping[str, Any]) -> ProtectionPro
                     if raw.get("profit_target_price") is not None
                     else None
                 ),
+                inherit_profit_target=bool(raw.get('inherit_profit_target', True)),
                 trailing=TrailingRule(**trailing_raw),
             )
         )

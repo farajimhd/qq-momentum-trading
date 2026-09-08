@@ -2887,6 +2887,11 @@ class OrderManagementEngine:
                 ),
                 None,
             )
+            runner_profile = any(item.profit_target_price is None and not item.inherit_profit_target for item in profile.slices)
+            if runner_profile:
+                # Preserve each slice's target entitlement when capacity grows.
+                # Resizing a paired repair stop alone changes its allocation.
+                existing_repair = None
             if existing_repair is not None:
                 order_id = str(existing_repair.orderId)
                 request_index = group.broker_order_request_indexes[order_id]
@@ -2934,6 +2939,15 @@ class OrderManagementEngine:
                     raw=_protective_repair_raw(group.orders[0].raw),
                 )
             if repair is not None:
+                target_quantity = missing
+                if runner_profile:
+                    targeted = [item.slice_id for item in profile.slices if item.profit_target_price is not None or item.inherit_profit_target]
+                    entitlement = sum(float(q) * (1 if group.broker_order_roles.get(k) == 'entry' else -1)
+                        for k, q in group.filled_by_broker_order.items()
+                        if group.broker_order_slices.get(k) in targeted)
+                    covered = sum(value for key, value in by_protection_group.items()
+                        if any(group.broker_order_slices.get(str(o.orderId)) in targeted for o in protection_groups[key]))
+                    target_quantity = min(missing, max(0., entitlement-covered))
                 target_prices = [
                     float(item.profit_target_price)
                     for item in profile.slices
@@ -2943,10 +2957,10 @@ class OrderManagementEngine:
                 target_price = (
                     target_prices[0]
                     if target_prices
-                    else float(group.intent.profit_target_price or 0)
+                    else float(group.intent.profit_target_price or 0) if any(item.inherit_profit_target for item in profile.slices) else 0.
                 )
                 valid_target = bool(
-                    target_price > 0
+                    target_price > 0 and target_quantity > tolerance
                     and (
                         target_price > float(group.intent.reference_price)
                         if position_side == "long"
@@ -2959,7 +2973,7 @@ class OrderManagementEngine:
                     # Transfer only the target capacity being paired with the
                     # repaired stop, otherwise two independent sell groups
                     # compete for the same shares (or fail no-short checks).
-                    transfer = missing
+                    transfer = target_quantity
                     for orphan in live_orders:
                         if (transfer <= tolerance or str(orphan.orderId) not in owned_broker_order_ids
                                 or group.broker_order_roles.get(str(orphan.orderId)) != "profit_target"
@@ -3018,7 +3032,7 @@ class OrderManagementEngine:
                             ticker=group.orders[0].ticker,
                             orderType="LMT",
                             side="SELL" if position_side == "long" else "BUY",
-                            quantity=missing,
+                            quantity=target_quantity,
                             tif=group.orders[0].tif,
                             outsideRTH=group.orders[0].outsideRTH,
                             price=target_price,
@@ -3027,17 +3041,22 @@ class OrderManagementEngine:
                             raw=target_raw,
                         ),
                     )
-                    repair = replace(repair, isSingleGroup=True)
+                    repair = replace(repair, quantity=target_quantity, isSingleGroup=True)
                     repairs[-1] = repair
+                repair_roles = ['profit_target', 'protective_stop'] if valid_target else ['protective_stop']
+                runner_repair = None
+                if valid_target and target_quantity < missing-tolerance:
+                    runner_repair = replace(repair, cOID=f"{self._protective_order_prefix()}repair-{uuid4().hex[:12]}",
+                                            quantity=missing-target_quantity, isSingleGroup=False)
                 async with self._command_lane(group.account_id):
                     response = await self.broker.place_orders(group.account_id, repairs)
+                    if runner_repair is not None:
+                        response += await self.broker.place_orders(group.account_id, [runner_repair])
+                        repairs.append(runner_repair)
+                        repair_roles.append('protective_stop')
                 for request, role in zip(
                     repairs,
-                    (
-                        ("profit_target", "protective_stop")
-                        if valid_target
-                        else ("protective_stop",)
-                    ),
+                    repair_roles,
                     strict=True,
                 ):
                     request_index = len(group.orders)
@@ -3052,11 +3071,7 @@ class OrderManagementEngine:
                 for row, request, role in zip(
                     response,
                     repairs,
-                    (
-                        ("profit_target", "protective_stop")
-                        if valid_target
-                        else ("protective_stop",)
-                    ),
+                    repair_roles,
                     strict=True,
                 ):
                     order_id = str(row.get("order_id") or row.get("orderId") or "")
@@ -3066,6 +3081,11 @@ class OrderManagementEngine:
                         group.broker_order_ids.append(order_id)
                     self._group_by_broker_id[order_id] = group.group_id
                     group.broker_order_roles[order_id] = role
+                    if runner_profile:
+                        group.broker_order_slices[order_id] = (
+                            next(iter(targeted)) if valid_target and request is not runner_repair
+                            else next(item.slice_id for item in profile.slices if item.profit_target_price is None and not item.inherit_profit_target)
+                        )
                     group.broker_order_request_indexes[order_id] = group.orders.index(
                         request
                     )

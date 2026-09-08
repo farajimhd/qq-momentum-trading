@@ -5456,7 +5456,7 @@ def _protection_profile_from_phase(
             first = configured_slices[0]
             first['quantity_fraction'] = fraction
             runner = dict(first, slice_id='gap-runner', quantity_fraction=1-fraction,
-                          use_strategy_profit_target=False, profit_target_price=None)
+                          use_strategy_profit_target=False, profit_target_price=None, inherit_profit_target=False)
             runner.pop('strategy_profit_target_index', None)
             configured_slices.append(runner)
     if parameters.get("broken_level_stop_only"):
@@ -5571,6 +5571,7 @@ def _protection_profile_from_phase(
                     else None
                 ),
                 trailing=trailing,
+                inherit_profit_target=bool(raw.get('inherit_profit_target', True)),
             )
         )
     return ProtectionProfile(
@@ -6120,7 +6121,9 @@ class AssignedLongMomentumStrategy:
                 status = AssignmentStatus.MANAGING
             elif action in {"exit", "take_profit", "cover"}:
                 fill_role = str(getattr(snapshot, "fill_role", "") or "")
-                if assignment.parameters.get('swing_gap_contract') == swing_gap.CONTRACT and fill_role in {'protective_stop', 'trailing_stop', 'protective_exit'}:
+                if (assignment.parameters.get('swing_gap_contract') == swing_gap.CONTRACT and incremental_fill > 0
+                        and (fill_role in {'protective_stop', 'trailing_stop', 'protective_exit'}
+                             or fill_role == 'managed_exit' and state.get('last_exit_reason') == 'protective_stop')):
                     anchor = (state.get('trailing_support_selection') or state.get('gap_selection') or {}).get('support')
                     if anchor:
                         evidence = dict(state.get('gap_evidence') or {})

@@ -181,7 +181,9 @@ class IbkrStrategyOrderPlanner:
                 offset = float(protection_slice.stop.stop_limit_offset_bps or 0) / 10_000
                 stop_limit_price = stop_price * (1 + offset if short_entry else 1 - offset)
             children: list[OrderRequest] = []
-            target = protection_slice.profit_target_price or intent.profit_target_price
+            target = protection_slice.profit_target_price
+            if target is None and protection_slice.inherit_profit_target:
+                target = intent.profit_target_price
             valid_target = target is not None and (
                 target < intent.reference_price if short_entry else target > intent.reference_price
             )
