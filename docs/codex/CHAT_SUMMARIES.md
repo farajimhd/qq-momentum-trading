@@ -2,6 +2,21 @@
 
 ## 2026
 
+### [2026-09-06 04:58 PDT - Swing books, hindsight and strategy through Candidate 118](docs/codex/chat-summaries/2026/CHAT-20260906-0458-swing-books-hindsight-strategy118.md)
+
+- Chat/task ID: `01a07695-7116-7a73-a7b1-dc3d521d8728`
+- Related tasks: `TASK-0014`, `TASK-0206`
+- Summary written: 2026-09-08 16:15 PDT
+
+Records compact causal swing books through V5, price-only long/short hindsight,
+and strategy iteration. Candidate 118 adds all-entry period body-high eligibility,
+upper-band stop ratchets, a 10-bps VWAP buffer and acquisition-only cancellation.
+The chart fix keeps changed open-position protection visible outside its frozen
+price range. Commits `4db551bf`/`cd10d957`; 76 tests plus five subtests, frontend
+build and rendered fixture passed. Activation, push, user backtesting,
+profitability acceptance and historical coverage/quality audits remain open.
+Earlier source details are partial.
+
 ### [2026-09-04 time unavailable - Long momentum contract, optimization and consumer alignment](docs/codex/chat-summaries/2026/CHAT-20260904-UNKNOWN-long-momentum-contract-execution-repair.md)
 
 - Chat/task ID: `01a06eb2-3dcb-7580-8cc5-287431048fd3`
