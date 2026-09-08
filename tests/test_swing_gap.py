@@ -41,6 +41,10 @@ def test_real_engine_enters_with_fixed_target_and_holds_on_macd_close():
     entry = next(i for i in result.evaluation.intents if i.action == 'enter_long')
     assert entry.invalidation_price == pytest.approx(102.98)
     assert entry.profit_target_price == pytest.approx(103.98)
+    detail = entry.metadata['reason_detail']
+    assert 'resistance gap selected' in detail
+    assert 'support stop=102.98' in detail and 'resistance target=103.98' in detail
+    assert 'Unified resistance acceptance' not in detail
     m = replace(market(), position_quantity=100, average_price=103.3, macd_line=-.3, macd_signal=-.2)
     held = engine.evaluate(assignment(strategy_revision=47, parameters=p, state=result.state,
         status=S.AssignmentStatus.MANAGING), m)

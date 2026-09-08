@@ -6533,6 +6533,20 @@ def _decision_reason_detail(
     state: dict[str, Any],
 ) -> str:
     prefix = "Wait" if action == "wait" else "Hold" if action == "hold" else "Act"
+    gap_selection = metadata.get("profit_target_selection") or metadata.get("gap_selection") or {}
+    if reason in {"entry_confirmed", "reentry_confirmed"} and gap_selection.get("gap"):
+        gap = gap_selection["gap"]
+        macd = metadata.get("macd") or {}
+        verb = "Re-enter" if reason == "reentry_confirmed" else "Enter"
+        return (
+            f"{verb}: causal {str(gap.get('setup') or 'gap').replace('_', ' ')} selected; "
+            f"gap={_display_value(gap.get('lower'))} to {_display_value(gap.get('upper'))}, "
+            f"support stop={_display_value(gap_selection.get('stop'))}, "
+            f"resistance target={_display_value(gap_selection.get('target'))}. "
+            f"MACD line={_display_value(macd.get('macd_line'))}, "
+            f"signal={_display_value(macd.get('macd_signal'))}; "
+            "configured entry, VWAP, liquidity and execution checks passed."
+        )
     if reason in {"entry_confirmation_incomplete", "entry_vetoed"}:
         failures = _failed_entry_conditions(metadata)
         label = "entry veto passed" if reason == "entry_vetoed" else "entry confirmation is incomplete"
