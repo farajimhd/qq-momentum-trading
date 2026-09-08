@@ -573,7 +573,7 @@ def strategy_activity_payload(
                 "active_stop": metadata.get("active_stop") or structured_state.get("active_stop"),
                 "level_price": metadata.get("level_price"),
                 "profit_targets": metadata.get("profit_targets"),
-                "profit_target": metadata.get("profit_target"),
+                "profit_target": metadata.get("profit_target") or payload.get("profit_target_price"),
                 "previous_profit_target": metadata.get("previous_profit_target"),
                 "forming_candle": metadata.get("forming_candle"),
                 "completed_candle": metadata.get("completed_candle"),
@@ -908,6 +908,7 @@ def _compact_strategy_gate_snapshot(
                     "reference_price",
                     "maximum_entry_levels",
                     "top_selection",
+                    "frozen_at_entry",
                 )
                 if current_snapshot.get(key) is not None
             }
@@ -926,7 +927,7 @@ def _compact_strategy_gate_snapshot(
                         )
                         if row.get(key) is not None
                     }
-                    for row in current_levels[:3]
+                    for row in current_levels[:4 if current_snapshot.get('frozen_at_entry') else 3]
                     if isinstance(row, dict)
                 ]
         result["unified_structural_trigger"] = compact_trigger

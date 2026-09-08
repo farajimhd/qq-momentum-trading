@@ -20,6 +20,6 @@ export function entryStructurePresentation(trigger: Evidence, entryTime: number)
   // name the nearest selected boundary below HOD R1, then R2 and R3.
   const resistancePrices = [...new Set(levels.map((row) => Number(row.entry_boundary ?? row.price))
     .filter((price) => Number.isFinite(price) && price > 0 && price <= highOfDayPrice))]
-    .sort((left, right) => right - left).slice(0, 3);
+    .sort((left, right) => right - left).slice(0, current?.frozen_at_entry ? 4 : 3);
   return { highOfDayPrice, resistancePrices };
 }

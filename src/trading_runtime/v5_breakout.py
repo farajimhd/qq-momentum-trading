@@ -4,17 +4,18 @@ from math import ceil, floor, isfinite
 from . import swing_gap
 
 CONTRACT = 'swing-v5-breakout-1'
+STAGED_CONTRACT = 'swing-v5-staged-breakout-1'
 DEFAULTS = dict(direction_window_ms=400., maximum_sample_gap_ms=250.,
                 breakout_lifetime_ms=1000., stop_offset_bps=5., target_offset_ticks=1,
                 minimum_selection_score=30., entry_resistance_count=3)
 
 
 def enabled(parameters):
-    return parameters.get('v5_breakout_contract') == CONTRACT
+    return parameters.get('v5_breakout_contract') in (CONTRACT, STAGED_CONTRACT)
 
 
 def configure(parameters):
-    if parameters['v5_breakout_contract'] != CONTRACT:
+    if not enabled(parameters):
         raise ValueError('Unknown V5 breakout contract')
     if not parameters.get('swing_evidence_contract'):
         raise ValueError('V5 breakout requires MACD entry rules')
@@ -29,6 +30,11 @@ def configure(parameters):
         if type(settings[key]) is not int:
             raise ValueError(key+' must be an integer')
     parameters['v5_breakout'] = settings
+    if parameters['v5_breakout_contract'] == STAGED_CONTRACT:
+        settings['entry_resistance_count'] = 4
+        settings.setdefault('initial_stop_pct', 5.)
+        if not 0 < settings['initial_stop_pct'] < 100:
+            raise ValueError('Initial stop percentage must be between zero and 100')
     parameters.update(completed_macd_setup=False, require_completed_entry_candle=False,
                       require_breakout_reset=False)
     parameters['entry_body_breakout'] = dict(enabled=True, offset_ticks=1)
@@ -88,6 +94,7 @@ def observe(observation, parameters, state):
     data['crossed'] = crossed
     if observation.position_quantity <= 0:
         data.pop('move', None)
+        data.pop('stages', None)
         data.pop('pending_target', None)
         high = observation.structural_session_high
         vwap = observation.execution_vwap
@@ -95,8 +102,10 @@ def observe(observation, parameters, state):
                          if high and r['upper'] <= high), key=lambda r:r['upper'], reverse=True)
         ids = {r['unified_level_id'] for r in ranked[:policy['entry_resistance_count']]}
         eligible = [r for r in crossed if r['unified_level_id'] in ids and vwap and r['lower'] > vwap]
+        if parameters['v5_breakout_contract'] == STAGED_CONTRACT:
+            eligible = [r for r in eligible if len(ranked) >= 4 and r['unified_level_id'] == ranked[3]['unified_level_id']]
         if eligible:
-            data['breakout'] = dict(level=eligible[-1], at=now)
+            data['breakout'] = dict(level=eligible[-1], at=now, references=ranked[:4], session_high=high)
         breakout = data.get('breakout')
         if breakout and (price <= breakout['level']['upper'] or now-breakout['at'] > policy['breakout_lifetime_ms']/1000):
             data.pop('breakout', None)
@@ -144,17 +153,28 @@ def select(observation, parameters, state):
     broken = breakout['level']
     if broken['lower'] <= vwap:
         return dict(reason='v5_resistance_not_above_vwap')
-    stop = below(broken, parameters)
+    staged = parameters['v5_breakout_contract'] == STAGED_CONTRACT
+    refs = breakout.get('references', [])
+    if staged and (len(refs) != 4 or price >= refs[2]['lower']):
+        return dict(reason='v5_entry_not_below_r3')
+    tick = parameters['execution']['tick_size']
+    stop = (floor(price*(1-policy['initial_stop_pct']/100)/tick+1e-9)*tick if staged else below(broken, parameters))
     if not 0 < stop < min(price, observation.bid):
         return dict(reason='v5_stop_already_triggered')
-    selected = target(data['levels'], broken, 0., parameters)
+    selected = (dict(price=(ceil(refs[1]['lower']/tick-1e-9)-policy['target_offset_ticks'])*tick,
+                     level=refs[1], average_body=0., reference=broken['upper']) if staged
+                else target(data['levels'], broken, 0., parameters))
     if not selected or selected['price'] <= max(price, observation.ask):
         return dict(reason='v5_second_target_unavailable')
     return dict(reason='', stop=stop, target=selected['price'], target_selection=selected,
-                broken=broken, broken_at=breakout['at'], direction_reference=window[0])
+                broken=broken, broken_at=breakout['at'], direction_reference=window[0],
+                references=refs, session_high=breakout.get('session_high'))
 
 
 def manage(observation, parameters, state):
+    if parameters['v5_breakout_contract'] == STAGED_CONTRACT:
+        from .v5_staged import manage as staged_manage
+        return staged_manage(observation, parameters, state)
     data = state['v5_breakout_state']
     current = float(state.get('active_stop') or state.get('initial_stop') or 0)
     selection = state.get('v5_entry_selection')

@@ -523,7 +523,7 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       const management = (event.management_event as PreviewRow | undefined) ?? {};
       const operation = String(management.operation ?? event.operation ?? "");
       const nextTarget = positiveNumber(values.profit_target ?? management.target_price);
-      if (operation === "profit_target_replaced" && nextTarget !== undefined && nextTarget !== activeTarget) {
+      if ((operation === "profit_target_replaced" || event.action === "replace_profit_target") && nextTarget !== undefined && nextTarget !== activeTarget) {
         activeTarget = nextTarget;
         fills.push({ kind: "target_change", label: `TP@${compactPrice(nextTarget)}`, price: nextTarget, side: "SELL", time });
       }

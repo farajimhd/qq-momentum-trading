@@ -5089,6 +5089,15 @@ class LongMomentumStrategyEngine:
     ) -> StrategyEngineResult:
         event_id = str(uuid4())
         resolved_metadata = dict(metadata or {})
+        if v5_breakout.enabled(assignment.parameters):
+            resolved_metadata['active_stop'] = state.get('active_stop')
+            resolved_metadata['profit_target'] = profit_target_price
+            if action == 'enter_long':
+                selected = state.get('v5_entry_selection') or {}
+                resolved_metadata['unified_structural_trigger'] = {'current_snapshot': {
+                    'levels': [dict(r, entry_boundary=r['upper']) for r in selected.get('references', [])],
+                    'session_high': selected.get('session_high'),
+                    'selected_at': observation.observed_at.isoformat(), 'frozen_at_entry': True}}
         if assignment.parameters.get("swing_evidence_contract"):
             resolved_metadata["swing_evidence_contract"] = assignment.parameters["swing_evidence_contract"]
         if assignment.parameters.get("local_swing_management"):

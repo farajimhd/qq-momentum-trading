@@ -7531,7 +7531,7 @@ function drawTradeAnnotationPrimitiveGeometry(
           const y = priceSeries.priceToCoordinate(price);
           if (y !== null) drawCanvasTradeGuide(context, exitGuideSpan.left, exitGuideSpan.right, y, supportColor, `Exit S${index + 1}`, chartBackground, width, height, elements.levelLine, elements.levelLabel, labelLayout, elements.connector);
         });
-        intent.resistancePrices?.slice(0, 3).forEach((price, index) => {
+        intent.resistancePrices?.slice(0, 4).forEach((price, index) => {
           const y = priceSeries.priceToCoordinate(price);
           if (y !== null) drawCanvasTradeGuide(context, exitGuideSpan.left, exitGuideSpan.right, y, resistanceColor, `Exit R${index + 1}`, chartBackground, width, height, elements.levelLine, elements.levelLabel, labelLayout, elements.connector);
         });
@@ -7558,7 +7558,9 @@ function drawTradeAnnotationPrimitiveGeometry(
     // labels so dense, fast entry/exit clusters cannot hide every SL/TP line.
     if ((elements.stopLine.visible || elements.stopLabel.visible) && typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
       const y = priceSeries.priceToCoordinate(annotation.stopPrice);
-      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, stopColor, "SL", chartBackground, width, height, elements.stopLine, elements.stopLabel, labelLayout, elements.connector);
+      const firstChange = annotation.fills?.filter(fill => fill.kind === 'stop_change').sort((a,b) => a.time-b.time)[0];
+      const right = firstChange ? xForAnnotationTime(chart, firstChange.time, timeline) ?? guideSpan.right : guideSpan.right;
+      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, Math.min(guideSpan.right,right), y, stopColor, "SL", chartBackground, width, height, elements.stopLine, elements.stopLabel, labelLayout, elements.connector);
     }
     if (elements.levelLine.visible || elements.levelLabel.visible) {
       annotation.supportPrices?.slice(0, 3).forEach((price, index) => {
@@ -7572,7 +7574,7 @@ function drawTradeAnnotationPrimitiveGeometry(
     const resistanceLine = annotation.positionSide === "SHORT" ? elements.levelLine : elements.entryResistanceLine;
     const resistanceLabel = annotation.positionSide === "SHORT" ? elements.levelLabel : elements.entryResistanceLabel;
     if (resistanceLine.visible || resistanceLabel.visible) {
-      annotation.resistancePrices?.slice(0, 3).forEach((price, index) => {
+      annotation.resistancePrices?.slice(0, 4).forEach((price, index) => {
         const y = priceSeries.priceToCoordinate(price);
         if (y !== null) drawCanvasTradeGuide(context, annotation.positionSide === "SHORT" ? guideSpan.left : referenceLeft, annotation.positionSide === "SHORT" ? guideSpan.right : referenceRight, y, resistanceColor, `R${index + 1} ${formatPrice(price)}`, chartBackground, width, height, resistanceLine, resistanceLabel, labelLayout, elements.connector, annotation.positionSide !== "SHORT");
       });
@@ -7583,13 +7585,26 @@ function drawTradeAnnotationPrimitiveGeometry(
     }
     if (elements.targetLine.visible || elements.targetLabel.visible) annotation.targetPrices?.forEach((price, index) => {
       const y = priceSeries.priceToCoordinate(price);
-      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, guideSpan.right, y, successColor, annotation.targetPrices?.length === 1 ? "TP" : `TP${index + 1}`, chartBackground, width, height, elements.targetLine, elements.targetLabel, labelLayout, elements.connector);
+      const firstChange = annotation.fills?.filter(fill => fill.kind === 'target_change').sort((a,b) => a.time-b.time)[0];
+      const right = firstChange ? xForAnnotationTime(chart, firstChange.time, timeline) ?? guideSpan.right : guideSpan.right;
+      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, Math.min(guideSpan.right,right), y, successColor, annotation.targetPrices?.length === 1 ? "TP" : `TP${index + 1}`, chartBackground, width, height, elements.targetLine, elements.targetLabel, labelLayout, elements.connector);
     });
     if ((elements.levelLine.visible || elements.levelLabel.visible) && typeof annotation.triggerPrice === "number" && Number.isFinite(annotation.triggerPrice)) {
       const y = priceSeries.priceToCoordinate(annotation.triggerPrice);
       if (y !== null) drawCanvasTradeGuide(context, span.left, span.right, y, infoColor, "Trigger", chartBackground, width, height, elements.levelLine, elements.levelLabel, labelLayout, elements.connector);
     }
     if (elements.adjustmentLine.visible || elements.adjustmentArrow.visible || elements.adjustmentLabel.visible) annotation.fills?.forEach((fill) => {
+      if (fill.kind === 'stop_change' || fill.kind === 'target_change') {
+        const following = annotation.fills?.filter(next => next.kind === fill.kind && next.time > fill.time)
+          .sort((a, b) => a.time - b.time)[0];
+        const left = xForAnnotationTime(chart, fill.time, timeline);
+        const right = following ? xForAnnotationTime(chart, following.time, timeline) : exitX;
+        const y = priceSeries.priceToCoordinate(fill.price);
+        if (left !== null && right !== null && y !== null) drawCanvasTradeGuide(context,
+          Math.max(0, left), Math.min(width, right), y, fill.kind === 'stop_change' ? stopColor : successColor,
+          fill.kind === 'stop_change' ? 'SL' : 'TP', chartBackground, width, height,
+          elements.adjustmentLine, elements.adjustmentLabel, labelLayout, elements.connector);
+      }
       const x = xForAnnotationTime(chart, fill.time, timeline);
       const y = priceSeries.priceToCoordinate(fill.price);
       if (x === null || y === null || x < -70 || x > width + 70) return;
@@ -7957,7 +7972,7 @@ function tradeAnnotationAutoscaleInfo(
     if (trade.status !== "open" && typeof trade.exitPrice === "number") prices.push(trade.exitPrice);
     prices.push(...(trade.levelPrices?.slice(0, 3) ?? []));
     prices.push(...(trade.supportPrices?.slice(0, 3) ?? []));
-    prices.push(...(trade.resistancePrices?.slice(0, 3) ?? []));
+    prices.push(...(trade.resistancePrices?.slice(0, 4) ?? []));
     if (typeof trade.highOfDayPrice === "number") prices.push(trade.highOfDayPrice);
     if (typeof trade.triggerPrice === "number") prices.push(trade.triggerPrice);
     if (typeof trade.stopPrice === "number") prices.push(trade.stopPrice);
@@ -7965,7 +7980,7 @@ function tradeAnnotationAutoscaleInfo(
     prices.push(...(trade.fills?.map((fill) => fill.price) ?? []));
     trade.exitIntents?.forEach((intent) => {
       prices.push(...(intent.supportPrices?.slice(0, 3) ?? []));
-      prices.push(...(intent.resistancePrices?.slice(0, 3) ?? []));
+      prices.push(...(intent.resistancePrices?.slice(0, 4) ?? []));
     });
   });
   state.executions.forEach((fill) => {

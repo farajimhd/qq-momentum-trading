@@ -2472,6 +2472,42 @@ def capture(args: argparse.Namespace) -> int:
                     if args.historical_run_id and scenario["page"] == "canvas-focus":
                         page.get_by_role("button", name=args.canvas_chart_timeframe, exact=True).click(timeout=args.timeout_ms)
                     page.wait_for_timeout(args.settle_ms)
+                    if args.staged_strategy_fixture:
+                        page.evaluate("""async () => {
+                            const {positionLifecycleAnnotations}=await import('/src/features/canvas/chartPresentation.tsx');
+                            const {ChartPanel}=await import('/src/app/components/ChartPanel.tsx');
+                            const {default:React}=await import('/node_modules/.vite/deps/react.js');
+                            const {default:ReactDOM}=await import('/node_modules/.vite/deps/react-dom_client.js');
+                            const {createRoot}=ReactDOM;
+                            const t=Date.parse('2026-08-21T11:00:00Z')/1000;
+                            const iso=s=>new Date((t+s)*1000).toISOString();
+                            const event=(s,action,values,trigger)=>({ticker:'TEST',event_type:'decision',action,event_time:iso(s),
+                                chart_plan:{decision_values:values,unified_structural_trigger:trigger}});
+                            const annotations=positionLifecycleAnnotations({as_of:iso(60),position_lifecycles:[{
+                                instrument:{symbol:'TEST'},side:'LONG',status:'open',opened_at:iso(5),entry_price:10,quantity:100}],
+                                strategy_chart_activity:[event(4,'enter_long',{initial_stop:9.5,profit_targets:[10.5]},
+                                    {current_snapshot:{frozen_at_entry:true,selected_at:iso(4),session_high:11,
+                                        levels:[10.8,10.5,10.2,9.9].map(price=>({price,entry_boundary:price}))}}),
+                                    event(20,'replace_protective_stop',{active_stop:9.85}),
+                                    event(20,'replace_profit_target',{profit_target:11.2}),
+                                    event(40,'replace_protective_stop',{active_stop:10.4}),
+                                    event(40,'replace_profit_target',{profit_target:11.5})]},'TEST');
+                            if(annotations[0]?.resistancePrices?.length!==4)throw Error('Missing frozen R1-R4');
+                            if(annotations[0]?.fills?.filter(f=>f.kind==='stop_change').length!==2)throw Error('Missing stop adjustments');
+                            if(annotations[0]?.fills?.filter(f=>f.kind==='target_change').length!==2)throw Error('Missing target adjustments');
+                            const candles=Array.from({length:61},(_,i)=>({time:t+i,open:10+i*.015,
+                                close:10.01+i*.015,high:10.04+i*.015,low:9.98+i*.015}));
+                            const host=document.createElement('div');host.id='staged-strategy-fixture';host.style.cssText='position:fixed;inset:0;z-index:9999;background:var(--surface);';
+                            document.body.append(host);
+                            createRoot(host).render(React.createElement(ChartPanel,{ticker:'TEST',timeframe:'1s',timeframes:['1s'],
+                                visibleColumns:[],featureOptions:[],indicatorOptions:[],strategyPresentationEnabled:true,fillHeight:true,initialFitMode:'all',
+                                settingsStorageKey:'staged-fixture',payload:{candles,volume:[],overlay_series:[],oscillator_series:[],
+                                    markers:[],regions:[],trade_annotations:annotations}}));
+                        }""")
+                        page.wait_for_timeout(args.settle_ms)
+                        if page.get_by_text('Chart renderer stopped', exact=True).count():
+                            raise RuntimeError('Synthetic staged strategy chart failed to render')
+                        page.locator('#staged-strategy-fixture canvas').first.wait_for(state='visible', timeout=args.timeout_ms)
                     if args.structure_time_placement:
                         page.evaluate("""async () => {
                           const {structureTimeCoordinate:f}=await import('/src/app/components/structureTimeCoordinate.ts');
@@ -2799,7 +2835,7 @@ def capture(args: argparse.Namespace) -> int:
                         and scenario["scale"] == 1.0
                         and scenario["viewport_name"] == "normal"
                     ) else screenshot_path.with_name(f"{screenshot_path.stem}__chart-interaction.png") if scenario["page"] == "canvas-focus" else None
-                    if not args.hindsight_positions and not args.swing_structure_fixture and not args.structure_gaps_fixture and not args.structure_gaps and not args.resistance_selection_fixture and not args.resistance_selection and not args.swing_book_v5:
+                    if not args.hindsight_positions and not args.swing_structure_fixture and not args.structure_gaps_fixture and not args.structure_gaps and not args.resistance_selection_fixture and not args.resistance_selection and not args.swing_book_v5 and not args.staged_strategy_fixture:
                         issues.extend(validate_canvas_interactions(
                             page, scenario, interaction_screenshot,
                             args.canvas_chart_timeframe, args.chart_stress_cycles,
@@ -2878,6 +2914,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument('--resistance-selection-fixture', action='store_true', help='validate selection overlay, cutoff, sliders and reversible chart painting with a fixture')
     result.add_argument('--resistance-selection', action='store_true', help='calculate and inspect resistance selection on a real historical chart')
     result.add_argument('--swing-book-v5', action='store_true', help='validate integrated v5 evidence-score controls on a real replay chart')
+    result.add_argument('--staged-strategy-fixture', action='store_true', help='validate frozen R1-R4 and stop/target paths using synthetic journal evidence; no backtest')
     result.add_argument('--structure-gaps-fixture', action='store_true', help='validate gap controls, causal cutoff and outcome visibility with deterministic fixtures')
     result.add_argument('--structure-gaps', action='store_true', help='calculate and inspect the real v4 gap preview on a historical chart')
     result.add_argument('--structure-time-placement', action='store_true', help='verify exact confirmation placement across missing and coarse candles')
