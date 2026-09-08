@@ -47,13 +47,15 @@ def main():
     universe['universe_id'] = 'run-plan-' + plan_id + '-candidates'
     payload['run_plans']['universes'] = [u for u in payload['run_plans']['universes'] if u['universe_id'] != universe['universe_id']] + [universe]
     plan['universe_id'] = universe['universe_id']
-    profile.update(profile_id=profile_id, name='Swing v4 gaps v2 - research',
+    profile.update(profile_id=profile_id, name='Swing v4 gaps v3 - research',
         derived_from_profile_id=args.base_profile, publication_status='draft', editable=True,
-        description='Research: causal v4 resistance-cluster gaps, MACD-open and VWAP/liquidity entry; fixed support at least $0.10 below entry and target at the tick immediately below the upper resistance lower bound. No MACD-close exit.')
+        description='Research: confirmed cluster breakout or support bounce, executable-price risk ceiling, mature support at least $0.10 below entry, partial target and support-protected runner. Failed support requires reclaim.')
     parameters = profile['parameters']
     parameters.pop('swing_momentum_contract', None)
     parameters.pop('swing_momentum', None)
     parameters.update(swing_gap_contract=CONTRACT, swing_gap=dict(DEFAULTS))
+    from src.trading_runtime.gap_continuation import DEFAULTS as CONTINUATION_DEFAULTS
+    parameters['gap_continuation'] = dict(CONTINUATION_DEFAULTS)
     parameters['protection']['stop'].update(method='structure', cap_initial_stop_distance=False)
     parameters['protection']['profit_ladder'].update(enabled=True, fixed_at_entry=True)
     parameters['momentum_management']['macd_backstop']['enabled'] = False

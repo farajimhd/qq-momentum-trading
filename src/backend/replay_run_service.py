@@ -3060,6 +3060,7 @@ class ReplayRunController:
             market_pressure=self._pressure_trackers.get(frame.ticker, PressureTracker()).snapshot(frame.as_of),
             price=float(indicator.get("close") or bar.get("close") or 0),
             bar_open=_optional_positive(bar.get("open")),
+            bar_low=_optional_positive(bar.get("low")),
             bar_high=_optional_positive(bar.get("high")),
             bid=float(quote.bid_price if quote else 0),
             ask=float(quote.ask_price if quote else 0),

@@ -459,6 +459,36 @@ class ExecutionTacticTests(unittest.TestCase):
 
 
 class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_gap_ceiling_rejects_submission_and_cancels_chasing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.BACKTEST)
+            manager, journal = await self._manager(directory, broker, policy=BrokerCommunicationPolicy(), causal_execution_clock=True)
+            try:
+                base = intent(side_quote=(10, 10.02))
+                request = replace(base, metadata={**base.metadata, 'gap_entry_ceiling': 10.01})
+                with self.assertRaisesRegex(ValueError, 'reward-to-risk ceiling'):
+                    await manager.submit_intent(portfolio_approved(journal, request), account_id='DU1', event=None)
+                request = replace(base,
+                    metadata={**base.metadata, 'gap_entry_ceiling': 10.03}, execution_policy=ExecutionPolicy(
+                        policy_id='gap-test', name=ExecutionPolicyName.ADAPTIVE_URGENT,
+                        envelope=ExecutionEnvelope(maximum_buy_price=10.03, deadline_ms=5000, maximum_reprices=4)))
+                await manager.submit_intent(portfolio_approved(journal, request), account_id='DU1', event=None)
+                later = NOW + timedelta(milliseconds=100)
+                manager.on_market_snapshot(ExecutionMarketSnapshot('TEST', 10.04, 10.06, .01, later, 'qmd-history'))
+                await manager.advance_adaptive_execution(later)
+                cancels = [r for r in journal.records('run-1') if r.entity_type == 'order_cancel_requested']
+                self.assertTrue(any(r.payload['reason'] == 'gap_entry_economics_invalidated' for r in cancels))
+                # Broker cancellation is complete but its asynchronous OMS
+                # callback has not arrived. A protective-fill callback may
+                # request cancellation again during this interval.
+                group = next(iter(manager._groups.values()))
+                await manager._cancel_open_entry_roots(group, 'protective_exit_started_before_entry_complete')
+                reconciled = [r for r in journal.records('run-1') if r.entity_type == 'order_cancel_requested']
+                self.assertTrue(any(r.payload['broker_response'].get('already_terminal') for r in reconciled))
+            finally:
+                await manager.close()
+                journal.close()
+
     async def _manager(
         self,
         directory: str,

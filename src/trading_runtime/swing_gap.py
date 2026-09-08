@@ -4,13 +4,14 @@ from math import ceil, floor, isfinite
 from src.market_engine.structure_gaps import gaps
 
 LEGACY_CONTRACT = 'swing-v4-gap-v1'
-CONTRACT = 'swing-v4-gap-v2'
+CLUSTER_CONTRACT = 'swing-v4-gap-v2'
+CONTRACT = 'swing-v4-gap-v3'
 DEFAULTS = dict(minimum_p_norm=.2, minimum_stop_distance=.10,
                 minimum_gap_bps=20., proximity_bps=50., minimum_reward_risk=1., cluster_gap_bps=50.)
 
 
 def configure(parameters):
-    if parameters['swing_gap_contract'] not in (CONTRACT, LEGACY_CONTRACT) or not parameters.get('swing_evidence_contract'):
+    if parameters['swing_gap_contract'] not in (CONTRACT, CLUSTER_CONTRACT, LEGACY_CONTRACT) or not parameters.get('swing_evidence_contract'):
         raise ValueError('Gap strategy requires the causal MACD evidence contract')
     if parameters.get('swing_momentum_contract'):
         raise ValueError('Gap and momentum policies must use separate candidates')
@@ -24,6 +25,10 @@ def configure(parameters):
     parameters['protection']['trailing'].update(enabled=False, mode='qualified_support')
     parameters['protection']['profit_ladder'].update(enabled=True, fixed_at_entry=True)
     parameters['momentum_management']['macd_backstop']['enabled'] = False
+    if parameters['swing_gap_contract'] == CONTRACT:
+        from . import gap_continuation
+        parameters['gap_continuation'] = dict(gap_continuation.DEFAULTS, **parameters.get('gap_continuation', {}))
+        gap_continuation.validate(parameters['gap_continuation'])
 
 
 def resistance_clusters(rows, maximum_gap):
@@ -68,13 +73,16 @@ def levels(observation, settings):
     return list(valid.values())
 
 
-def select(observation, parameters):
+def select(observation, parameters, state=None):
     settings = parameters['swing_gap']
     price = observation.price
     tick = float(parameters['execution']['tick_size'])
     if not isfinite(price) or price <= 0 or tick <= 0:
         return dict(reason='gap_invalid_price')
     rows = levels(observation, settings)
+    if parameters['swing_gap_contract'] == CONTRACT:
+        from .gap_continuation import select as continuation_select
+        return continuation_select(observation, parameters, state or {}, rows)
     eligible = []
     for row in rows:
         stop = floor((row['lower'] - tick + tick * 1e-9) / tick) * tick
@@ -88,7 +96,7 @@ def select(observation, parameters):
     if vwap is None or not isfinite(vwap) or price <= vwap:
         return dict(result, reason='gap_price_not_above_vwap')
     proximity = price * settings['proximity_bps'] / 10000
-    corrected = parameters['swing_gap_contract'] == CONTRACT
+    corrected = parameters['swing_gap_contract'] == CLUSTER_CONTRACT
     clusters = resistance_clusters(rows, price*settings['cluster_gap_bps']/10000) if corrected else []
     # The gap remains measured between outer band edges. Approach starts at
     # the bottom of its entrance cluster, not only the cluster's top edge.

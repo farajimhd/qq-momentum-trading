@@ -91,6 +91,7 @@ class SwingStructure:
                      last_test=t, tests=1, strength=1., state='active', beyond=0,
                      touching=False, previous_contact=False, break_at=None)
         level.update(confirmation_kind=reason, reversal_distance=distance)
+        level.update(formed_at=t, last_role_change_at=None, role_retests=0)
         self.active[level['level_id']] = level
         self._level_updated(level)
         self.counts['confirmed_'+detector['scale']] += 1
@@ -200,11 +201,14 @@ class SwingStructure:
                     if contact:
                         if not level['previous_contact']:
                             level['touching'] = True
+                            level['role_contact_at'] = t
                         level['last_test'] = t
                     if level['touching'] and rejected:
                         level['touching'] = False
                         level['tests'] += 1
                         level['strength'] += 1
+                        if t > level.get('role_contact_at', t):
+                            level['role_retests'] = level.get('role_retests', 0) + 1
                         self._publish(level, t, 'rejection')
             else:
                 # A later bar must touch from the other side, then a subsequent
@@ -215,6 +219,7 @@ class SwingStructure:
                 elif level['state'] == 'retest_contact' and beyond and t > level['contact_at']:
                     level.update(side='resistance' if side == 'support' else 'support', state='active',
                                  beyond=0, touching=False, last_test=t, confirmed_at=t)
+                    level.update(last_role_change_at=t, role_retests=0)
                     self._publish(level, t, 'role_reversal')
                     self.counts['role_reversals'] += 1
                 elif rejected:

@@ -8,7 +8,7 @@ from tests.test_long_momentum_strategy import assignment, NOW
 
 def parameters():
     p = policy()
-    p['swing_gap_contract'] = G.CONTRACT
+    p['swing_gap_contract'] = G.CLUSTER_CONTRACT
     return S.resolve_long_momentum_parameters(p, revision=47)
 
 

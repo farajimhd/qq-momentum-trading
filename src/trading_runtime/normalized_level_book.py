@@ -36,6 +36,13 @@ def merge_levels(levels, proximity_bps=MERGE_GAP_BPS, contract=CONTRACT):
                 confirmed_at_ms=max(r['confirmed_at_ms'] for r in members),
                 lifecycle='active' if all(r['lifecycle']=='active' for r in members) else 'mixed',
                 member_count=len(members), load_contract=contract,
+                formed_at_ms=max((r.get('formed_at_ms') or 0 for r in members), default=0) or None,
+                last_role_change_at_ms=max((r.get('last_role_change_at_ms') or 0 for r in members), default=0) or None,
+                role_retests=min((r.get('role_retests') or 0 for r in members), default=0),
+                independent_retests=min((r.get('independent_retests') or 0 for r in members), default=0),
+                structural_mature=all((r.get('role_retests') or 0)>=1 if r.get('last_role_change_at_ms') else
+                    ((r.get('independent_retests') or 0)>=1 or
+                     (r.get('history_threshold',0)>0 and r.get('best_departure',0)>=r['history_threshold'])) for r in members),
                 **({'merge_gap_bps': proximity_bps} if contract != 'merged-point-minmax-v1' else {}),
                 timeframes=sorted({t for r in members for t in r.get('timeframes', [])})))
     return sorted(output, key=lambda r: (r['price'], r['side'], r['unified_level_id']))

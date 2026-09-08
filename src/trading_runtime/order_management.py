@@ -777,6 +777,9 @@ class OrderManagementEngine:
             )
         await self._require_shortability(working_intent, plan)
         quote = self._execution_quote(working_intent)
+        ceiling = working_intent.metadata.get('gap_entry_ceiling')
+        if ceiling is not None and (quote is None or quote.ask > float(ceiling)+1e-9):
+            raise ValueError('Gap entry quote exceeds the approved reward-to-risk ceiling')
         tactic = execution_tactic(
             working_intent,
             self.policy,
@@ -2180,6 +2183,10 @@ class OrderManagementEngine:
                 {"reason": "quote_stale", "quote_age_ms": age_ms},
             )
             return False
+        ceiling = group.intent.metadata.get('gap_entry_ceiling')
+        if ceiling is not None and (quote.ask > float(ceiling)+1e-9 or quote.bid <= float(group.intent.invalidation_price or 0)):
+            await self._cancel_open_entry_roots(group, 'gap_entry_economics_invalidated')
+            return False
         requested_price = envelope.bound(
             group.tactic.side,
             _adaptive_price(
@@ -2323,8 +2330,28 @@ class OrderManagementEngine:
             {"event": "adaptive_cancel_requested", "reason": reason},
         )
         for broker_order_id, _ in roots:
+            terminal = None
             async with self._command_lane(group.account_id):
-                response = await self.broker.cancel_order(group.account_id, broker_order_id)
+                # A fill batch can close another slice before its OMS callback
+                # arrives. Reconcile explicit broker terminal state; absence
+                # from a broker snapshot is not proof of cancellation.
+                current = next((o for o in await self.broker.live_orders()
+                                if str(o.orderId) == broker_order_id), None)
+                if current is not None and current.order_status not in OPEN_ORDER_STATUSES:
+                    terminal = current
+                    response = {'already_terminal': current.order_status.value}
+                else:
+                    try:
+                        response = await self.broker.cancel_order(group.account_id, broker_order_id)
+                    except ValueError:
+                        current = next((o for o in await self.broker.live_orders()
+                                        if str(o.orderId) == broker_order_id), None)
+                        if current is None or current.order_status in OPEN_ORDER_STATUSES:
+                            raise
+                        terminal = current
+                        response = {'already_terminal': current.order_status.value}
+            if terminal is not None:
+                await self.on_order_update(terminal)
             self._record(
                 "broker",
                 "order_cancel_requested",

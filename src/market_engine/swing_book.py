@@ -206,4 +206,9 @@ def project(level, version=VERSION):
         lifecycle=level['state'], pending_side=(0 if level['state']=='active' else -1 if level['side']=='support' else 1),
         book_version=version,sources=[],ticker_relative_quality_status='unavailable',
         timeframes=['1s'], scale=level['scale'],
-        confirmation_kind=level['confirmation_kind'])
+        confirmation_kind=level['confirmation_kind'],
+        formed_at_ms=int(level['formed_at']*1000) if level.get('formed_at') is not None else None,
+        last_role_change_at_ms=int(level['last_role_change_at']*1000) if level.get('last_role_change_at') is not None else None,
+        role_retests=level.get('role_retests'),
+        independent_retests=level.get('independent_retests', 0),
+        best_departure=level.get('best_departure', 0), history_threshold=level.get('history_threshold', 0))

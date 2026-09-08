@@ -3,7 +3,7 @@ from __future__ import annotations
 from src.trading_runtime import breakout_confirmation
 
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
-from src.trading_runtime import histogram_slope, market_pressure, local_swing, swing_evidence, swing_momentum, swing_gap
+from src.trading_runtime import histogram_slope, market_pressure, local_swing, swing_evidence, swing_momentum, swing_gap, gap_continuation
 
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, time as clock_time, timedelta, timezone
@@ -299,6 +299,7 @@ class StrategyObservation:
     observed_at: datetime
     price: float
     bar_open: float | None = None
+    bar_low: float | None = None
     bar_high: float | None = None
     bid: float = 0.0
     ask: float = 0.0
@@ -2669,6 +2670,8 @@ class LongMomentumStrategyEngine:
             assignment.parameters,
             revision=self.revision,
         )
+        if parameters.get('swing_gap_contract') == swing_gap.CONTRACT:
+            gap_continuation.observe(observation, parameters, state, swing_gap.levels(observation, parameters['swing_gap']))
         if parameters.get("completed_macd_setup"):
             closed = "bar_close" in observation.evaluation_events and observation.source_timeframe in {"", "1s"}
             if closed and parameters.get("swing_momentum_contract"):
@@ -3467,7 +3470,7 @@ class LongMomentumStrategyEngine:
                 state.pop('pending_capital_request',None)
                 return self._result(assignment,observation,'wait',reason,0.,1.,state,AssignmentStatus.WATCHING,
                     metadata={'swing_context':ctx,'stop':stop,'progress':state.get('swing_price_progress')})
-        gap_selection = swing_gap.select(observation, parameters) if parameters.get('swing_gap_contract') else None
+        gap_selection = swing_gap.select(observation, parameters, state) if parameters.get('swing_gap_contract') else None
         if gap_selection and gap_selection['reason']:
             return self._result(assignment, observation, 'wait', gap_selection['reason'], 0., 1.,
                 state, AssignmentStatus.WATCHING, metadata={'gap_selection': gap_selection})
@@ -5216,6 +5219,11 @@ class LongMomentumStrategyEngine:
                     },
                 ),
             )
+        if action == 'enter_long' and assignment.parameters.get('swing_gap_contract') == swing_gap.CONTRACT and intents:
+            ceiling = state['gap_selection']['maximum_buy_price']
+            intents = tuple(replace(i, execution_policy=replace(i.resolved_execution_policy(),
+                envelope=replace(i.resolved_execution_policy().envelope, maximum_buy_price=ceiling)),
+                metadata={**i.metadata, 'gap_entry_ceiling': ceiling}) for i in intents)
         payload = {
             "assignment_id": assignment.assignment_id,
             "strategy_id": assignment.strategy_id,
@@ -5443,6 +5451,14 @@ def _protection_profile_from_phase(
             raw.update(quantity_fraction=1., strategy_profit_target_index=0,
                        use_strategy_profit_target=True, stop={'rule_type': 'fixed_price'},
                        trailing={'rule_type': 'none'})
+        if parameters.get('swing_gap_contract') == swing_gap.CONTRACT and configured_slices:
+            fraction = parameters.get('gap_continuation', gap_continuation.DEFAULTS)['take_profit_fraction']
+            first = configured_slices[0]
+            first['quantity_fraction'] = fraction
+            runner = dict(first, slice_id='gap-runner', quantity_fraction=1-fraction,
+                          use_strategy_profit_target=False, profit_target_price=None)
+            runner.pop('strategy_profit_target_index', None)
+            configured_slices.append(runner)
     if parameters.get("broken_level_stop_only"):
         # One fully protected position, with no attached fixed-profit order.
         configured_slices = [dict(configured_slices[0])] if configured_slices else []
@@ -5455,6 +5471,8 @@ def _protection_profile_from_phase(
         raw.get("strategy_profit_target_index") is not None
         for raw in configured_slices
     )
+    if parameters.get('swing_gap_contract') == swing_gap.CONTRACT:
+        has_indexed_slices = False
     indexed_slices = [
         raw
         for raw in configured_slices
@@ -6102,6 +6120,14 @@ class AssignedLongMomentumStrategy:
                 status = AssignmentStatus.MANAGING
             elif action in {"exit", "take_profit", "cover"}:
                 fill_role = str(getattr(snapshot, "fill_role", "") or "")
+                if assignment.parameters.get('swing_gap_contract') == swing_gap.CONTRACT and fill_role in {'protective_stop', 'trailing_stop', 'protective_exit'}:
+                    anchor = (state.get('trailing_support_selection') or state.get('gap_selection') or {}).get('support')
+                    if anchor:
+                        evidence = dict(state.get('gap_evidence') or {})
+                        failed = dict(evidence.get('failed') or {})
+                        failed[gap_continuation.key(anchor)] = snapshot.updated_at.timestamp()
+                        evidence['failed'] = failed
+                        state['gap_evidence'] = evidence
                 if assignment.parameters.get("broken_level_stop_only") and fill_role in {"protective_stop", "trailing_stop", "protective_exit"}:
                     selection = dict(state.get("trailing_support_selection") or state.get("initial_stop_selection") or {})
                     level = selection.get("selected_level") or selection.get("selected_resistance_level")
@@ -6156,7 +6182,7 @@ class AssignedLongMomentumStrategy:
                         aggregate_position_quantity is not None
                         and abs(float(aggregate_position_quantity)) > 1e-9
                     ):
-                        state["profit_target_liquidation_required"] = True
+                        state["profit_target_liquidation_required"] = assignment.parameters.get('swing_gap_contract') != swing_gap.CONTRACT
                         state["target_replenishment_quantity"] = 0.0
                         state["target_replenishment_pending"] = False
                 if (
@@ -7638,7 +7664,7 @@ def _initial_stop(
 ) -> float:
     stop = parameters["protection"]["stop"]
     if parameters.get('swing_gap_contract'):
-        selected = swing_gap.select(observation, parameters)
+        selected = swing_gap.select(observation, parameters, candle_state)
         if selection_evidence is not None:
             selection_evidence.update(selected)
         return selected.get('stop', 0.) if side == 'long' else 0.
@@ -7895,6 +7921,8 @@ def _ratcheted_stop(
 ) -> float:
     current = float(state.get("active_stop") or state.get("initial_stop") or 0)
     if parameters.get('swing_gap_contract'):
+        if parameters.get('swing_gap_contract') == swing_gap.CONTRACT:
+            return gap_continuation.ratchet(observation, parameters, state, swing_gap.levels(observation, parameters['swing_gap']))
         return current
     entry = float(state.get("entry_reference_price") or observation.average_price or observation.price)
     gain_pct = (
