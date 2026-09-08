@@ -165,3 +165,39 @@ def test_pending_rows_only_consumed_by_new_candidate():
     assert not V.rows(current,p)
     p['v5_hod_vwap_fallback']=True
     assert V.rows(current,p)[0]['lifecycle']=='awaiting_retest'
+
+
+@pytest.mark.parametrize('count,expected_target', [(1,105.98),(2,104.98)])
+@pytest.mark.parametrize('vwap', [97.,102.])
+def test_sparse_entry_engine_targets_stop_and_recorded_vwap(count,expected_target,vwap):
+    p,state,m=setup()
+    p.update(v5_hod_vwap_fallback=True,v5_hod_sparse_entry=True)
+    prices=([104] if count==1 else [103.8,104])+[105,106]
+    m=replace(m,execution_vwap=vwap,structural_resistance_levels=tuple(resistance(x) for x in prices))
+    V.observe(m,p,state)
+    result=S.LongMomentumStrategyEngine(revision=47).evaluate(
+        assignment(strategy_revision=47,parameters=p,state=state),m)
+    entry=next(i for i in result.evaluation.intents if i.action=='enter_long')
+    assert entry.profit_target_price==pytest.approx(expected_target)
+    assert entry.invalidation_price==pytest.approx(max(98.13,V.below(dict(lower=vwap),p)))
+    refs=entry.metadata['unified_structural_trigger']['current_snapshot']['levels']
+    assert len(refs)==count+1 and refs[-1]['reference_kind']=='vwap'
+
+
+def test_sparse_missing_target_and_zero_resistances_wait():
+    p,state,m=setup();p.update(v5_hod_vwap_fallback=True,v5_hod_sparse_entry=True)
+    for prices,reason in [([104,105],'v5_sparse_upper_target_unavailable'),
+                           ([], 'v5_resistance_above_vwap_unavailable')]:
+        current=replace(m,structural_resistance_levels=tuple(resistance(x) for x in prices))
+        V.observe(current,p,state);V.observe(current,p,state)
+        assert V.select(current,p,state)['reason']==reason
+
+
+def test_new_candidate_watches_forming_resistance_before_any_stage_advance():
+    p,state,m=setup();p.update(v5_hod_vwap_fallback=True,v5_hod_sparse_entry=True)
+    new=resistance(103.25,NOW.timestamp()+.5)
+    step(p,state,m,1,103.3,structural_resistance_levels=m.structural_resistance_levels+(new,))
+    assert state['v5_breakout_state']['stages']['phase']==0
+    assert state['active_stop']==V.below(new,p)
+    step(p,state,m,2,103.3)
+    assert state['active_stop']==V.below(new,p)

@@ -22,9 +22,14 @@ def observe(observation, parameters, state):
     high = data.get('session_high')
     ranked = sorted((r for r in prior if high and r['upper'] <= high),
                     key=lambda r: r['upper'], reverse=True)[:4]
-    if parameters.get('v5_hod_vwap_fallback') and len(ranked)==3:
-        vwap = observation.execution_vwap
-        if vwap and 0 < vwap < ranked[2]['lower']:
+    vwap = observation.execution_vwap
+    if parameters.get('v5_hod_sparse_entry'):
+        above_vwap = [r for r in ranked if vwap and r['lower'] > vwap]
+        if len(above_vwap) <= 2:
+            ranked = above_vwap
+    fallback_counts = (1, 2, 3) if parameters.get('v5_hod_sparse_entry') else (3,)
+    if parameters.get('v5_hod_vwap_fallback') and len(ranked) in fallback_counts:
+        if vwap and 0 < vwap < ranked[-1]['lower']:
             ranked.append(dict(unified_level_id='reference:vwap', reference_kind='vwap',
                                price=vwap, lower=vwap, upper=vwap, side=-1))
     data.update(entry_ranked=ranked, decision_high=high, decision_levels=prior,
@@ -67,21 +72,32 @@ def select(observation, parameters, state):
     if not observation.execution_vwap or price <= observation.execution_vwap:
         return dict(reason='v5_price_not_above_vwap')
     refs = data.get('entry_ranked', [])
-    if len(refs) != 4:
-        return dict(reason=('v5_three_resistances_and_lower_vwap_unavailable'
+    sparse = (parameters.get('v5_hod_sparse_entry') and len(refs) in (2, 3)
+              and refs[-1].get('reference_kind') == 'vwap')
+    if len(refs) != 4 and not sparse:
+        return dict(reason=('v5_resistance_above_vwap_unavailable' if parameters.get('v5_hod_sparse_entry') else
+                            'v5_three_resistances_and_lower_vwap_unavailable'
                             if parameters.get('v5_hod_vwap_fallback') else
                             'v5_four_resistances_below_hod_unavailable'))
-    if price <= refs[3]['upper']:
+    if price <= refs[-1]['upper']:
         return dict(reason='v5_price_not_above_r4')
     selected = target(refs[0], parameters)
+    if sparse:
+        above = [r for r in data['decision_levels'] if r['lower'] > refs[0]['upper']]
+        ordinal = 4-len(refs)
+        if len(above) < ordinal:
+            return dict(reason='v5_sparse_upper_target_unavailable')
+        selected = target(above[ordinal-1], parameters)
     if selected['price'] <= max(price, observation.ask):
         return dict(reason='v5_r1_target_not_above_entry')
     tick = parameters['execution']['tick_size']
     stop = floor(price*(1-parameters['v5_breakout']['initial_stop_pct']/100)/tick+1e-9)*tick
+    if sparse:
+        stop = max(stop, v5.below(refs[-1], parameters))
     if not 0 < stop < min(price, observation.bid):
         return dict(reason='v5_stop_already_triggered')
     return dict(reason='', stop=stop, target=selected['price'], target_selection=selected,
-                broken=refs[3], broken_at=now, references=refs,
+                broken=refs[-1], broken_at=now, references=refs, sparse_entry=bool(sparse),
                 session_high=data['decision_high'], interval_based=False)
 
 
@@ -122,13 +138,14 @@ def manage(observation, parameters, state):
             stage.pop('target_pending_phase', None)
     if stage['phase'] >= 1 and len(refs) == 4:
         current = max(current, v5.below(refs[3], parameters))
-    if stage['advanced_at'] is not None:
-        # Only genuinely new, causally confirmed resistance after advancement
+    watch_from = selection['broken_at'] if parameters.get('v5_hod_sparse_entry') else stage['advanced_at']
+    if watch_from is not None:
+        # Only genuinely new, causally confirmed resistance after the watch start
         # can provide the requested alarming local stop. A returned old row
         # or a future confirmation is not a newly forming resistance.
         for row in data['new_levels']:
             confirmed = row['confirmed_at_ms']/1000
-            if (stage['advanced_at'] < confirmed <= now
+            if (watch_from < confirmed <= now
                     and row['lower'] <= float(state.get('high_water_price') or observation.price)):
                 current = max(current, v5.below(row, parameters))
     data['stages'] = stage
