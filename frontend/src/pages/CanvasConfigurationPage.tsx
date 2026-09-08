@@ -448,9 +448,9 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const activeSymbol = activeLinkGroup === "none" ? primarySettings.chart.symbol : registry.linkContexts[activeLinkGroup].symbol;
   const chartCutoffMs = useMemo(
     () => replayRun
-      ? Date.parse(replayRun.current_time)
+      ? Date.parse(preview?.run?.run_id === replayRun.run_id ? preview.run.current_time : replayRun.current_time)
       : dateInTimeZone(previewContext.sessionDate, previewContext.previewTime, "America/New_York").getTime(),
-    [previewContext, replayRun?.current_time],
+    [previewContext, replayRun?.run_id, replayRun?.current_time, preview?.run?.run_id, preview?.run?.current_time],
   );
   const scannerCutoffMs = replayRun ? Math.floor(chartCutoffMs / 15_000) * 15_000 : chartCutoffMs;
   const historicalScanner = useCanvasScannerSnapshot({
@@ -663,7 +663,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   usePollingTask({
     enabled: Boolean(contextReady && replayRun && replayRuntimeReady && previewContainerKey),
     initialDelayMs: 0,
-    intervalMs: runtimeMode === "backtest" ? 1_000 : 250,
+    intervalMs: 250,
     // Let the one final read finish even if its tab is hidden. A single-shot
     // polling task otherwise treats a visibility abort as completion.
     pauseWhenHidden: Boolean(replayRun && !isTerminalReplayStatus(replayRun.status)),
@@ -673,7 +673,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     task: async (signal) => {
       if (!replayRun) return;
       const revision = `${replayRun.run_id}:${activeSymbol}:${previewContainerKey}:${replayRun.updated_at}:${replayRun.status}`;
-      if (loadedPreviewRevisionRef.current === revision) return;
+      if (isTerminalReplayStatus(replayRun.status) && loadedPreviewRevisionRef.current === revision) return;
       const payload = await api<CanvasPreview>(`/api/trading/${runtimeMode}/runs/${encodeURIComponent(replayRun.run_id)}/canvas${query({ symbol: activeSymbol })}`, { signal, timeoutMs: 60000 });
       if (!signal.aborted) { loadedPreviewRevisionRef.current = revision; setPreview(payload); setLoading(false); setError(""); }
     },

@@ -2479,7 +2479,7 @@ def capture(args: argparse.Namespace) -> int:
                     page.wait_for_timeout(args.settle_ms)
                     if args.staged_strategy_fixture:
                         page.evaluate("""async () => {
-                            const {positionLifecycleAnnotations,historicalMarketLevelZones}=await import('/src/features/canvas/chartPresentation.tsx');
+                            const {ChartPreview,positionLifecycleAnnotations,historicalMarketLevelZones}=await import('/src/features/canvas/chartPresentation.tsx');
                             const {ChartPanel}=await import('/src/app/components/ChartPanel.tsx');
                             const {default:React}=await import('/node_modules/.vite/deps/react.js');
                             const {default:ReactDOM}=await import('/node_modules/.vite/deps/react-dom_client.js');
@@ -2530,16 +2530,47 @@ def capture(args: argparse.Namespace) -> int:
                                 return originalFillText.call(this,text,...args);
                             };
                             document.body.append(host);
-                            createRoot(host).render(React.createElement(ChartPanel,{ticker:'TEST',timeframe:'1s',timeframes:['1s'],
-                                visibleColumns:['indicator.qmd_unified_structure'],featureOptions:[],indicatorOptions:['indicator.qmd_unified_structure'],strategyPresentationEnabled:true,fillHeight:true,initialFitMode:'all',
-                                settingsStorageKey:'staged-fixture',payload:{candles,volume:[],overlay_series:[],oscillator_series:[],
-                                    markers:[],regions:[],price_zones:zones,trade_annotations:annotations}}));
+                            const {DEFAULT_SETTINGS}=await import('/src/features/canvas/configuration.ts');
+                            const originalFetch=window.fetch;
+                            window.__duplicateEvidenceRequests=0;
+                            window.fetch=(url,...args)=>{
+                                if(String(url).includes('/api/trading/strategy-activity')) {
+                                    window.__duplicateEvidenceRequests++;
+                                    return Promise.resolve(new Response(JSON.stringify({rows:[]})));
+                                }
+                                return originalFetch(url,...args);
+                            };
+                            preview.positions=[{account_id:'SIM',instrument:{symbol:'TEST'},quantity:100,average_price:10,unrealized_pnl:91}];
+                            preview.orders=[{account_id:'SIM',instrument:{symbol:'TEST'},side:'SELL',terminal:false,order_type:'STP',stop_price:10.4},
+                                {account_id:'SIM',instrument:{symbol:'TEST'},side:'SELL',terminal:false,order_type:'LMT',limit_price:11.5}];
+                            const root=createRoot(host);
+                            const render=()=>root.render(React.createElement(ChartPreview,{
+                                canvasId:'fixture',instanceId:'clock-sync',changeAsOf:preview.as_of,
+                                chartSettings:{...DEFAULT_SETTINGS.chart,timeframe:'1s',visibleIndicators:[],showSplitEvents:false},
+                                linkContext:{symbol:'TEST'},symbolEditable:false,fillHeight:true,
+                                onChartSettingsChange:()=>{},onLinkContextChange:()=>{},runId:'fixture',trading:{...preview},
+                                liveChart:{bars:candles.map((c,i)=>({...c,bar_start:iso(i),bar_end:iso(i+1),volume:1})),
+                                    indicators:[],marketSignalEvents:[],structureEvents:[],structureLevelHistory:[],
+                                    loading:false,loadingEarlier:false,canLoadEarlier:false,loadEarlier:()=>{}}
+                            }));
+                            render();
+                            window.__advanceProtection=()=>{
+                                preview.orders=preview.orders.map(o=>({...o,stop_price:o.stop_price?10.6:undefined,limit_price:o.limit_price?11.7:undefined}));
+                                preview.as_of=iso(66); render();
+                            };
                         }""")
                         page.wait_for_timeout(args.settle_ms)
                         if page.get_by_text('Chart renderer stopped', exact=True).count():
                             raise RuntimeError('Synthetic staged strategy chart failed to render')
                         page.locator('#staged-strategy-fixture canvas').first.wait_for(state='visible', timeout=args.timeout_ms)
                         page.wait_for_function("window.__openProtectionLabels.includes('SL') && window.__openProtectionLabels.includes('TP')", timeout=args.timeout_ms)
+                        page.locator('.live-position-protection-line[data-role="stop"][data-position-price="10.4"]').wait_for()
+                        page.evaluate('window.__advanceProtection()')
+                        page.locator('.live-position-protection-line[data-role="stop"][data-position-price="10.6"]').wait_for()
+                        page.locator('.live-position-protection-line[data-role="target"][data-position-price="11.7"]').wait_for()
+                        if page.evaluate('window.__duplicateEvidenceRequests') != 0:
+                            raise RuntimeError('Chart discarded atomic canvas evidence for a second request')
+
                     if args.structure_time_placement:
                         page.evaluate("""async () => {
                           const {structureTimeCoordinate:f}=await import('/src/app/components/structureTimeCoordinate.ts');

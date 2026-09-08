@@ -95,7 +95,17 @@ class CanvasReadTests(unittest.IsolatedAsyncioTestCase):
             try:
                 before=session.projector.snapshot()
                 count=controller._journal.latest_sequence(controller.run_id)
-                first=await controller.canvas_payload('SUGP')
+                from src.backend import replay_run_service as R
+                original_payload = R.trading_state_payload
+                publication_time = controller.current_time
+                def advance_during_serialization(*args, **kwargs):
+                    controller.current_time = publication_time + timedelta(seconds=10)
+                    return original_payload(*args, **kwargs)
+                with patch.object(R, 'trading_state_payload', side_effect=advance_during_serialization), \
+                     patch.object(controller, 'strategy_activity_snapshot', wraps=controller.strategy_activity_snapshot) as activity:
+                    first=await controller.canvas_payload('SUGP')
+                    assert datetime.fromisoformat(first['run']['current_time']) == publication_time
+                    assert all(call.kwargs['as_of'] == publication_time for call in activity.call_args_list)
                 await controller.canvas_payload('SUGP')
                 assert first['trading']['accounts']
                 assert session.projector.snapshot()==before

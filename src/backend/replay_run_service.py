@@ -1880,6 +1880,10 @@ class ReplayRunController:
     async def _canvas_payload_unlocked(self, symbol: str) -> dict[str, Any]:
         if self._runtime is None or self._journal is None:
             raise ValueError("Replay trading state is not ready")
+        # Capture the display clock before yielding: positions, journal evidence
+        # and chart requests must describe the same publication, not a later tick.
+        publication_run = self.stream_snapshot()
+        publication_time = _aware_datetime(publication_run["current_time"])
         now = time.monotonic()
         cache_state = (self.status, self._runtime_finished)
         if self._canvas_state_cache and self._canvas_state_cache_state == cache_state and (
@@ -1887,6 +1891,8 @@ class ReplayRunController:
             or now - self._canvas_state_cache[0] <= 0.2
         ):
             trading = self._canvas_state_cache[1]
+            publication_run = trading["presentation_run"]
+            publication_time = _aware_datetime(publication_run["current_time"])
         else:
             # Capture immutable engine state on its owning loop; serialization
             # and journal projection happen off-loop and cannot reconcile or
@@ -1897,7 +1903,7 @@ class ReplayRunController:
                 include_strategy_activity=False,
             )
             activity_page = await asyncio.to_thread(self.strategy_activity_snapshot,
-                as_of=self.current_time or self.definition.requested_start,
+                as_of=publication_time,
                 limit=2_000,
                 include_decision_evidence=False,
                 consequential_only=False,
@@ -1912,11 +1918,12 @@ class ReplayRunController:
                 "complete": activity_page["complete"],
                 "next_offset": activity_page.get("next_offset"),
             }
+            trading["presentation_run"] = publication_run
             self._canvas_state_cache = (now, trading)
             self._canvas_state_cache_state = cache_state
         ticker = _ticker(symbol)
         chart_activity_rows = (await asyncio.to_thread(self.strategy_activity_snapshot,
-            as_of=self.current_time or self.definition.requested_start,
+            as_of=publication_time,
             ticker=ticker,
             limit=50_000,
             include_decision_evidence=False,
@@ -1927,7 +1934,7 @@ class ReplayRunController:
         # Keep this symbol-scoped projection separate so a long session cannot
         # force the browser to ingest every routine wait observation.
         trading = {
-            **trading,
+            **{key: value for key, value in trading.items() if key != "presentation_run"},
             "strategy_chart_activity": _compact_strategy_chart_activity_rows(
                 chart_activity_rows
             ),
@@ -2009,7 +2016,7 @@ class ReplayRunController:
             "strategy": strategy,
             "trading": trading,
             "xbrl": [],
-            "run": self.stream_snapshot(),
+            "run": publication_run,
         }
 
     def signal_stream_snapshot(

@@ -208,10 +208,12 @@ export function ChartPreview({
     };
   }, [barGptOriginUs, barGptScopeId, barGptTriggerMode, barGptVersion, barGptView, linkContext.symbol, liveChart.pointInTime, showBarGpt]);
   const strategyPresentationAvailable = showTradeAnnotations && supportsPositionPresentation(timeframe);
+  // Canvas publishes compact chart plans alongside its broker snapshot. The
+  // table endpoint omits those plans and must never overwrite this authority.
   const [scopedStrategyActivity, setScopedStrategyActivity] = useState<PreviewRow[] | null>(null);
   useEffect(() => { setScopedStrategyActivity(null); }, [runId, linkContext.symbol]);
   usePollingTask({
-    enabled: Boolean(trading && strategyPresentationAvailable), initialDelayMs: 0, intervalMs: 1000,
+    enabled: Boolean(trading && strategyPresentationAvailable && !Array.isArray(trading.strategy_chart_activity)), initialDelayMs: 0, intervalMs: 1000,
     pauseWhenHidden: false, restartKey: `${runId}:${linkContext.symbol}`,
     onError: () => setStrategyActivityError("Strategy evidence unavailable"),
     task: async (signal) => {
@@ -223,7 +225,7 @@ export function ChartPreview({
     },
   });
   const chartTrading = useMemo(
-    () => scopedStrategyActivity === null || !trading
+    () => scopedStrategyActivity === null || !trading || Array.isArray(trading.strategy_chart_activity)
       ? trading
       : { ...trading, strategy_chart_activity: scopedStrategyActivity },
     [scopedStrategyActivity, trading],
