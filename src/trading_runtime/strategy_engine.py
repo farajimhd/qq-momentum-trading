@@ -5226,6 +5226,8 @@ class LongMomentumStrategyEngine:
                 metadata={**i.metadata, 'gap_entry_ceiling': ceiling}) for i in intents)
         if action == 'enter_long' and assignment.parameters.get('gap_require_valid_stop_on_entry'):
             intents = tuple(replace(i, metadata={**i.metadata, 'gap_require_valid_stop_on_entry': True}) for i in intents)
+        if action == 'enter_long' and (swing_gap.runner_policy(assignment.parameters) or {}).get('complete_partial_target'):
+            intents = tuple(replace(i, metadata={**i.metadata, 'complete_partial_target': True}) for i in intents)
         payload = {
             "assignment_id": assignment.assignment_id,
             "strategy_id": assignment.strategy_id,

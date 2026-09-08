@@ -471,6 +471,8 @@ class OrderManagementEngine:
         at = event_time.astimezone(timezone.utc)
         advanced: list[_ManagedOrderGroup] = []
         for group in tuple(self._groups.values()):
+            if await self._complete_partial_target(group, at):
+                advanced.append(group)
             if group.tactic is None:
                 continue
             if (
@@ -508,6 +510,48 @@ class OrderManagementEngine:
         if advanced:
             await self.reconcile()
         return tuple(group.snapshot(self.policy.version) for group in advanced)
+
+    async def _complete_partial_target(self, group: _ManagedOrderGroup, at: datetime) -> bool:
+        """Complete only the touched target allocation; preserve its paired stop and runner."""
+        if not group.intent.metadata.get('complete_partial_target') or group.protection_delegated:
+            return False
+        target_ids = {k for k, role in group.broker_order_roles.items() if role == 'profit_target'}
+        if (not target_ids.difference(group.terminal_broker_order_ids)
+                or not any(group.filled_by_broker_order.get(k, 0) > 0 for k in target_ids)):
+            return False
+        quote = self._execution_quote(group.intent)
+        if quote is None or not 0 <= (at-quote.observed_at).total_seconds()*1000 <= self.policy.maximum_quote_age_ms:
+            return False
+        changed = False
+        for order in await self.broker.live_orders():
+            order_id = str(order.orderId)
+            if order_id not in target_ids or order.order_status not in OPEN_ORDER_STATUSES or order.remainingQuantity <= 0:
+                continue
+            index = group.broker_order_request_indexes.get(order_id)
+            if index is None:
+                raise RuntimeError('Target completion requires a registered order request')
+            request = group.orders[index]
+            price = _round_to_tick(quote.bid if request.side == 'SELL' else quote.ask, quote.tick_size, request.side)
+            if (request.side == 'SELL' and float(request.price) <= price) or (request.side == 'BUY' and float(request.price) >= price):
+                continue
+            replacement = replace(request, price=price,
+                                  quantity=float(order.filledQuantity)+float(order.remainingQuantity))
+            async with self._command_lane(group.account_id):
+                try:
+                    response = await self.broker.modify_order(group.account_id, order_id, replacement)
+                except Exception:
+                    current = next((r for r in await self.broker.live_orders() if str(r.orderId) == order_id), None)
+                    if current is not None and current.order_status not in OPEN_ORDER_STATUSES:
+                        group.terminal_broker_order_ids.add(order_id)
+                        continue
+                    raise
+            _require_modify_acknowledgement(response)
+            group.orders[index] = replacement
+            self._record('order_management', 'partial_target_completion', order_id, group.account_id, at,
+                         {'price': price, 'remaining_quantity': float(order.remainingQuantity),
+                          'slice_id': group.broker_order_slices.get(order_id), 'response': response})
+            changed = True
+        return changed
 
     async def configure_broker_session(self) -> None:
         suppress = getattr(self.broker, "suppress_order_replies", None)
@@ -3430,6 +3474,8 @@ class OrderManagementEngine:
         group: _ManagedOrderGroup,
         snapshot: ExecutionMarketSnapshot,
     ) -> None:
+        if not self.causal_execution_clock:
+            await self._complete_partial_target(group, snapshot.observed_at)
         profile = group.intent.resolved_protection_profile()
         if profile is None:
             return

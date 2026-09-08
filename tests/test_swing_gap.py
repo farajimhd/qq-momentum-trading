@@ -72,7 +72,7 @@ def test_bid_must_clear_stop_without_changing_valid_baseline_entries():
 
 def test_partial_runner_management_keeps_baseline_entry_and_target_selection():
     baseline = parameters()
-    runner = dict(baseline, gap_management={'enabled': True, 'take_profit_fraction': .5})
+    runner = dict(baseline, gap_management={'enabled': True, 'take_profit_fraction': .5, 'complete_partial_target': True})
     runner = S.resolve_long_momentum_parameters(runner, revision=47)
     for price in (103.2, 103.3, 103.39, 103.42, 103.8):
         m = replace(market(), price=price)
@@ -82,6 +82,7 @@ def test_partial_runner_management_keeps_baseline_entry_and_target_selection():
     b = engine.evaluate(assignment(strategy_revision=47, parameters=runner), market())
     assert entered(a) and entered(b)
     assert a.state['gap_selection'] == b.state['gap_selection']
+    assert b.evaluation.intents[0].metadata['complete_partial_target']
 
 
 def test_runner_macd_exit_requires_current_target_fill_and_completed_bar():

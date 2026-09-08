@@ -459,6 +459,50 @@ class ExecutionTacticTests(unittest.TestCase):
 
 
 class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_partial_target_completion_preserves_runner_and_oca_quantity(self):
+        from tests.test_trading_runtime import quote
+        broker = RecordingBroker()
+        with tempfile.TemporaryDirectory() as directory:
+            manager, journal = await self._manager(directory, broker, policy=BrokerCommunicationPolicy(), causal_execution_clock=True)
+            try:
+                broker._positions['DU1'][123] = _Position(conid=123, ticker='TEST', quantity=100, avg_cost=10)
+                test_at = datetime(2026, 8, 21, 14, tzinfo=timezone.utc)
+                event = replace(quote(bid=10.5, ask=10.52, bid_size=20), ticker='TEST', raw={'conid':123}, ts=test_at, ingest_ts=test_at)
+                await broker.on_market_event(replace(event, bid_price=10.4, ask_price=10.42))
+                target = OrderRequest(acctId='DU1', conid=123, cOID='target', ticker='TEST', orderType='LMT',
+                    side='SELL', quantity=50, price=10.5, isSingleGroup=True)
+                stop = replace(target, cOID='stop', orderType='STP', price=None, auxPrice=9.8)
+                runner = replace(stop, cOID='runner', isSingleGroup=False)
+                replies = await broker.place_orders('DU1', [target, stop])
+                replies += await broker.place_orders('DU1', [runner])
+                ids = [str(r['order_id']) for r in replies]
+                group = _ManagedOrderGroup(group_id='partial-target', intent=replace(intent(quantity=100),
+                    metadata={**intent().metadata, 'complete_partial_target': True}), account_id='DU1',
+                    plan=StrategyOrderPlan((target,stop,runner)), state=OrderManagementState.FILLED,
+                    created_at=NOW, updated_at=NOW, orders=[target,stop,runner], broker_order_ids=ids,
+                    broker_order_roles=dict(zip(ids,['profit_target','protective_stop','protective_stop'])),
+                    broker_order_request_indexes=dict(zip(ids,range(3))), filled_quantity=100)
+                await broker.on_market_event(replace(event, sequence=2))
+                live = {str(o.orderId):o for o in await broker.live_orders()}
+                filled = float(live[ids[0]].filledQuantity)
+                self.assertGreater(filled, 0)
+                self.assertLess(filled, 50)
+                group.filled_by_broker_order[ids[0]] = filled
+                at = test_at+timedelta(milliseconds=100)
+                manager.execution_market_data.update(ExecutionMarketSnapshot('TEST',10.4,10.42,.01,at,'qmd-history'))
+                self.assertTrue(await manager._complete_partial_target(group, at))
+                live = {str(o.orderId):o for o in await broker.live_orders()}
+                self.assertEqual(live[ids[0]].price,10.4)
+                self.assertEqual(live[ids[0]].remainingQuantity,50-filled)
+                self.assertEqual(live[ids[2]].remainingQuantity,50)
+                self.assertEqual(live[ids[2]].auxPrice,9.8)
+                self.assertFalse(await manager._complete_partial_target(group, at))
+                await broker.on_market_event(replace(event, ts=at, ingest_ts=at, sequence=3, bid_price=10.4, ask_price=10.42, bid_size=1000))
+                self.assertEqual((await broker.positions('DU1'))[0].position,50)
+            finally:
+                await manager.close()
+                journal.close()
+
     async def test_gap_stop_guard_rejects_invalid_submission_and_cancels_remainder(self):
         with tempfile.TemporaryDirectory() as directory:
             broker = SimulatedBrokerAdapter(['DU1'], mode=TradingMode.BACKTEST)
