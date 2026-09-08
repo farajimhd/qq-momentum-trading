@@ -201,3 +201,46 @@ def test_new_candidate_watches_forming_resistance_before_any_stage_advance():
     assert state['active_stop']==V.below(new,p)
     step(p,state,m,2,103.3)
     assert state['active_stop']==V.below(new,p)
+
+
+def test_forming_red_or_flat_candle_cannot_enter_above_previous_body():
+    p, state, m = setup()
+    assert V.select(replace(m, bar_open=m.price+.01), p, state)['reason'] == 'v5_forming_candle_not_green'
+    assert V.select(replace(m, bar_open=m.price), p, state)['reason'] == 'v5_forming_candle_not_green'
+    assert V.select(replace(m, bar_open=None), p, state)['reason'] == 'v5_forming_open_unavailable'
+
+
+def test_existing_resistance_rejection_exits_without_new_level_confirmation():
+    p, state, m = setup()
+    initial = state['active_stop']
+    step(p, state, m, .2, 103.3)
+    step(p, state, m, .3, 103.51)
+    assert state['active_stop'] == initial
+    step(p, state, m, .4, 103.4)
+    assert state['active_stop'] == V.below(resistance(103.5), p)
+    assert state['v5_breakout_state']['stages']['failed_resistance']
+
+
+def test_continuing_breakout_does_not_trigger_rejection():
+    p, state, m = setup()
+    initial = state['active_stop']
+    step(p, state, m, .2, 103.3)
+    step(p, state, m, .3, 103.51)
+    step(p, state, m, .4, 103.6)
+    assert state['active_stop'] == initial
+
+
+def test_engine_emits_protective_exit_for_known_band_rejection():
+    p, state, m = setup()
+    engine = S.LongMomentumStrategyEngine(revision=47)
+    entered = engine.evaluate(assignment(strategy_revision=47, parameters=p, state=state), m)
+    assert any(i.action == 'enter_long' for i in entered.evaluation.intents)
+    a = assignment(strategy_revision=47, parameters=p, state=entered.state,
+                   status=S.AssignmentStatus.MANAGING)
+    for seconds, price in ((.2,103.3), (.3,103.51), (.4,103.4)):
+        observation = replace(m, observed_at=NOW+timedelta(seconds=seconds),
+            price=price, bid=price-.01, ask=price+.01,
+            position_quantity=100, average_price=103.3)
+        result = engine.evaluate(a, observation)
+        a = replace(a, state=result.state)
+    assert any(i.action == 'exit' and i.reason == 'protective_stop' for i in result.evaluation.intents)

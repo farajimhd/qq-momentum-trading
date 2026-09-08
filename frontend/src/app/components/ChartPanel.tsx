@@ -7439,15 +7439,19 @@ function drawTradeAnnotationPrimitiveGeometry(
   context.lineCap = "round";
   context.lineJoin = "round";
   annotations.forEach((annotation) => {
-    const entryX = xForAnnotationTime(chart, annotation.entryTime, timeline);
+    const firstTime = timeline[0].time;
+    const lastTime = timeline[timeline.length - 1].time;
+    const guideX = (time: number) => xForAnnotationTime(chart, Math.max(firstTime, Math.min(lastTime, time)), timeline);
+    const entryX = guideX(annotation.entryTime);
     const recordedEndTime = annotation.endTime ?? annotation.exitTime ?? annotation.entryTime;
+    if (recordedEndTime < firstTime || annotation.entryTime > lastTime) return;
     // The replay clock can lead the latest candle (closed-bar publication or
     // a quiet market). Keep the open protection path visible through the last
     // loaded candle; never change the actual journal endpoint or viewport.
     const endTime = annotation.status === 'open'
       ? Math.min(recordedEndTime, timeline[timeline.length - 1].time)
       : recordedEndTime;
-    const resolvedEndX = xForAnnotationTime(chart, endTime, timeline);
+    const resolvedEndX = guideX(endTime);
     // Lifecycle geometry is always owned by event time. Tying an open
     // position to the pane edge makes it float while the user pans.
     const exitX = resolvedEndX;
@@ -7458,7 +7462,7 @@ function drawTradeAnnotationPrimitiveGeometry(
     if (!span) return;
     const guideStartX = annotation.guideStartTime === undefined
       ? entryX
-      : xForAnnotationTime(chart, annotation.guideStartTime, timeline);
+      : guideX(annotation.guideStartTime);
     const guideSpan = guideStartX === null
       ? span
       : clippedTradeSpan(guideStartX, exitX, width) ?? span;
@@ -7565,8 +7569,8 @@ function drawTradeAnnotationPrimitiveGeometry(
     if ((elements.stopLine.visible || elements.stopLabel.visible) && typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
       const y = priceSeries.priceToCoordinate(annotation.stopPrice);
       const firstChange = annotation.fills?.filter(fill => fill.kind === 'stop_change').sort((a,b) => a.time-b.time)[0];
-      const right = firstChange ? xForAnnotationTime(chart, firstChange.time, timeline) ?? guideSpan.right : guideSpan.right;
-      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, Math.min(guideSpan.right,right), y, stopColor, "SL", chartBackground, width, height, elements.stopLine, elements.stopLabel, labelLayout, elements.connector);
+      const right = firstChange ? guideX(firstChange.time) ?? guideSpan.right : guideSpan.right;
+      if (y !== null && (!firstChange || firstChange.time > firstTime)) drawCanvasTradeGuide(context, guideSpan.left, Math.min(guideSpan.right,right), y, stopColor, "SL", chartBackground, width, height, elements.stopLine, elements.stopLabel, labelLayout, elements.connector);
     }
     if (elements.levelLine.visible || elements.levelLabel.visible) {
       annotation.supportPrices?.slice(0, 3).forEach((price, index) => {
@@ -7592,8 +7596,8 @@ function drawTradeAnnotationPrimitiveGeometry(
     if (elements.targetLine.visible || elements.targetLabel.visible) annotation.targetPrices?.forEach((price, index) => {
       const y = priceSeries.priceToCoordinate(price);
       const firstChange = annotation.fills?.filter(fill => fill.kind === 'target_change').sort((a,b) => a.time-b.time)[0];
-      const right = firstChange ? xForAnnotationTime(chart, firstChange.time, timeline) ?? guideSpan.right : guideSpan.right;
-      if (y !== null) drawCanvasTradeGuide(context, guideSpan.left, Math.min(guideSpan.right,right), y, successColor, annotation.targetPrices?.length === 1 ? "TP" : `TP${index + 1}`, chartBackground, width, height, elements.targetLine, elements.targetLabel, labelLayout, elements.connector);
+      const right = firstChange ? guideX(firstChange.time) ?? guideSpan.right : guideSpan.right;
+      if (y !== null && (!firstChange || firstChange.time > firstTime)) drawCanvasTradeGuide(context, guideSpan.left, Math.min(guideSpan.right,right), y, successColor, annotation.targetPrices?.length === 1 ? "TP" : `TP${index + 1}`, chartBackground, width, height, elements.targetLine, elements.targetLabel, labelLayout, elements.connector);
     });
     if ((elements.levelLine.visible || elements.levelLabel.visible) && typeof annotation.triggerPrice === "number" && Number.isFinite(annotation.triggerPrice)) {
       const y = priceSeries.priceToCoordinate(annotation.triggerPrice);
@@ -7603,15 +7607,15 @@ function drawTradeAnnotationPrimitiveGeometry(
       if (fill.kind === 'stop_change' || fill.kind === 'target_change') {
         const following = annotation.fills?.filter(next => next.kind === fill.kind && next.time > fill.time)
           .sort((a, b) => a.time - b.time)[0];
-        const left = xForAnnotationTime(chart, fill.time, timeline);
-        const right = following ? xForAnnotationTime(chart, following.time, timeline) : exitX;
+        const left = guideX(fill.time);
+        const right = following ? guideX(following.time) : exitX;
         const y = priceSeries.priceToCoordinate(fill.price);
-        if (left !== null && right !== null && y !== null) drawCanvasTradeGuide(context,
+        if (left !== null && right !== null && y !== null && (!following || following.time > firstTime)) drawCanvasTradeGuide(context,
           Math.max(0, left), Math.min(width, right), y, fill.kind === 'stop_change' ? stopColor : successColor,
           fill.kind === 'stop_change' ? 'SL' : 'TP', chartBackground, width, height,
           elements.adjustmentLine, elements.adjustmentLabel, labelLayout, elements.connector);
       }
-      const x = xForAnnotationTime(chart, fill.time, timeline);
+      const x = guideX(fill.time);
       const y = priceSeries.priceToCoordinate(fill.price);
       if (x === null || y === null || x < -70 || x > width + 70) return;
       const adjustmentSemanticColor = fill.kind === "stop_change" || fill.kind === "protective_stop" || fill.kind === "trailing_stop" || fill.kind === "protection_repair"

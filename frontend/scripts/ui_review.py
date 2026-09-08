@@ -2544,19 +2544,20 @@ def capture(args: argparse.Namespace) -> int:
                             preview.orders=[{account_id:'SIM',instrument:{symbol:'TEST'},side:'SELL',terminal:false,order_type:'STP',stop_price:10.4},
                                 {account_id:'SIM',instrument:{symbol:'TEST'},side:'SELL',terminal:false,order_type:'LMT',limit_price:11.5}];
                             const root=createRoot(host);
+                            let trim=0;
                             const render=()=>root.render(React.createElement(ChartPreview,{
                                 canvasId:'fixture',instanceId:'clock-sync',changeAsOf:preview.as_of,
                                 chartSettings:{...DEFAULT_SETTINGS.chart,timeframe:'1s',visibleIndicators:[],showSplitEvents:false},
                                 linkContext:{symbol:'TEST'},symbolEditable:false,fillHeight:true,
                                 onChartSettingsChange:()=>{},onLinkContextChange:()=>{},runId:'fixture',trading:{...preview},
-                                liveChart:{bars:candles.map((c,i)=>({...c,bar_start:iso(i),bar_end:iso(i+1),volume:1})),
+                                liveChart:{bars:candles.map((c,i)=>({...c,bar_start:iso(i),bar_end:iso(i+1),volume:1})).slice(trim),
                                     indicators:[],marketSignalEvents:[],structureEvents:[],structureLevelHistory:[],
                                     loading:false,loadingEarlier:false,canLoadEarlier:false,loadEarlier:()=>{}}
                             }));
                             render();
                             window.__advanceProtection=()=>{
                                 preview.orders=preview.orders.map(o=>({...o,stop_price:o.stop_price?10.6:undefined,limit_price:o.limit_price?11.7:undefined}));
-                                preview.as_of=iso(66); render();
+                                preview.as_of=iso(66); trim=30; window.__openProtectionLabels=[]; render();
                             };
                         }""")
                         page.wait_for_timeout(args.settle_ms)
@@ -2568,6 +2569,7 @@ def capture(args: argparse.Namespace) -> int:
                         page.evaluate('window.__advanceProtection()')
                         page.locator('.live-position-protection-line[data-role="stop"][data-position-price="10.6"]').wait_for()
                         page.locator('.live-position-protection-line[data-role="target"][data-position-price="11.7"]').wait_for()
+                        page.wait_for_function("window.__openProtectionLabels.some(x=>x.startsWith('R1')) && window.__openProtectionLabels.includes('SL') && window.__openProtectionLabels.includes('TP')")
                         if page.evaluate('window.__duplicateEvidenceRequests') != 0:
                             raise RuntimeError('Chart discarded atomic canvas evidence for a second request')
 

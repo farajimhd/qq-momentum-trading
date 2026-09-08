@@ -32,6 +32,8 @@ def observe(observation, parameters, state):
         if vwap and 0 < vwap < ranked[-1]['lower']:
             ranked.append(dict(unified_level_id='reference:vwap', reference_kind='vwap',
                                price=vwap, lower=vwap, upper=vwap, side=-1))
+    data['previous_price'] = data.get('price')
+    data['price'] = observation.price
     data.update(entry_ranked=ranked, decision_high=high, decision_levels=prior,
                 crossed=[], new_levels=[], observed_at=now)
     old_ids = {r['unified_level_id'] for r in prior}
@@ -65,6 +67,10 @@ def select(observation, parameters, state):
     if (not reference or not reference['end'] <= now < reference['expires']
             or 'market_data_update' not in observation.evaluation_events):
         return dict(reason='v5_body_reference_unavailable')
+    if observation.bar_open is None or observation.bar_open <= 0:
+        return dict(reason='v5_forming_open_unavailable')
+    if price <= observation.bar_open:
+        return dict(reason='v5_forming_candle_not_green')
     threshold = max(reference['open'], reference['close'])
     state['entry_body_trigger'] = dict(reference, threshold=threshold, price=price)
     if price <= threshold:
@@ -148,5 +154,19 @@ def manage(observation, parameters, state):
             if (watch_from < confirmed <= now
                     and row['lower'] <= float(state.get('high_water_price') or observation.price)):
                 current = max(current, v5.below(row, parameters))
+    # Remember each known overhead band when price first tests it from below.
+    # A subsequent rejection is actionable even if V5 has not created a new row.
+    tested = stage.setdefault('tested_resistances', {})
+    previous_price = data.get('previous_price')
+    if previous_price is not None:
+        for row in data.get('decision_levels', []):
+            if (row['lower'] > selection['broken']['upper']
+                    and previous_price < row['lower'] <= observation.price):
+                tested[row['unified_level_id']] = row
+    for row in tested.values():
+        rejection_stop = v5.below(row, parameters)
+        if observation.price <= rejection_stop:
+            current = max(current, rejection_stop)
+            stage['failed_resistance'] = row['unified_level_id']
     data['stages'] = stage
     return current
