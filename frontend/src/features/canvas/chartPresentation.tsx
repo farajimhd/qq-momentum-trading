@@ -456,8 +456,10 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       String(event.event_type || "") === "decision"
       &&
       String(event.action || "") === (side === "SHORT" ? "enter_short" : "enter_long")
-      && time > previousCloseTime
-      && time <= entryTime,
+      // Immediate reentry can share the previous exit's millisecond. Match
+      // the recorded request at that boundary instead of discarding its plan.
+      && (time > previousCloseTime || (time === previousCloseTime && time === parsedTime(row.requested_at)))
+      && time <= Math.max(entryTime, parsedTime(row.requested_at) ?? entryTime),
     );
     const entryIntentTime = entryDecision?.time ?? parsedTime(row.requested_at) ?? entryTime;
     const entryIntentPrice = decisionReferencePrice(entryDecision?.row) ?? entryPrice;

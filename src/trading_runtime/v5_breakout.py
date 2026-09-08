@@ -8,21 +8,22 @@ STAGED_CONTRACT = 'swing-v5-staged-breakout-1'
 STAGED_CONTINUOUS_CONTRACT = 'swing-v5-staged-breakout-2'
 INTERVAL_CONTRACT = 'swing-v5-interval-breakout-1'
 HOD_CONTRACT = 'swing-v5-hod-ladder-1'
+MACD_GAP_CONTRACT = 'swing-v5-macd-gap-1'
 DEFAULTS = dict(direction_window_ms=400., maximum_sample_gap_ms=250.,
                 breakout_lifetime_ms=1000., stop_offset_bps=5., target_offset_ticks=1,
                 minimum_selection_score=30., entry_resistance_count=3)
 
 
 def enabled(parameters):
-    return parameters.get('v5_breakout_contract') in (CONTRACT, STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT, HOD_CONTRACT)
+    return parameters.get('v5_breakout_contract') in (CONTRACT, STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT, HOD_CONTRACT, MACD_GAP_CONTRACT)
 
 
 def staged(parameters):
-    return parameters.get('v5_breakout_contract') in (STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT, HOD_CONTRACT)
+    return parameters.get('v5_breakout_contract') in (STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT, HOD_CONTRACT, MACD_GAP_CONTRACT)
 
 
 def continuous(parameters):
-    return parameters.get('v5_breakout_contract') in (STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT, HOD_CONTRACT)
+    return parameters.get('v5_breakout_contract') in (STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT, HOD_CONTRACT, MACD_GAP_CONTRACT)
 
 
 def configure(parameters):
@@ -51,7 +52,7 @@ def configure(parameters):
             settings.pop(key, None)
     parameters.update(completed_macd_setup=False, require_completed_entry_candle=False,
                       require_breakout_reset=False)
-    parameters['entry_body_breakout'] = dict(enabled=True, offset_ticks=1)
+    parameters['entry_body_breakout'] = dict(enabled=parameters.get('v5_breakout_contract') != MACD_GAP_CONTRACT, offset_ticks=1)
     parameters['entry_candle_confirmation'].update(enabled=False, require_closed_bar=False,
         evaluate_macd_intrabar=True, reject_bearish_close=False)
     parameters['structural_entry'].update(enabled=False, accept_live_price_above_entry_level=True)
@@ -89,6 +90,9 @@ def target(levels, broken, average, parameters):
 
 
 def observe(observation, parameters, state):
+    if parameters.get('v5_breakout_contract') == MACD_GAP_CONTRACT:
+        from .v5_macd_gap import observe as operation
+        return operation(observation, parameters, state)
     if parameters.get('v5_breakout_contract') == HOD_CONTRACT:
         from .v5_hod_ladder import observe as observe_ladder
         return observe_ladder(observation, parameters, state)
@@ -164,6 +168,11 @@ def observe(observation, parameters, state):
 
 
 def select(observation, parameters, state):
+    if parameters.get('v5_breakout_contract') == MACD_GAP_CONTRACT:
+        from .v5_macd_gap import select as operation
+        selected = operation(observation, parameters, state)
+        selected['gate_evidence'] = evidence(observation, state)
+        return selected
     selected = _select(observation, parameters, state)
     if continuous(parameters):
         selected['gate_evidence'] = evidence(observation, state)
@@ -172,6 +181,12 @@ def select(observation, parameters, state):
 
 def evidence(observation, state):
     data = state.get('v5_breakout_state') or {}
+    if data.get('contract') == MACD_GAP_CONTRACT:
+        return dict(observed_at=observation.observed_at.isoformat(), price=observation.price,
+            contract=data['contract'], macd_open=data.get('macd_open'),
+            reentry_restricted=data.get('exited'), prior_period_max_close=data.get('prior_max'),
+            crossed_lower=[r['lower'] for r in data.get('crossed', [])],
+            forming_resistance=data.get('forming'))
     breakout = data.get('breakout') or {}
     return dict(observed_at=observation.observed_at.isoformat(), price=observation.price,
         session_high=data.get('decision_high', observation.structural_session_high),
@@ -238,6 +253,9 @@ def _select(observation, parameters, state):
 
 
 def manage(observation, parameters, state):
+    if parameters.get('v5_breakout_contract') == MACD_GAP_CONTRACT:
+        from .v5_macd_gap import manage as operation
+        return operation(observation, parameters, state)
     if parameters.get('v5_breakout_contract') == HOD_CONTRACT:
         from .v5_hod_ladder import manage as manage_ladder
         return manage_ladder(observation, parameters, state)

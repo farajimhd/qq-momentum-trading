@@ -3939,6 +3939,11 @@ class LongMomentumStrategyEngine:
                 "mechanism": "session_flatten",
                 "position_fraction": 1.0,
             }
+        elif (parameters.get('v5_breakout_contract') == v5_breakout.MACD_GAP_CONTRACT
+              and state.get('v5_breakout_state', {}).get('forming')):
+            exit_route = dict(route_id='v5-forming-resistance', name='Forming resistance',
+                             mechanism='forming_resistance', position_fraction=1.0,
+                             evidence=state['v5_breakout_state']['forming'])
         elif protection_breached:
             exit_route = {
                 "route_id": "oms-protective-stop",

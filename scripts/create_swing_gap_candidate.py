@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--base-profile', default='swing-v4-momentum-v1')
     parser.add_argument('--profile-id')
     parser.add_argument('--label', default='Swing v4 gaps v3 - research')
+    parser.add_argument('--description', help='Describe the isolated strategy contract')
     parser.add_argument('--preserve-parameters', action='store_true')
     parser.add_argument('--parameters-json', type=Path, help='Explicit incremental parameter patch; preserve the source parameters first')
     args = parser.parse_args()
@@ -76,6 +77,8 @@ def main():
                 else:
                     target[key] = value
         update(parameters, json.loads(args.parameters_json.read_text(encoding='utf-8')))
+    if args.description:
+        profile['description'] = args.description
     plan.update(run_plan_id=plan_id, profile_id=profile_id, name=profile['name'],
         description=profile['description'], compiled=False,
         allowed_environments=['replay', 'backtest', 'backtest_debug'])

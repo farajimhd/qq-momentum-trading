@@ -2484,6 +2484,17 @@ def capture(args: argparse.Namespace) -> int:
                             const {default:React}=await import('/node_modules/.vite/deps/react.js');
                             const {default:ReactDOM}=await import('/node_modules/.vite/deps/react-dom_client.js');
                             const {createRoot}=ReactDOM;
+                            const runs=await fetch('/api/trading/backtest/runs').then(r=>r.json());
+                            const latest=runs.rows.find(r=>r.status==='completed' && r.tickers?.includes('SUGP'));
+                            if(latest){
+                                const response=await fetch(`/api/trading/backtest/runs/${latest.run_id}/canvas?symbol=SUGP`);
+                                if(response.ok){
+                                    const actual=await response.json();
+                                    const projected=positionLifecycleAnnotations(actual.trading,'SUGP');
+                                    window.__actualProtectionAudit={run:latest.run_id,positions:projected.length,
+                                        missing:projected.filter(a=>!a.stopPrice||!a.targetPrices?.length||!a.resistancePrices?.length).map(a=>({id:a.id,entry:a.entryTime,stop:a.stopPrice,targets:a.targetPrices,r:a.resistancePrices}))};
+                                }
+                            }
                             const t=Date.parse('2026-08-21T11:00:00Z')/1000;
                             const iso=s=>new Date((t+s)*1000).toISOString();
                             const event=(s,action,values,trigger)=>({ticker:'TEST',event_type:'decision',action,event_time:iso(s),
@@ -2566,6 +2577,9 @@ def capture(args: argparse.Namespace) -> int:
                         page.locator('#staged-strategy-fixture canvas').first.wait_for(state='visible', timeout=args.timeout_ms)
                         page.wait_for_function("window.__openProtectionLabels.includes('SL') && window.__openProtectionLabels.includes('TP')", timeout=args.timeout_ms)
                         page.locator('.live-position-protection-line[data-role="stop"][data-position-price="10.4"]').wait_for()
+                        audit=page.evaluate('window.__actualProtectionAudit')
+                        print('Actual protection audit:',audit)
+                        if audit and audit['missing']:raise RuntimeError('Actual position plans are missing: '+str(audit['missing']))
                         page.evaluate('window.__advanceProtection()')
                         page.locator('.live-position-protection-line[data-role="stop"][data-position-price="10.6"]').wait_for()
                         page.locator('.live-position-protection-line[data-role="target"][data-position-price="11.7"]').wait_for()
