@@ -32,19 +32,21 @@ def save(path, value):
 def audit(run_id):
     journal = Path('D:/TradingML/runtimes/trading/backtest')/run_id/'journal.sqlite3'
     reasons, future, entries = Counter(), [], []
+    checked_timestamps = 0
     with sqlite3.connect(journal.as_uri()+'?mode=ro', uri=True) as connection:
         for timestamp, raw in connection.execute("SELECT event_time,payload_json FROM journal WHERE category='strategy_decision' ORDER BY sequence"):
             decision = json.loads(raw)
             reasons[decision.get('reason', '')] += 1
-            if decision.get('action') != 'enter_long':
-                continue
             available = datetime.fromisoformat(timestamp).timestamp()*1000
             metadata = decision.get('metadata', {})
             def check(value):
+                nonlocal checked_timestamps
                 if isinstance(value, dict):
                     if 'confirmed_at_ms' in value:
                         for name in ('created_at_ms', 'confirmed_at_ms', 'formed_at_ms', 'last_role_change_at_ms'):
                             stamp = value.get(name)
+                            if isinstance(stamp, (int, float)):
+                                checked_timestamps += 1
                             if isinstance(stamp, (int, float)) and stamp > available:
                                 future.append(dict(decision_at=timestamp, field=name, value=stamp))
                     for child in value.values():
@@ -53,6 +55,8 @@ def audit(run_id):
                     for child in value:
                         check(child)
             check(metadata)
+            if decision.get('action') != 'enter_long':
+                continue
             entries.append(dict(at=timestamp, reason=decision.get('reason'),
                 reference_price=metadata.get('reference_price'), stop=decision.get('invalidation_price'),
                 selection=metadata.get('profit_target_selection') or metadata.get('gap_selection'),
@@ -60,7 +64,7 @@ def audit(run_id):
         terminal = connection.execute("SELECT payload_json FROM journal WHERE category='snapshot' AND entity_type='portfolio' ORDER BY sequence DESC LIMIT 1").fetchone()
         equity = json.loads(terminal[0])['netliquidation']['amount'] if terminal else None
     return dict(decision_reasons=dict(reasons), future_level_violations=future, entry_decisions=entries,
-                terminal_equity=equity)
+                terminal_equity=equity, checked_level_timestamps=checked_timestamps)
 
 
 def main():
