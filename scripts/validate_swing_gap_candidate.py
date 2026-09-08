@@ -125,6 +125,9 @@ def main():
             net = Decimal(str(evidence['terminal_equity']))-Decimal(str(initial))
             if abs(net-Decimal(str(listed['net_pnl']))) > Decimal('.0001'):
                 raise RuntimeError('Terminal journal equity differs from canonical run result')
+            projected_net = Decimal(str(result['portfolio']['metrics']['net_liquidation']))-Decimal(str(initial))
+            if abs(net-projected_net) > Decimal('.0001'):
+                raise RuntimeError('Debug portfolio equity differs from terminal journal equity')
             save(output/(key+'-audit.json'), evidence)
             if evidence['future_level_violations']:
                 raise RuntimeError('Future level evidence found; candidate must not be accepted')
