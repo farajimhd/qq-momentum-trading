@@ -483,6 +483,29 @@ class ReplayRunDefinitionTests(unittest.TestCase):
 
 
 class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_completed_canvas_rebuilds_playback_cache_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(ReplayRunDefinition(
+                session_date=date(2026, 7, 28), start_time=time(9, 45),
+                mode=RunMode.BACKTEST_DEBUG, tickers=('AAPL',),
+                debug_fixture=self.lifecycle_fixture(), configuration_revision=approved_configuration()),
+                runtime_root=Path(directory))
+            await controller.start()
+            await controller._task
+            try:
+                self.assertEqual(controller.status, 'completed', controller.error)
+                stale = (wall_time.monotonic(), {'executions': ['stale']})
+                controller._canvas_state_cache = stale
+                controller._canvas_state_cache_state = ('running', False)
+                await controller.canvas_payload('AAPL')
+                self.assertIsNot(controller._canvas_state_cache, stale)
+                self.assertEqual(controller._canvas_state_cache_state, ('completed', True))
+                terminal = controller._canvas_state_cache
+                await controller.canvas_payload('AAPL')
+                self.assertIs(controller._canvas_state_cache, terminal)
+            finally:
+                controller._journal.close()
+
     def test_strategy_carries_latest_confirmed_swing_frontier_across_frames(self) -> None:
         self.assertIn("structure_swing_high", _STRATEGY_STATEFUL_STRUCTURE_FIELDS)
         self.assertIn("structure_swing_low", _STRATEGY_STATEFUL_STRUCTURE_FIELDS)

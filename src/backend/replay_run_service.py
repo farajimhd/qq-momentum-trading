@@ -967,6 +967,7 @@ class ReplayRunController:
         self._source_native_signal_episodes: dict[str, ReplaySignalEvent] = {}
         self._next_source_native_signal_refresh_at: datetime | None = None
         self._canvas_state_cache: tuple[float, dict[str, Any]] | None = None
+        self._canvas_state_cache_state: tuple[str, bool] | None = None
         self._canvas_build_lock = asyncio.Lock()
         self._activity_index = None
         self.level_load_contract = LEVEL_LOAD_CONTRACT
@@ -1880,7 +1881,8 @@ class ReplayRunController:
         if self._runtime is None or self._journal is None:
             raise ValueError("Replay trading state is not ready")
         now = time.monotonic()
-        if self._canvas_state_cache and (
+        cache_state = (self.status, self._runtime_finished)
+        if self._canvas_state_cache and self._canvas_state_cache_state == cache_state and (
             self.status in TERMINAL_REPLAY_STATUSES
             or now - self._canvas_state_cache[0] <= 0.2
         ):
@@ -1911,6 +1913,7 @@ class ReplayRunController:
                 "next_offset": activity_page.get("next_offset"),
             }
             self._canvas_state_cache = (now, trading)
+            self._canvas_state_cache_state = cache_state
         ticker = _ticker(symbol)
         chart_activity_rows = (await asyncio.to_thread(self.strategy_activity_snapshot,
             as_of=self.current_time or self.definition.requested_start,
