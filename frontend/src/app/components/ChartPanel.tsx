@@ -7440,7 +7440,13 @@ function drawTradeAnnotationPrimitiveGeometry(
   context.lineJoin = "round";
   annotations.forEach((annotation) => {
     const entryX = xForAnnotationTime(chart, annotation.entryTime, timeline);
-    const endTime = annotation.endTime ?? annotation.exitTime ?? annotation.entryTime;
+    const recordedEndTime = annotation.endTime ?? annotation.exitTime ?? annotation.entryTime;
+    // The replay clock can lead the latest candle (closed-bar publication or
+    // a quiet market). Keep the open protection path visible through the last
+    // loaded candle; never change the actual journal endpoint or viewport.
+    const endTime = annotation.status === 'open'
+      ? Math.min(recordedEndTime, timeline[timeline.length - 1].time)
+      : recordedEndTime;
     const resolvedEndX = xForAnnotationTime(chart, endTime, timeline);
     // Lifecycle geometry is always owned by event time. Tying an open
     // position to the pane edge makes it float while the user pans.

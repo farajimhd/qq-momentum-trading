@@ -2299,6 +2299,11 @@ def capture(args: argparse.Namespace) -> int:
                         "localStorage.setItem(" + json.dumps(f"{storage_prefix}.{args.canvas_id}") + ", " + json.dumps(json.dumps(storage_payload)) + ");"
                     )
                 page = context.new_page()
+                if args.backtest_presets:
+                    books=[dict(id='fixture_'+ticker,ticker=ticker,version='causal-swing-closing-book-5',start='2025-01-01',end='2026-09-04') for ticker in ('SUGP','JUNS')]
+                    page.route('**/api/trading/backtest/structure-books',fulfill_json(json.dumps(dict(items=books))))
+                    page.route('**/api/trading/backtest/indicator-warmup',fulfill_json(json.dumps(dict(status='ready',items=[],ready_count=2,ticker_count=2,tickers=['SUGP','JUNS']))))
+                    page.route('**/api/trading/historical-preflight',fulfill_json(json.dumps(dict(strategy_run_ready=False,checks=[],window=dict(sessions=['2026-08-21'])))))
                 if args.resistance_selection_fixture:
                     base = datetime.fromisoformat(f"{args.canvas_session_date or '2026-08-20'}T10:00:00+00:00").timestamp()
                     book = dict(id='structure_book_000000000001', ticker=args.canvas_symbol, version='causal-swing-closing-book-4', start='2025-01-01', end='2026-09-04')
@@ -2483,7 +2488,7 @@ def capture(args: argparse.Namespace) -> int:
                             const iso=s=>new Date((t+s)*1000).toISOString();
                             const event=(s,action,values,trigger)=>({ticker:'TEST',event_type:'decision',action,event_time:iso(s),
                                 chart_plan:{decision_values:values,unified_structural_trigger:trigger}});
-                            const preview={as_of:iso(60),position_lifecycles:[{
+                            const preview={as_of:iso(65),position_lifecycles:[{
                                 instrument:{symbol:'TEST'},side:'LONG',status:'open',opened_at:iso(5),entry_price:10,quantity:100}],
                                 strategy_chart_activity:[event(4,'enter_long',{initial_stop:9.5,profit_target:10.5},
                                     {current_snapshot:{frozen_at_entry:true,interval_based:true,selected_at:iso(4),session_high:10.3,
@@ -2518,6 +2523,12 @@ def capture(args: argparse.Namespace) -> int:
                                zones[1].borderStyle!=='dashed' || !zones[1].latest || !zones[1].label.includes('awaiting retest'))
                                 throw Error('Broken resistance disappeared or its prior active interval was rewritten: '+JSON.stringify(zones));
                             const host=document.createElement('div');host.id='staged-strategy-fixture';host.style.cssText='position:fixed;inset:0;z-index:9999;background:var(--surface);';
+                            window.__openProtectionLabels=[];
+                            const originalFillText=CanvasRenderingContext2D.prototype.fillText;
+                            CanvasRenderingContext2D.prototype.fillText=function(text,...args){
+                                window.__openProtectionLabels.push(String(text));
+                                return originalFillText.call(this,text,...args);
+                            };
                             document.body.append(host);
                             createRoot(host).render(React.createElement(ChartPanel,{ticker:'TEST',timeframe:'1s',timeframes:['1s'],
                                 visibleColumns:['indicator.qmd_unified_structure'],featureOptions:[],indicatorOptions:['indicator.qmd_unified_structure'],strategyPresentationEnabled:true,fillHeight:true,initialFitMode:'all',
@@ -2528,6 +2539,7 @@ def capture(args: argparse.Namespace) -> int:
                         if page.get_by_text('Chart renderer stopped', exact=True).count():
                             raise RuntimeError('Synthetic staged strategy chart failed to render')
                         page.locator('#staged-strategy-fixture canvas').first.wait_for(state='visible', timeout=args.timeout_ms)
+                        page.wait_for_function("window.__openProtectionLabels.includes('SL') && window.__openProtectionLabels.includes('TP')", timeout=args.timeout_ms)
                     if args.structure_time_placement:
                         page.evaluate("""async () => {
                           const {structureTimeCoordinate:f}=await import('/src/app/components/structureTimeCoordinate.ts');
@@ -2790,6 +2802,24 @@ def capture(args: argparse.Namespace) -> int:
                         page.wait_for_timeout(250)
                         if baseline != pane.screenshot():
                             hindsight_issue = 'Hindsight toggle changed the chart viewport or underlying rendering'
+                    if args.backtest_presets and scenario['page']=='backtest-trading':
+                        if page.locator('input[type=date]').input_value()!='2026-08-21':raise RuntimeError('Wrong default date')
+                        if page.get_by_label('Start time',exact=True).input_value()!='04:00:00':raise RuntimeError('Wrong SUGP start')
+                        if page.get_by_label('End time',exact=True).input_value()!='04:30:00':raise RuntimeError('Wrong SUGP end')
+                        page.get_by_role('button',name='Level book',exact=True).filter(has_text='SUGP').wait_for(timeout=args.timeout_ms)
+                        page.get_by_role('button',name='Ticker preset',exact=True).click()
+                        page.get_by_role('option',name='JUNS',exact=True).click()
+                        page.wait_for_function("document.querySelector('input[aria-label=\"Start time\"]').value==='07:00:00'")
+                        if page.get_by_label('End time',exact=True).input_value()!='07:30:00':raise RuntimeError('Wrong JUNS end')
+                        page.get_by_role('button',name='Level book',exact=True).filter(has_text='JUNS').wait_for(timeout=args.timeout_ms)
+                        page.get_by_role('button',name='Ticker preset',exact=True).click()
+                        page.get_by_role('option',name='SUGP and JUNS',exact=True).click()
+                        if not page.get_by_label('Start time',exact=True).is_disabled():raise RuntimeError('Batch must use per-ticker windows')
+                        page.get_by_role('button',name='Ticker preset',exact=True).click()
+                        page.get_by_role('option',name=re.compile('^All tickers')).click()
+                        page.get_by_role('button',name='Run 2 Backtests',exact=True).wait_for(timeout=args.timeout_ms)
+                        page.get_by_role('button',name='Ticker preset',exact=True).click()
+                        page.get_by_role('option',name='SUGP',exact=True).click()
                     if args.swing_book_selector and scenario['page']=='backtest-trading':
                         page.get_by_role('button',name='Level book',exact=True).click()
                         for ticker in ('JUNS','SUGP'):
@@ -2935,6 +2965,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument('--resistance-selection', action='store_true', help='calculate and inspect resistance selection on a real historical chart')
     result.add_argument('--swing-book-v5', action='store_true', help='validate integrated v5 evidence-score controls on a real replay chart')
     result.add_argument('--staged-strategy-fixture', action='store_true', help='validate frozen R1-R4 and stop/target paths using synthetic journal evidence; no backtest')
+    result.add_argument('--backtest-presets', action='store_true', help='verify ticker defaults and V5 selection with stubbed books and warmup; never launch a run')
     result.add_argument('--structure-gaps-fixture', action='store_true', help='validate gap controls, causal cutoff and outcome visibility with deterministic fixtures')
     result.add_argument('--structure-gaps', action='store_true', help='calculate and inspect the real v4 gap preview on a historical chart')
     result.add_argument('--structure-time-placement', action='store_true', help='verify exact confirmation placement across missing and coarse candles')
