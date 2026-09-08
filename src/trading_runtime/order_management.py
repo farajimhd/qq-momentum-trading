@@ -2794,6 +2794,23 @@ class OrderManagementEngine:
         coverage = sum(by_protection_group.values())
         tolerance = 1e-9
         actions: list[dict[str, Any]] = []
+        if initial_entry_group and required > coverage + tolerance:
+            # A broker batch can fill a parent and execute another slice's
+            # stop before its individual messages reach this manager. Active
+            # owned stops already protect those shares. Do not manufacture a
+            # second sell group from the temporarily lagging fill ledger.
+            active_capacity: dict[str, float] = {}
+            for order in live_orders:
+                if (str(order.orderId) in owned_broker_order_ids
+                        and order.account == group.account_id
+                        and order.order_status in OPEN_ORDER_STATUSES
+                        and order.order_status != OrderStatus.INACTIVE
+                        and order.orderType.upper() in {"STP", "STOP_LIMIT", "TRAIL", "TRAILLMT"}):
+                    key = _protection_group_key(order)
+                    active_capacity[key] = max(active_capacity.get(key, 0.), float(order.remainingQuantity))
+            if sum(active_capacity.values()) + tolerance >= abs(position_quantity):
+                return {"required": required, "coverage": sum(active_capacity.values()),
+                        "status": "awaiting_processed_fill_state"}
         if coverage > required + tolerance:
             excess = coverage - required
             ordered_groups = sorted(

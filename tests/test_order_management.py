@@ -1133,6 +1133,32 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 await manager.close()
                 journal.close()
 
+    async def test_active_runner_stop_prevents_repair_before_parent_fill_message(self):
+        parent = 'strategy-1-v1-runner-entry'
+        stop = LiveOrder(account='DU1', orderId='62', conid=123, ticker='TEST', side='SELL',
+            orderType='STP', tif='DAY', totalSize=556, filledQuantity=0,
+            remainingQuantity=556, avgPrice=0, order_status=OrderStatus.SUBMITTED, parentId=parent)
+        broker = ReconciliationRaceBroker(position_quantity=556, live_orders=[stop])
+        with tempfile.TemporaryDirectory() as directory:
+            manager, journal = await self._manager(directory, broker, policy=BrokerCommunicationPolicy())
+            try:
+                orders = [OrderRequest(acctId='DU1', conid=123, cOID=parent, ticker='TEST',
+                    orderType='LMT', side='BUY', quantity=556, price=10)]
+                group = _ManagedOrderGroup(group_id='fill-batch-race', intent=intent(quantity=1112),
+                    account_id='DU1', plan=StrategyOrderPlan(tuple(orders)),
+                    state=OrderManagementState.PARTIALLY_FILLED, created_at=NOW, updated_at=NOW,
+                    orders=orders, broker_order_ids=['60', '62'], broker_order_request_indexes={'60':0},
+                    broker_order_roles={'60':'entry','62':'protective_stop'},
+                    filled_by_broker_order={'60':44}, filled_quantity=600, remaining_quantity=512)
+                result = await manager.reconcile_protection(group)
+                self.assertEqual(result['status'], 'awaiting_processed_fill_state')
+                self.assertEqual(result['coverage'], 556)
+                self.assertEqual(len(group.orders), 1)
+                self.assertFalse(broker.cancellations or broker.modifications)
+            finally:
+                await manager.close()
+                journal.close()
+
     async def test_sliced_entry_reconciliation_uses_only_causally_processed_slice(self) -> None:
         prefix = "strategy-1-v1-"
         slice_sizes = (60.0, 60.0, 60.0, 59.0, 59.0)
