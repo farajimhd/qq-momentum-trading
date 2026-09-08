@@ -990,6 +990,10 @@ class TradingRuntime:
             await asyncio.gather(*tasks, return_exceptions=True)
         if self.order_manager is not None:
             await self.order_manager.close()
+        # Passive final ticks update broker marks without refreshing the UI
+        # projector. Finish with one authoritative projection after trading
+        # has stopped, so Debug equity matches the terminal broker checkpoint.
+        await self._refresh_portfolio_from_broker()
         await self.snapshot_portfolios()
         self.journal.append(
             run_id=self.run_id, category="lifecycle", entity_type="run", entity_id=self.run_id,

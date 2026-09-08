@@ -2226,6 +2226,32 @@ class _SignalAwareStrategy(_NoopStrategy):
 
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_finish_refreshes_passive_final_mark_without_trading(self):
+        from src.trading_runtime.simulated_broker import _Position
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory)/'journal.sqlite3')
+            broker = SimulatedBrokerAdapter(['DU123'])
+            runtime = TradingRuntime(RunConfig(RunMode.BACKTEST, 'noop', 1, ('DU123',), TS.date(),
+                run_id='00000000-0000-0000-0000-000000000004'), broker, _NoopStrategy(), journal)
+            try:
+                await runtime.initialize()
+                broker._positions['DU123'][265598] = _Position(conid=265598, ticker='AAPL', quantity=1, avg_cost=100)
+                await broker.on_market_event(quote(bid=99, ask=100))
+                await runtime.canonical_snapshot()
+                previous = float(runtime.projected_snapshot().positions[0].market_price)
+                runtime.process_passive_market_event(replace(quote(bid=109, ask=110, sequence=2), ts=TS+timedelta(seconds=1)))
+                expected = float((await broker.positions('DU123'))[0].mktPrice)
+                self.assertNotEqual(previous, expected)
+                self.assertEqual(float(runtime.projected_snapshot().positions[0].market_price), previous)
+                before_executions = len(runtime.projected_snapshot().executions)
+                await runtime.finish()
+                final = runtime.projected_snapshot()
+                self.assertEqual(float(final.positions[0].market_price), expected)
+                self.assertEqual(float(final.positions[0].quantity), 1)
+                self.assertEqual(len(final.executions), before_executions)
+            finally:
+                journal.close()
+
     async def test_entry_refreshes_canonical_broker_cash_before_portfolio_approval(self) -> None:
         call_order: list[str] = []
 
