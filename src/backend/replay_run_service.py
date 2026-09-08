@@ -3383,6 +3383,7 @@ class ReplayRunController:
                 and (
                     assignment.state.get("accepted_entry_r3")
                     or dict(assignment.parameters.get("structural_entry") or {}).get("accept_live_price_above_entry_level")
+                    or dict(assignment.parameters.get("entry_body_breakout") or {}).get("enabled")
                 )
             )
             for assignment in ticker_assignments
