@@ -2483,15 +2483,25 @@ def capture(args: argparse.Namespace) -> int:
                             const iso=s=>new Date((t+s)*1000).toISOString();
                             const event=(s,action,values,trigger)=>({ticker:'TEST',event_type:'decision',action,event_time:iso(s),
                                 chart_plan:{decision_values:values,unified_structural_trigger:trigger}});
-                            const annotations=positionLifecycleAnnotations({as_of:iso(60),position_lifecycles:[{
+                            const preview={as_of:iso(60),position_lifecycles:[{
                                 instrument:{symbol:'TEST'},side:'LONG',status:'open',opened_at:iso(5),entry_price:10,quantity:100}],
-                                strategy_chart_activity:[event(4,'enter_long',{initial_stop:9.5,profit_targets:[10.5]},
+                                strategy_chart_activity:[event(4,'enter_long',{initial_stop:9.5,profit_target:10.5},
                                     {current_snapshot:{frozen_at_entry:true,interval_based:true,selected_at:iso(4),session_high:10.3,
                                         levels:[10.8,10.5,10.2,9.9].map(price=>({price,entry_boundary:price}))}}),
                                     event(20,'replace_protective_stop',{active_stop:9.85}),
                                     event(20,'replace_profit_target',{profit_target:11.2}),
                                     event(40,'replace_protective_stop',{active_stop:10.4}),
-                                    event(40,'replace_profit_target',{profit_target:11.5})]},'TEST');
+                                    event(40,'replace_profit_target',{profit_target:11.5})]};
+                            const annotations=positionLifecycleAnnotations(preview,'TEST');
+                            if(annotations[0]?.stopPrice!==9.5 || annotations[0]?.targetPrices?.[0]!==10.5)
+                                throw Error('Open position lost initial SL/TP without broker orders');
+                            const at20=positionLifecycleAnnotations({...preview,as_of:iso(20)},'TEST')[0];
+                            if(at20.fills.filter(f=>f.kind==='stop_change').length!==1 ||
+                               at20.fills.filter(f=>f.kind==='target_change').length!==1)
+                                throw Error('Current-time adjustment omitted or future adjustment leaked');
+                            const before=positionLifecycleAnnotations({...preview,as_of:iso(19)},'TEST')[0];
+                            if(before.fills.some(f=>f.kind==='stop_change'||f.kind==='target_change'))
+                                throw Error('Adjustment drawn before its event');
                             if(annotations[0]?.resistancePrices?.length!==4)throw Error('Missing frozen R1-R4');
                             if(annotations[0]?.fills?.filter(f=>f.kind==='stop_change').length!==2)throw Error('Missing stop adjustments');
                             if(annotations[0]?.fills?.filter(f=>f.kind==='target_change').length!==2)throw Error('Missing target adjustments');

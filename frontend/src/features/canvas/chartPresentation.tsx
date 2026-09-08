@@ -490,9 +490,9 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
     const plannedTargetPrices = uniquePositivePrices(
       qualifiedTargets.length
         ? qualifiedTargets
-        : Array.isArray(decisionValues.profit_targets)
+        : Array.isArray(decisionValues.profit_targets) && decisionValues.profit_targets.length
         ? decisionValues.profit_targets
-        : selectedTargets,
+        : selectedTargets.length ? selectedTargets : [decisionValues.profit_target],
     ).slice(0, 3);
     const supportPrices = structuralLevelPrices(structuralSnapshot.supports).slice(0, 3);
     const entryStructure = entryStructurePresentation(structuralTrigger, entryIntentTime);
@@ -510,7 +510,7 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
     let activeStop = plannedStopPrice;
     let activeTarget = positiveNumber(selectedTargets[0] ?? (Array.isArray(decisionValues.profit_targets) ? decisionValues.profit_targets[0] : undefined)) ?? plannedTargetPrices[0];
     activity.forEach(({ row: event, time }) => {
-      if (time <= planStartTime || time >= endTime) return;
+      if (time <= planStartTime || time > endTime || (status === "closed" && time === endTime)) return;
       const eventGates = (event.chart_plan as PreviewRow | undefined)
         ?? (event.gate_snapshot as PreviewRow | undefined)
         ?? {};
@@ -558,12 +558,9 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
         time,
       });
     });
-    const currentOrders = status === "open" ? lifecycleProtectionOrders(trading?.orders ?? [], row, normalizedSymbol, side) : [];
-    const brokerStops = uniquePositivePrices(currentOrders.filter((order) => ["protective_stop", "trailing_stop", "protective_exit"].includes(orderRole(order))).map((order) => order.stop_price));
-    const brokerTargets = uniquePositivePrices(currentOrders.filter((order) => orderRole(order) === "profit_target").map((order) => order.limit_price))
-      .sort((left, right) => side === "SHORT" ? right - left : left - right);
-    if (brokerStops.length) activeStop = side === "SHORT" ? Math.min(...brokerStops) : Math.max(...brokerStops);
-    const targetPrices = status === "open" ? brokerTargets : activeTarget !== undefined ? [activeTarget] : plannedTargetPrices;
+    // These are timestamped strategy instructions. Current broker protection is
+    // drawn separately by positionLine; it must not erase or rewrite this path.
+    const targetPrices = plannedTargetPrices;
     fills.sort((left, right) => left.time - right.time);
     const finalFillAnnotation = (action: PositionExecutionAction, fillSide: "entry" | "exit", realizedPnl?: number) => {
       const partial = action.completion === "partial";
@@ -648,7 +645,7 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       pnl,
       positionSide: side === "SHORT" ? "SHORT" : "LONG",
       status,
-      stopPrice: status === "open" && !brokerStops.length ? undefined : activeStop,
+      stopPrice: plannedStopPrice,
       targetPrices,
     }];
   });
@@ -680,20 +677,6 @@ function orderRole(order: PreviewRow): string {
   if (orderType.includes("STP") || orderType.includes("STOP")) return "protective_stop";
   if (orderType.includes("LMT") || orderType.includes("LIMIT")) return "profit_target";
   return "";
-}
-
-function lifecycleProtectionOrders(orders: PreviewRow[], lifecycle: PreviewRow, symbol: string, side: string): PreviewRow[] {
-  const lifecycleOrderIds = new Set(Array.isArray(lifecycle.order_ids) ? lifecycle.order_ids.map(String) : []);
-  const closingSide = side === "SHORT" ? "BUY" : "SELL";
-  return orders.filter((order) => {
-    if (Boolean(order.terminal)) return false;
-    if (String(nestedValue(order, "instrument", "symbol") || "").toUpperCase() !== symbol) return false;
-    if (String(order.account_id || "") !== String(lifecycle.account_id || "")) return false;
-    if (String(order.side || "").toUpperCase() !== closingSide) return false;
-    const orderId = String(order.broker_order_id || order.client_order_id || "");
-    const sameLifecycle = lifecycleOrderIds.size === 0 || lifecycleOrderIds.has(orderId) || String(order.run_id || "") === String(lifecycle.run_id || "");
-    return sameLifecycle && ["profit_target", "protective_stop", "trailing_stop", "protective_exit"].includes(orderRole(order));
-  });
 }
 
 function positiveNumber(value: unknown): number | undefined {
