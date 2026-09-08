@@ -2486,7 +2486,7 @@ def capture(args: argparse.Namespace) -> int:
                             const annotations=positionLifecycleAnnotations({as_of:iso(60),position_lifecycles:[{
                                 instrument:{symbol:'TEST'},side:'LONG',status:'open',opened_at:iso(5),entry_price:10,quantity:100}],
                                 strategy_chart_activity:[event(4,'enter_long',{initial_stop:9.5,profit_targets:[10.5]},
-                                    {current_snapshot:{frozen_at_entry:true,selected_at:iso(4),session_high:11,
+                                    {current_snapshot:{frozen_at_entry:true,interval_based:true,selected_at:iso(4),session_high:10.3,
                                         levels:[10.8,10.5,10.2,9.9].map(price=>({price,entry_boundary:price}))}}),
                                     event(20,'replace_protective_stop',{active_stop:9.85}),
                                     event(20,'replace_profit_target',{profit_target:11.2}),

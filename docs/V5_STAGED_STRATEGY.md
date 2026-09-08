@@ -58,3 +58,27 @@ retain the rejected crossing state, so the exact number recoverable by each
 correction is unknown. Spread failures above 200 bps are genuine vetoes and
 remain unchanged. The strict R4-only / below-R3 policy inherently excludes
 entry into later portions of a move; this correction does not relax it.
+
+## Interval entry
+
+`swing-v5-interval-breakout-1` removes the fixed R4 and below-HOD requirements.
+An entry interval consists of a previously known resistance crossed upward and
+the next distinct known resistance above it. Price must remain below that upper
+band's lower bound; inside a band, entry waits for a full upper-bound crossing.
+All the existing momentum and execution gates still apply. There must be at
+least one known upper target; no synthetic resistance is created.
+
+The nearest three known upper resistance bands, when available, plus the crossed
+band form the descending frozen R1-through-Rn references. Thus an R3-to-R2 entry
+does not require R4. If several boundaries are crossed before gates pass, the
+highest crossed boundary defines the current interval. HOD is the snapshot from
+before the current update, retained as context rather than an eligibility cap.
+Historical resistance above that HOD remains a valid known upper boundary.
+
+Initial stop stays 5% below decision price. The target is below the second upper
+resistance, or below the first when only one exists. Breaking the first upper
+resistance advances the stop below the entry's broken band and targets the first
+known resistance above frozen R1. Breaking frozen R1 then uses the existing
+local-top / large-candle transition. The body average resets at that large candle.
+Later levels do not renumber a position's frozen references. Chart projection
+retains these references even when above the recorded prior HOD.

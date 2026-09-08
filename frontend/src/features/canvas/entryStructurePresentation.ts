@@ -17,9 +17,9 @@ export function entryStructurePresentation(trigger: Evidence, entryTime: number)
   }
   const levels = Array.isArray(snapshot.levels) ? snapshot.levels as Evidence[] : [];
   // The producer has already selected and qualified this set. Descending prices
-  // name the nearest selected boundary below HOD R1, then R2 and R3.
+  // name frozen references R1 onward; interval references may exceed prior HOD.
   const resistancePrices = [...new Set(levels.map((row) => Number(row.entry_boundary ?? row.price))
-    .filter((price) => Number.isFinite(price) && price > 0 && price <= highOfDayPrice))]
+    .filter((price) => Number.isFinite(price) && price > 0 && (current?.interval_based || price <= highOfDayPrice)))]
     .sort((left, right) => right - left).slice(0, current?.frozen_at_entry ? 4 : 3);
   return { highOfDayPrice, resistancePrices };
 }

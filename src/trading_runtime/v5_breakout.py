@@ -6,17 +6,22 @@ from . import swing_gap
 CONTRACT = 'swing-v5-breakout-1'
 STAGED_CONTRACT = 'swing-v5-staged-breakout-1'
 STAGED_CONTINUOUS_CONTRACT = 'swing-v5-staged-breakout-2'
+INTERVAL_CONTRACT = 'swing-v5-interval-breakout-1'
 DEFAULTS = dict(direction_window_ms=400., maximum_sample_gap_ms=250.,
                 breakout_lifetime_ms=1000., stop_offset_bps=5., target_offset_ticks=1,
                 minimum_selection_score=30., entry_resistance_count=3)
 
 
 def enabled(parameters):
-    return parameters.get('v5_breakout_contract') in (CONTRACT, STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT)
+    return parameters.get('v5_breakout_contract') in (CONTRACT, STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT)
 
 
 def staged(parameters):
-    return parameters.get('v5_breakout_contract') in (STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT)
+    return parameters.get('v5_breakout_contract') in (STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT)
+
+
+def continuous(parameters):
+    return parameters.get('v5_breakout_contract') in (STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT)
 
 
 def configure(parameters):
@@ -81,7 +86,8 @@ def target(levels, broken, average, parameters):
 def observe(observation, parameters, state):
     now, price = observation.observed_at.timestamp(), observation.price
     policy = parameters['v5_breakout']
-    continuous = parameters['v5_breakout_contract'] == STAGED_CONTINUOUS_CONTRACT
+    keep_crossing = continuous(parameters)
+    interval = parameters['v5_breakout_contract'] == INTERVAL_CONTRACT
     data = dict(state.get('v5_breakout_state') or {})
     previous = data.get('sample')
     if previous and now < previous[0]:
@@ -92,7 +98,7 @@ def observe(observation, parameters, state):
         history = [r for r in data.get('history', []) if now-2 <= r[0] < now]
         history.append((now, price))
         data['history'] = history[-1000:]
-        if previous and 0 < now-previous[0] and (continuous or now-previous[0] <= policy['maximum_sample_gap_ms']/1000):
+        if previous and 0 < now-previous[0] and (keep_crossing or now-previous[0] <= policy['maximum_sample_gap_ms']/1000):
             # Only boundaries already known before this trade can be broken.
             crossed = [r for r in data.get('levels', []) if previous[1] <= r['upper'] < price]
         data['sample'] = (now, price)
@@ -102,30 +108,40 @@ def observe(observation, parameters, state):
         data.pop('move', None)
         data.pop('stages', None)
         data.pop('pending_target', None)
-        high = observation.structural_session_high
+        high = data.get('session_high') if interval else observation.structural_session_high
         vwap = observation.execution_vwap
         ranked = sorted((r for r in data.get('prior_levels', levels)
-                         if high and r['upper'] <= high), key=lambda r:r['upper'], reverse=True)
+                         if interval or (high and r['upper'] <= high)), key=lambda r:r['upper'], reverse=True)
         ids = {r['unified_level_id'] for r in ranked[:policy['entry_resistance_count']]}
         eligible = [r for r in crossed if r['unified_level_id'] in ids and vwap and r['lower'] > vwap]
         data['entry_ranked'] = ranked[:policy['entry_resistance_count']]
-        if staged(parameters):
+        if interval:
+            eligible = [r for r in crossed if vwap and r['lower'] > vwap]
+        elif staged(parameters):
             eligible = [r for r in eligible if len(ranked) >= 4 and r['unified_level_id'] == ranked[3]['unified_level_id']]
-        if eligible and not (continuous and data.get('breakout')):
+        if interval and eligible:
+            broken = max(eligible, key=lambda r:r['upper'])
+            above = sorted((r for r in ranked if r['lower'] > broken['upper']), key=lambda r:r['upper'])
+            if above and price < above[0]['lower']:
+                refs = list(reversed(above[:3])) + [broken]
+                data['breakout'] = dict(level=broken, at=now, references=refs, session_high=high,
+                    interval_based=True, crossed_prior_hod=bool(high and previous and previous[1] <= high < price))
+        elif eligible and not (keep_crossing and data.get('breakout')):
             data['breakout'] = dict(level=eligible[-1], at=now, references=ranked[:4], session_high=high)
         breakout = data.get('breakout')
         invalid = None
-        if breakout and continuous:
+        if breakout and keep_crossing:
             live_ids = {r['unified_level_id'] for r in levels}
-            if any(r['unified_level_id'] not in live_ids for r in breakout['references'][:3]):
+            if any(r['unified_level_id'] not in live_ids for r in breakout['references'][:-1]):
                 invalid = 'reference_no_longer_qualified'
-            elif price >= breakout['references'][2]['lower']:
-                invalid = 'passed_r3_entry_corridor'
+            elif price >= breakout['references'][-2]['lower']:
+                invalid = 'passed_interval_ceiling' if interval else 'passed_r3_entry_corridor'
         if breakout and (price <= breakout['level']['upper'] or invalid or
-                         (not continuous and now-breakout['at'] > policy['breakout_lifetime_ms']/1000)):
-            data['breakout_invalidated'] = dict(at=now, reason=(invalid or 'returned_below_r4') if continuous else 'expired_or_returned')
+                         (not keep_crossing and now-breakout['at'] > policy['breakout_lifetime_ms']/1000)):
+            data['breakout_invalidated'] = dict(at=now, reason=(invalid or ('returned_below_interval' if interval else 'returned_below_r4')) if keep_crossing else 'expired_or_returned')
             data.pop('breakout', None)
     data['prior_levels'] = levels
+    data['session_high'] = observation.structural_session_high
     move = dict(data.get('move') or {})
     if move and observation.source_timeframe == '1s' and 'bar_close' in observation.evaluation_events:
         # Exclude the partial candle that contains the resistance break.
@@ -141,7 +157,7 @@ def observe(observation, parameters, state):
 
 def select(observation, parameters, state):
     selected = _select(observation, parameters, state)
-    if parameters['v5_breakout_contract'] == STAGED_CONTINUOUS_CONTRACT:
+    if continuous(parameters):
         selected['gate_evidence'] = evidence(observation, state)
     return selected
 
@@ -175,7 +191,7 @@ def _select(observation, parameters, state):
     if start is None:
         return dict(reason='v5_direction_warming')
     window = history[start:]
-    if (price <= window[0][1] or (parameters['v5_breakout_contract'] != STAGED_CONTINUOUS_CONTRACT and any(b[0]-a[0] > policy['maximum_sample_gap_ms']/1000
+    if (price <= window[0][1] or (not continuous(parameters) and any(b[0]-a[0] > policy['maximum_sample_gap_ms']/1000
                                    for a,b in zip(window, window[1:])))):
         return dict(reason='v5_direction_not_upward')
     vwap = observation.execution_vwap
@@ -189,20 +205,24 @@ def _select(observation, parameters, state):
         return dict(reason='v5_resistance_not_above_vwap')
     is_staged = staged(parameters)
     refs = breakout.get('references', [])
-    if is_staged and (len(refs) != 4 or price >= refs[2]['lower']):
+    interval = parameters['v5_breakout_contract'] == INTERVAL_CONTRACT
+    if interval and (len(refs) < 2 or price >= refs[-2]['lower']):
+        return dict(reason='v5_outside_entry_interval')
+    if is_staged and not interval and (len(refs) != 4 or price >= refs[2]['lower']):
         return dict(reason='v5_entry_not_below_r3')
     tick = parameters['execution']['tick_size']
     stop = (floor(price*(1-policy['initial_stop_pct']/100)/tick+1e-9)*tick if is_staged else below(broken, parameters))
     if not 0 < stop < min(price, observation.bid):
         return dict(reason='v5_stop_already_triggered')
-    selected = (dict(price=(ceil(refs[1]['lower']/tick-1e-9)-policy['target_offset_ticks'])*tick,
-                     level=refs[1], average_body=0., reference=broken['upper']) if is_staged
+    target_row = refs[max(0,len(refs)-3)] if interval else (refs[1] if is_staged else None)
+    selected = (dict(price=(ceil(target_row['lower']/tick-1e-9)-policy['target_offset_ticks'])*tick,
+                     level=target_row, average_body=0., reference=broken['upper']) if is_staged
                 else target(data['levels'], broken, 0., parameters))
     if not selected or selected['price'] <= max(price, observation.ask):
         return dict(reason='v5_second_target_unavailable')
     return dict(reason='', stop=stop, target=selected['price'], target_selection=selected,
                 broken=broken, broken_at=breakout['at'], direction_reference=window[0],
-                references=refs, session_high=breakout.get('session_high'))
+                references=refs, session_high=breakout.get('session_high'), interval_based=interval)
 
 
 def manage(observation, parameters, state):

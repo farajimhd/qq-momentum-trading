@@ -135,3 +135,54 @@ def test_delayed_entry_average_excludes_partial_entry_candle():
     V.manage(replace(m,observed_at=NOW+timedelta(seconds=3),position_quantity=100,
         source_timeframe='1s',evaluation_events=('bar_close',)),p,state)
     assert state['v5_breakout_state']['stages']['count']==0
+
+
+def test_interval_entry_with_two_resistances_matches_juns_blocked_geometry():
+    from src.trading_runtime.strategy_engine import LongMomentumStrategyEngine
+    from tests.test_long_momentum_strategy import assignment
+    p=parameters(); p['v5_breakout_contract']=V.INTERVAL_CONTRACT; V.configure(p)
+    state={'entry_body_reference':dict(open=6.08,close=6.077,end=NOW.timestamp(),expires=NOW.timestamp()+1)}
+    refs=tuple(resistance(price) for price in (6.08,6.17))
+    for offset,price in ((0,6.08),(.2,6.08),(.4,6.11)):
+        m=replace(market(offset,price),execution_vwap=6.03,structural_session_high=6.32,
+                  structural_resistance_levels=refs)
+        V.observe(m,p,state)
+    result=LongMomentumStrategyEngine(revision=47).evaluate(
+        assignment(strategy_revision=47,parameters=p,state=state),m)
+    intent=next(i for i in result.evaluation.intents if i.action=='enter_long')
+    assert intent.profit_target_price==pytest.approx(6.15)
+    snapshot=intent.metadata['unified_structural_trigger']['current_snapshot']
+    assert snapshot['interval_based'] and len(snapshot['levels'])==2
+
+
+def test_interval_uses_previous_hod_and_known_upper_levels():
+    p,state,m=setup(V.INTERVAL_CONTRACT)
+    state['v5_breakout_state'].clear()
+    for offset,price,high in ((0,103.1,103.25),(.2,103.15,103.25),(.4,103.3,103.3)):
+        current=replace(m,observed_at=NOW+timedelta(seconds=offset),price=price,structural_session_high=high)
+        V.observe(current,p,state)
+    selected=V.select(current,p,state)
+    assert not selected['reason']
+    assert selected['session_high']==103.25
+    assert state['v5_breakout_state']['breakout']['crossed_prior_hod']
+    assert selected['references'][0]['upper']>selected['session_high']
+
+
+def test_interval_can_advance_across_multiple_bands_without_old_r4_gate():
+    p,state,m=setup(V.INTERVAL_CONTRACT)
+    current=replace(m,observed_at=NOW+timedelta(seconds=.6),price=103.65,bid=103.64,ask=103.66)
+    V.observe(current,p,state)
+    selected=V.select(current,p,state)
+    assert not selected['reason']
+    assert selected['broken']['price']==103.5
+    assert selected['references'][-2]['price']==103.8
+
+
+def test_two_reference_position_still_advances_stop_and_target():
+    p,state,m=setup(V.INTERVAL_CONTRACT)
+    state['v5_entry_selection']['references']=state['v5_entry_selection']['references'][-2:]
+    state['entry_at']=m.observed_at.isoformat()
+    current=replace(m,price=103.7,position_quantity=100)
+    stop=V.manage(current,p,state)
+    assert stop==V.below(state['v5_entry_selection']['broken'],p)
+    assert state['v5_breakout_state']['stages']['phase']=='waiting_local_top'

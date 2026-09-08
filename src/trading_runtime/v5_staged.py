@@ -1,7 +1,7 @@
 """Frozen R1-R4 stages, followed by a causal local-top expansion phase."""
 from math import ceil, isfinite
 from datetime import datetime
-from .v5_breakout import below, target
+from .v5_breakout import below, target, continuous, INTERVAL_CONTRACT
 
 
 def manage(observation, parameters, state):
@@ -9,21 +9,22 @@ def manage(observation, parameters, state):
     selection = state.get('v5_entry_selection') or {}
     current = float(state.get('active_stop') or state.get('initial_stop') or 0)
     refs = selection.get('references', [])
-    if len(refs) != 4:
+    interval = parameters.get('v5_breakout_contract') == INTERVAL_CONTRACT
+    if len(refs) < 2 or (not interval and len(refs) != 4):
         return current
     now, price = observation.observed_at.timestamp(), observation.price
     started = selection['broken_at']
-    if parameters.get('v5_breakout_contract') == 'swing-v5-staged-breakout-2':
+    if continuous(parameters):
         started = datetime.fromisoformat(state['entry_at']).timestamp() if state.get('entry_at') else now
     stage = dict(data.get('stages') or dict(phase='r4', started=started,
-        total=0., count=0, last_bar=0., top=None, broken=refs[3]))
+        total=0., count=0, last_bar=0., top=None, broken=refs[-1]))
     old_top = stage.get('top')
     average = stage['total']/stage['count'] if stage['count'] else None
     closed = observation.source_timeframe == '1s' and 'bar_close' in observation.evaluation_events
     body = abs(price-observation.bar_open) if observation.bar_open and isfinite(observation.bar_open) else None
     complete = closed and body is not None and now-1 >= stage['started'] and now > stage['last_bar']
-    if stage['phase'] == 'r4' and price > refs[2]['upper']:
-        current = max(current, below(refs[3], parameters))
+    if stage['phase'] == 'r4' and price > refs[-2]['upper']:
+        current = max(current, below(refs[-1], parameters))
         stage['phase'] = 'r3'
         above = next((r for r in data['levels'] if r['lower'] > refs[0]['upper']), None)
         if above:

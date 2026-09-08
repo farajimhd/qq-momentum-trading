@@ -909,6 +909,7 @@ def _compact_strategy_gate_snapshot(
                     "maximum_entry_levels",
                     "top_selection",
                     "frozen_at_entry",
+                    "interval_based",
                 )
                 if current_snapshot.get(key) is not None
             }

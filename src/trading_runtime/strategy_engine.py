@@ -5090,7 +5090,7 @@ class LongMomentumStrategyEngine:
         event_id = str(uuid4())
         resolved_metadata = dict(metadata or {})
         if v5_breakout.enabled(assignment.parameters):
-            if assignment.parameters.get('v5_breakout_contract') == v5_breakout.STAGED_CONTINUOUS_CONTRACT:
+            if v5_breakout.continuous(assignment.parameters):
                 resolved_metadata['v5_gate_evidence'] = v5_breakout.evidence(observation, state)
             resolved_metadata['active_stop'] = state.get('active_stop')
             resolved_metadata['profit_target'] = profit_target_price
@@ -5099,7 +5099,8 @@ class LongMomentumStrategyEngine:
                 resolved_metadata['unified_structural_trigger'] = {'current_snapshot': {
                     'levels': [dict(r, entry_boundary=r['upper']) for r in selected.get('references', [])],
                     'session_high': selected.get('session_high'),
-                    'selected_at': observation.observed_at.isoformat(), 'frozen_at_entry': True}}
+                    'selected_at': observation.observed_at.isoformat(), 'frozen_at_entry': True,
+                    'interval_based': selected.get('interval_based', False)}}
         if assignment.parameters.get("swing_evidence_contract"):
             resolved_metadata["swing_evidence_contract"] = assignment.parameters["swing_evidence_contract"]
         if assignment.parameters.get("local_swing_management"):
