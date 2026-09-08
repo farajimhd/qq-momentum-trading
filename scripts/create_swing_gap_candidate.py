@@ -31,7 +31,7 @@ def main():
                 rules.append(deepcopy(rule))
             elif existing['conditions'] != rule['conditions']:
                 raise ValueError('Existing MACD rule differs from the source candidate')
-    profile_id = 'swing-v4-gap-v1'
+    profile_id = CONTRACT
     plan_id = profile_id + '-replay'
     mandate_ids = []
     for source in base['payload']['portfolio']['mandates']:
@@ -47,9 +47,9 @@ def main():
     universe['universe_id'] = 'run-plan-' + plan_id + '-candidates'
     payload['run_plans']['universes'] = [u for u in payload['run_plans']['universes'] if u['universe_id'] != universe['universe_id']] + [universe]
     plan['universe_id'] = universe['universe_id']
-    profile.update(profile_id=profile_id, name='Swing v4 gaps - research',
+    profile.update(profile_id=profile_id, name='Swing v4 gaps v2 - research',
         derived_from_profile_id=args.base_profile, publication_status='draft', editable=True,
-        description='Research: causal v4 gaps, MACD-open and VWAP/liquidity entry; fixed structural support at least $0.10 below entry and fixed target below the upper gap resistance. No MACD-close exit.')
+        description='Research: causal v4 resistance-cluster gaps, MACD-open and VWAP/liquidity entry; fixed support at least $0.10 below entry and target at the tick immediately below the upper resistance lower bound. No MACD-close exit.')
     parameters = profile['parameters']
     parameters.pop('swing_momentum_contract', None)
     parameters.pop('swing_momentum', None)

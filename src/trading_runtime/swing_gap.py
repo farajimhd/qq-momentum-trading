@@ -1,15 +1,16 @@
 """Opt-in causal gap trades, with fixed structural protection and target."""
-from math import floor, isfinite
+from math import ceil, floor, isfinite
 
 from src.market_engine.structure_gaps import gaps
 
-CONTRACT = 'swing-v4-gap-v1'
+LEGACY_CONTRACT = 'swing-v4-gap-v1'
+CONTRACT = 'swing-v4-gap-v2'
 DEFAULTS = dict(minimum_p_norm=.2, minimum_stop_distance=.10,
-                minimum_gap_bps=20., proximity_bps=50., minimum_reward_risk=1.)
+                minimum_gap_bps=20., proximity_bps=50., minimum_reward_risk=1., cluster_gap_bps=50.)
 
 
 def configure(parameters):
-    if parameters['swing_gap_contract'] != CONTRACT or not parameters.get('swing_evidence_contract'):
+    if parameters['swing_gap_contract'] not in (CONTRACT, LEGACY_CONTRACT) or not parameters.get('swing_evidence_contract'):
         raise ValueError('Gap strategy requires the causal MACD evidence contract')
     if parameters.get('swing_momentum_contract'):
         raise ValueError('Gap and momentum policies must use separate candidates')
@@ -23,6 +24,25 @@ def configure(parameters):
     parameters['protection']['trailing'].update(enabled=False, mode='qualified_support')
     parameters['protection']['profit_ladder'].update(enabled=True, fixed_at_entry=True)
     parameters['momentum_management']['macd_backstop']['enabled'] = False
+
+
+def resistance_clusters(rows, maximum_gap):
+    """Group nearby resistance bands for selection without changing the book.
+
+    Each cluster retains its outer bounds and member identities. Never merge
+    support into resistance or bridge a gap larger than the configured distance.
+    """
+    clusters = []
+    for row in sorted((r for r in rows if r['side'] == -1), key=lambda r: (r['lower'], r['upper'], str(r['unified_level_id']))):
+        if clusters and row['lower'] <= clusters[-1]['upper'] + maximum_gap + 1e-12:
+            cluster = clusters[-1]
+            cluster['upper'] = max(cluster['upper'], row['upper'])
+            cluster['members'].append(str(row['unified_level_id']))
+            cluster['unified_level_id'] = '|'.join(cluster['members'])
+        else:
+            clusters.append(dict(lower=row['lower'], upper=row['upper'], side=-1,
+                members=[str(row['unified_level_id'])], unified_level_id=str(row['unified_level_id'])))
+    return clusters
 
 
 def levels(observation, settings):
@@ -68,13 +88,19 @@ def select(observation, parameters):
     if vwap is None or not isfinite(vwap) or price <= vwap:
         return dict(result, reason='gap_price_not_above_vwap')
     proximity = price * settings['proximity_bps'] / 10000
-    # Same-side gap union is shared with the chart. Only the closest entrance
-    # can qualify; do not jump across intervening resistance clusters.
-    candidates = [g for g in gaps(rows) if g['kind'] == 'resistance' and g['upper'] > price]
+    corrected = parameters['swing_gap_contract'] == CONTRACT
+    clusters = resistance_clusters(rows, price*settings['cluster_gap_bps']/10000) if corrected else []
+    # The gap remains measured between outer band edges. Approach starts at
+    # the bottom of its entrance cluster, not only the cluster's top edge.
+    candidates = [g for g in gaps(clusters if corrected else rows) if g['kind'] == 'resistance' and g['upper'] > price]
     candidate = min(candidates, key=lambda g: g['lower'], default=None)
     selected = None
-    if candidate and candidate['lower']-proximity <= price < candidate['upper']:
+    entrance = next((c for c in clusters if candidate and c['upper'] == candidate['lower']), None)
+    approach = entrance['lower'] if entrance else candidate['lower'] if candidate else 0
+    if candidate and approach-proximity <= price < candidate['upper']:
         selected = dict(candidate, setup='resistance_gap')
+        if entrance:
+            selected['entrance_cluster'] = entrance
     else:
         # A green observation near a support or VWAP supplies rebound evidence.
         opening = float(observation.bar_open or 0)
@@ -87,12 +113,13 @@ def select(observation, parameters):
                             upper=resistance['lower'], setup='support_vwap_rebound')
     if not selected:
         return result
-    # Reserve one spread before resistance; round down to an executable tick.
+    # Keep quote validation, but do not subtract spread from a structural target.
     bid, ask = observation.bid, observation.ask
     if not all(isfinite(v) for v in (bid, ask)) or not 0 < bid <= ask:
         return dict(result, reason='gap_spread_unavailable')
-    buffer = max(tick, ask-bid)
-    target = floor((selected['upper']-buffer+tick*1e-9)/tick)*tick
+    target = ((ceil(selected['upper']/tick-1e-9)-1)*tick if corrected else
+              floor((selected['upper']-max(tick, ask-bid)+tick*1e-9)/tick)*tick)
+    result.update(gap=selected, target=target, reward_risk=(target-price)/(price-stop))
     if (selected['upper']-selected['lower'])/price*10000 < settings['minimum_gap_bps']:
         return dict(result, reason='gap_too_small')
     if target-price < settings['minimum_reward_risk']*(price-stop) or target <= price:
