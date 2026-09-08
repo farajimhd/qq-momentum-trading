@@ -1083,7 +1083,13 @@ function unifiedStructureSegments(rows: HistoricalIndicator[], chartEnd: number)
 function isQmdUnifiedStructureLevel(value: unknown): value is QmdUnifiedStructureLevel {
   if (!value || typeof value !== "object") return false;
   const row = value as Partial<QmdUnifiedStructureLevel>;
-  return (Number.isFinite(Number(row.unified_level_id)) || (["merged-point-minmax-v1", "merged-point-minmax-v2", "merged-point-minmax-v3", "merged-point-minmax-v4"].includes(String(row.load_contract)) && /^merged:[a-f0-9]{24}$/.test(String(row.unified_level_id))))
+  // V5 selected resistance areas have stable hashed identities; supports
+  // retain the numeric candidate identities from the underlying swing book.
+  const v5ResistanceId = row.book_version === "causal-swing-closing-book-5"
+    && row.load_contract === "resistance-evidence-selection-1"
+    && Number(row.side) === -1
+    && /^r:[a-f0-9]{16}$/.test(String(row.unified_level_id));
+  return (v5ResistanceId || Number.isFinite(Number(row.unified_level_id)) || (["merged-point-minmax-v1", "merged-point-minmax-v2", "merged-point-minmax-v3", "merged-point-minmax-v4"].includes(String(row.load_contract)) && /^merged:[a-f0-9]{24}$/.test(String(row.unified_level_id))))
     && (Number(row.side) === 1 || Number(row.side) === -1)
     && Number(row.lower) > 0
     && Number(row.upper) >= Number(row.lower)

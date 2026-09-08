@@ -2536,6 +2536,20 @@ def capture(args: argparse.Namespace) -> int:
                     }""")
                     hindsight_issue = None
                     if args.swing_book_v5:
+                        # Check the actual ChartPanel payload, not just its legend:
+                        # an ID-validator regression previously dropped every
+                        # selected resistance while leaving the controls usable.
+                        page.wait_for_function("""() => {
+                            for (const element of document.querySelectorAll('.chart-shell')) {
+                                const key = Object.keys(element).find(k => k.startsWith('__reactFiber$'));
+                                for (let fiber = key && element[key]; fiber; fiber = fiber.return) {
+                                    const zones = fiber.memoizedProps?.payload?.price_zones;
+                                    if (zones?.some(z => z.settingsId === 'indicator.qmd_unified_structure.v5'
+                                        && z.tone === 'sell' && z.latest)) return true;
+                                }
+                            }
+                            return false;
+                        }""", timeout=180000)
                         if page.get_by_role('button',name='Selected resistance',exact=True).count():
                             raise RuntimeError('Retired selected-resistance toolbar remains')
                         page.get_by_role('button',name='Expand legend',exact=True).first.click()
