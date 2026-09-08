@@ -526,6 +526,37 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 await manager.close()
                 journal.close()
 
+    async def test_body_trigger_rechecks_trade_and_expires_before_matching(self):
+        from src.market_engine.events import TradeEvent
+        for expiry in (False, True):
+            with tempfile.TemporaryDirectory() as directory:
+                broker = SimulatedBrokerAdapter(['DU1'], mode=TradingMode.BACKTEST)
+                manager, journal = await self._manager(directory, broker, policy=BrokerCommunicationPolicy(), causal_execution_clock=True)
+                try:
+                    base = intent(side_quote=(10, 10.02))
+                    request = replace(base, metadata={**base.metadata, 'entry_body_trigger': {
+                        'end': NOW.timestamp(), 'expires': NOW.timestamp()+1, 'threshold': 10.01}})
+                    with self.assertRaisesRegex(ValueError, 'body breakout'):
+                        await manager.submit_intent(portfolio_approved(journal, request), account_id='DU1', event=None)
+                    trade = TradeEvent(conditions=(), event_id='body', exchange=1, ingest_ts=NOW,
+                        participant_ts=None, price=10.03, ticker='TEST', ts=NOW)
+                    manager.observe_entry_trade(trade)
+                    await manager.submit_intent(portfolio_approved(journal, request), account_id='DU1', event=trade)
+                    at = NOW+timedelta(seconds=1 if expiry else .1)
+                    # Ineligible reports cannot invalidate the trigger.
+                    manager.observe_entry_trade(replace(trade, ts=at, price=9, raw={'price_eligible': False}))
+                    assert manager._entry_body_valid(request, NOW+timedelta(milliseconds=50))
+                    current = replace(trade, ts=at, price=10.03 if expiry else 10.01)
+                    manager.observe_entry_trade(current)
+                    await manager.enforce_entry_body_triggers(at)
+                    fills = await broker.on_market_event(current)
+                    self.assertFalse(fills)
+                    cancels = [r for r in journal.records('run-1') if r.entity_type == 'order_cancel_requested']
+                    self.assertTrue(any(r.payload['reason'] == 'entry_body_trigger_invalidated' for r in cancels))
+                finally:
+                    await manager.close()
+                    journal.close()
+
     async def test_gap_ceiling_rejects_submission_and_cancels_chasing(self):
         with tempfile.TemporaryDirectory() as directory:
             broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.BACKTEST)

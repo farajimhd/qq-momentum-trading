@@ -321,6 +321,7 @@ class TradingRuntime:
             # Historical adaptive orders use this same causal event clock.
             # Reprice from the quote just observed above before either expiry
             # or matching, making fills invariant to replay processing speed.
+            await self.order_manager.enforce_entry_body_triggers(event.ts)
             await self.order_manager.advance_adaptive_execution(event.ts)
             # Expire stale entries before the simulated/live broker is allowed
             # to match this event.  This keeps Replay and Backtest deadlines on
@@ -409,6 +410,8 @@ class TradingRuntime:
         self._observe_market_event_state(event)
 
     def _observe_market_event_state(self, event: MarketEvent) -> None:
+        if self.order_manager is not None:
+            self.order_manager.observe_entry_trade(event)
         if isinstance(event, QuoteEvent) and event.bid_price > 0 and event.ask_price >= event.bid_price:
             tick_size = float(event.raw.get("tick_size") or 0.01)
             snapshot = ExecutionMarketSnapshot(

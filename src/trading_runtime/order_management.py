@@ -10,7 +10,7 @@ from time import perf_counter
 from typing import Any, Awaitable, Callable, Protocol
 from uuid import uuid4
 
-from src.market_engine.events import MarketEvent
+from src.market_engine.events import MarketEvent, TradeEvent
 from src.request_context import causal_identity, normalize_request_identity
 from src.trading_runtime.broker import BrokerAdapter
 from src.trading_runtime.control_plane import TradingControlPlane
@@ -376,6 +376,8 @@ class OrderManagementEngine:
             else asyncio.Lock()
         )
         self._groups: dict[str, _ManagedOrderGroup] = {}
+        self._entry_trade_prices: dict[str, tuple[datetime, float]] = {}
+        self._body_entry_group_ids: set[str] = set()
         self._group_by_client_id: dict[str, str] = {}
         self._group_by_broker_id: dict[str, str] = {}
         self._closed = False
@@ -385,6 +387,29 @@ class OrderManagementEngine:
         if self.control_plane is not None:
             return self.control_plane.order_lane(account_id)
         return self._command_lanes.setdefault(account_id, asyncio.Lock())
+
+    def observe_entry_trade(self, event: MarketEvent) -> None:
+        if isinstance(event, TradeEvent) and event.price_eligible and event.price > 0:
+            old = self._entry_trade_prices.get(event.ticker)
+            if old is None or event.ts >= old[0]:
+                self._entry_trade_prices[event.ticker] = (event.ts, float(event.price))
+
+    def _entry_body_valid(self, intent: StrategyIntent, at: datetime) -> bool:
+        guard = intent.metadata.get('entry_body_trigger')
+        if guard is None:
+            return True
+        sample = self._entry_trade_prices.get(intent.ticker)
+        return bool(sample and guard['end'] <= sample[0].timestamp() <= at.timestamp() < guard['expires']
+                    and sample[1] > float(guard['threshold']) + 1e-10)
+
+    async def enforce_entry_body_triggers(self, at: datetime) -> None:
+        for group_id in tuple(self._body_entry_group_ids):
+            group = self._groups[group_id]
+            if not _open_entry_roots(group):
+                if group.state in TERMINAL_MANAGEMENT_STATES:
+                    self._body_entry_group_ids.discard(group_id)
+            elif not self._entry_body_valid(group.intent, at):
+                await self._cancel_open_entry_roots(group, 'entry_body_trigger_invalidated')
 
     def on_market_snapshot(self, snapshot: ExecutionMarketSnapshot) -> None:
         self.execution_market_data.update(snapshot)
@@ -670,6 +695,8 @@ class OrderManagementEngine:
                 protection_delegated=bool(payload.get("protection_delegated")),
             )
             self._groups[group_id] = group
+            if group.intent.metadata.get('entry_body_trigger'):
+                self._body_entry_group_ids.add(group_id)
             for request in group.orders:
                 if request.cOID:
                     self._group_by_client_id[request.cOID] = group_id
@@ -820,6 +847,9 @@ class OrderManagementEngine:
                 plan=plan,
             )
         await self._require_shortability(working_intent, plan)
+        if working_intent.metadata.get('entry_body_trigger') and not self._entry_body_valid(
+                working_intent, max(event.ts, self._causal_group_time(working_intent)) if event else self._causal_group_time(working_intent)):
+            raise ValueError('Entry body breakout is no longer valid')
         quote = self._execution_quote(working_intent)
         ceiling = working_intent.metadata.get('gap_entry_ceiling')
         if ceiling is not None and (quote is None or quote.ask > float(ceiling)+1e-9):
@@ -919,6 +949,8 @@ class OrderManagementEngine:
             current_limit_price=(tactic.steps[0].price if tactic and tactic.steps else None),
         )
         self._groups[group.group_id] = group
+        if group.intent.metadata.get('entry_body_trigger'):
+            self._body_entry_group_ids.add(group.group_id)
         for order in group.orders:
             if order.cOID:
                 self._group_by_client_id[order.cOID] = group.group_id
@@ -2231,6 +2263,9 @@ class OrderManagementEngine:
             )
             return False
         ceiling = group.intent.metadata.get('gap_entry_ceiling')
+        if not self._entry_body_valid(group.intent, record_time):
+            await self._cancel_open_entry_roots(group, 'entry_body_trigger_invalidated')
+            return False
         if ((ceiling is not None and quote.ask > float(ceiling)+1e-9)
                 or ((ceiling is not None or group.intent.metadata.get('gap_require_valid_stop_on_entry'))
                     and quote.bid <= float(group.intent.invalidation_price or 0))):

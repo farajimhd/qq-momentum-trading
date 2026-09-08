@@ -58,6 +58,31 @@ def test_pending_exit_prevents_reentry():
     assert not entered(result)
 
 
+def test_body_breakout_enters_intrabar_above_previous_body_and_preserves_protection():
+    p = parameters()
+    p['entry_body_breakout'] = dict(enabled=True, offset_ticks=1)
+    engine = S.LongMomentumStrategyEngine(revision=47)
+    # Previous candle is red: its open, not its close, defines the upper body.
+    m = replace(market(), price=103.2, bar_open=103.25, source_timeframe='1s')
+    closed = engine.evaluate(assignment(strategy_revision=47, parameters=p), m)
+    assert not entered(closed)
+    state = closed.state
+    for price, accepted in ((103.25, False), (103.26, False), (103.27, True)):
+        forming = replace(market(), observed_at=NOW+timedelta(milliseconds=100), price=price,
+                          bar_open=103.28, source_timeframe='', evaluation_events=('market_data_update',))
+        result = engine.evaluate(assignment(strategy_revision=47, parameters=p, state=state), forming)
+        assert entered(result) == accepted, [s.reason for s in result.evaluation.signals]
+        if accepted:
+            intent = result.evaluation.intents[0]
+            assert intent.metadata['entry_body_trigger']['threshold'] == pytest.approx(103.26)
+            assert intent.invalidation_price == pytest.approx(102.98)
+            assert intent.profit_target_price == pytest.approx(103.98)
+            assert result.state['entry_body_reference'] == state['entry_body_reference']
+    expired = replace(forming, observed_at=NOW+timedelta(seconds=1))
+    assert not entered(engine.evaluate(assignment(strategy_revision=47, parameters=p, state=state), expired))
+    assert not entered(engine.evaluate(assignment(strategy_revision=47, parameters=p), forming))
+
+
 def test_bid_must_clear_stop_without_changing_valid_baseline_entries():
     p = parameters()
     guarded = dict(p, gap_require_valid_stop_on_entry=True)

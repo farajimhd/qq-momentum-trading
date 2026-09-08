@@ -24,6 +24,7 @@ def tracks_reclaims(parameters):
 
 
 def configure(parameters):
+    from . import entry_body
     if parameters['swing_gap_contract'] not in (CONTRACT, CLUSTER_CONTRACT, LEGACY_CONTRACT) or not parameters.get('swing_evidence_contract'):
         raise ValueError('Gap strategy requires the causal MACD evidence contract')
     if parameters.get('swing_momentum_contract'):
@@ -38,6 +39,7 @@ def configure(parameters):
     parameters['protection']['trailing'].update(enabled=False, mode='qualified_support')
     parameters['protection']['profit_ladder'].update(enabled=True, fixed_at_entry=True)
     parameters['momentum_management']['macd_backstop']['enabled'] = False
+    entry_body.configure(parameters)
     if parameters.get('gap_management', {}).get('enabled'):
         fraction = parameters['gap_management'].get('take_profit_fraction')
         if not isinstance(fraction, (int, float)) or not isfinite(fraction) or not 0 < fraction < 1:

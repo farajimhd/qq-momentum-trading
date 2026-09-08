@@ -3,7 +3,7 @@ from __future__ import annotations
 from src.trading_runtime import breakout_confirmation
 
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
-from src.trading_runtime import histogram_slope, market_pressure, local_swing, swing_evidence, swing_momentum, swing_gap, gap_continuation
+from src.trading_runtime import histogram_slope, market_pressure, local_swing, swing_evidence, swing_momentum, swing_gap, gap_continuation, entry_body
 
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, time as clock_time, timedelta, timezone
@@ -2672,6 +2672,8 @@ class LongMomentumStrategyEngine:
         )
         if swing_gap.tracks_reclaims(parameters):
             gap_continuation.observe(observation, parameters, state, swing_gap.levels(observation, parameters['swing_gap']))
+        if entry_body.enabled(parameters):
+            entry_body.observe(observation, state)
         if parameters.get("completed_macd_setup"):
             closed = "bar_close" in observation.evaluation_events and observation.source_timeframe in {"", "1s"}
             if closed and parameters.get("swing_momentum_contract"):
@@ -3199,6 +3201,13 @@ class LongMomentumStrategyEngine:
             )
 
         candle_policy = dict(parameters.get("entry_candle_confirmation") or {})
+        if entry_body.enabled(parameters):
+            body_reason, body_evidence = entry_body.check(observation, parameters, state)
+            state['entry_body_trigger'] = body_evidence
+            if body_reason:
+                return self._result(assignment, observation, 'wait', body_reason,
+                    confirmation_score, _confirmation_confidence(observation), state,
+                    AssignmentStatus.WATCHING, metadata={'entry_body_trigger': body_evidence})
         reset_level = dict(state.get("breakout_reset_required") or {})
         current_entry_level = dict((unified_trigger or {}).get("level") or {})
         higher_breakout = bool(
@@ -5091,6 +5100,8 @@ class LongMomentumStrategyEngine:
                     assignment.parameters,
                 ),
             )
+        if action == 'enter_long' and assignment.parameters.get('entry_body_breakout', {}).get('enabled'):
+            resolved_metadata['entry_body_trigger'] = dict(state['entry_body_trigger'])
         reason_detail = _decision_reason_detail(
             action,
             reason,
@@ -5226,6 +5237,8 @@ class LongMomentumStrategyEngine:
                 metadata={**i.metadata, 'gap_entry_ceiling': ceiling}) for i in intents)
         if action == 'enter_long' and assignment.parameters.get('gap_require_valid_stop_on_entry'):
             intents = tuple(replace(i, metadata={**i.metadata, 'gap_require_valid_stop_on_entry': True}) for i in intents)
+        if action == 'enter_long' and assignment.parameters.get('entry_body_breakout', {}).get('enabled'):
+            intents = tuple(replace(i, metadata={**i.metadata, 'entry_body_trigger': dict(state['entry_body_trigger'])}) for i in intents)
         if action == 'enter_long' and (swing_gap.runner_policy(assignment.parameters) or {}).get('complete_partial_target'):
             intents = tuple(replace(i, metadata={**i.metadata, 'complete_partial_target': True}) for i in intents)
         payload = {
@@ -6533,6 +6546,12 @@ def _decision_reason_detail(
     state: dict[str, Any],
 ) -> str:
     prefix = "Wait" if action == "wait" else "Hold" if action == "hold" else "Act"
+    if reason == 'entry_body_reference_unavailable':
+        return 'Wait: entry needs an eligible trade during the second after a completed 1s candle.'
+    if reason == 'entry_body_not_broken':
+        body = metadata.get('entry_body_trigger') or {}
+        return (f"Wait: trade price {_display_value(body.get('price'))} must exceed the previous "
+                f"completed 1s body plus offset at {_display_value(body.get('threshold'))}.")
     gap_selection = metadata.get("profit_target_selection") or metadata.get("gap_selection") or {}
     if reason in {"entry_confirmed", "reentry_confirmed"} and gap_selection.get("gap"):
         gap = gap_selection["gap"]
