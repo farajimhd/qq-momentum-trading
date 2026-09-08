@@ -6,9 +6,9 @@ from tests.test_v5_breakout import parameters, market, resistance
 from tests.test_long_momentum_strategy import NOW
 
 
-def setup():
+def setup(contract=V.STAGED_CONTRACT):
     p=parameters()
-    p['v5_breakout_contract']=V.STAGED_CONTRACT
+    p['v5_breakout_contract']=contract
     V.configure(p)
     refs=[resistance(x) for x in (104,103.8,103.5,103.2)]
     state={'entry_body_reference':dict(open=103.1,close=103.15,end=NOW.timestamp(),expires=NOW.timestamp()+1)}
@@ -78,3 +78,60 @@ def test_production_engine_emits_staged_entry_and_frozen_references():
     assert intent.invalidation_price==pytest.approx(98.13)
     assert intent.profit_target_price==pytest.approx(103.78)
     assert len(intent.metadata['unified_structural_trigger']['current_snapshot']['levels'])==4
+
+
+def test_continuous_crossing_survives_quiet_trade_interval():
+    p,state,m=setup(V.STAGED_CONTINUOUS_CONTRACT)
+    state['v5_breakout_state'].pop('breakout')
+    V.observe(replace(m,observed_at=NOW+timedelta(seconds=1),price=103.1),p,state)
+    current=replace(m,observed_at=NOW+timedelta(seconds=1.5),price=103.3)
+    V.observe(current,p,state)
+    state['entry_body_reference'].update(end=NOW.timestamp()+1,expires=NOW.timestamp()+2)
+    selected=V.select(current,p,state)
+    assert selected['reason']=='',selected
+    assert selected['gate_evidence']['crossed_upper']==pytest.approx([103.21])
+
+
+def test_continuous_setup_survives_one_second_until_other_gates_pass():
+    from src.trading_runtime.strategy_engine import LongMomentumStrategyEngine
+    from tests.test_long_momentum_strategy import assignment
+    p,state,m=setup(V.STAGED_CONTINUOUS_CONTRACT)
+    original=state['v5_breakout_state']['breakout']['at']
+    current=replace(m,observed_at=NOW+timedelta(seconds=1.8),price=103.35,
+                    bid=103.34,ask=103.36)
+    V.observe(current,p,state)
+    state['entry_body_reference'].update(end=NOW.timestamp()+1,expires=NOW.timestamp()+2)
+    result=LongMomentumStrategyEngine(revision=47).evaluate(
+        assignment(strategy_revision=47,parameters=p,state=state),current)
+    intent=next(i for i in result.evaluation.intents if i.action=='enter_long')
+    assert intent.metadata['v5_gate_evidence']['breakout_at']==original
+
+
+@pytest.mark.parametrize('price,reason',[(103.1,'returned_below_r4'),(103.6,'passed_r3_entry_corridor')])
+def test_continuous_setup_invalidates_on_price_leaving_corridor(price,reason):
+    p,state,m=setup(V.STAGED_CONTINUOUS_CONTRACT)
+    V.observe(replace(m,observed_at=NOW+timedelta(seconds=.6),price=price),p,state)
+    assert not state['v5_breakout_state'].get('breakout')
+    assert state['v5_breakout_state']['breakout_invalidated']['reason']==reason
+
+
+def test_continuous_does_not_invent_crossing_for_new_level():
+    p,state,m=setup(V.STAGED_CONTINUOUS_CONTRACT)
+    state['v5_breakout_state'].clear()
+    V.observe(replace(m,price=103.1,structural_resistance_levels=()),p,state)
+    V.observe(replace(m,observed_at=NOW+timedelta(seconds=1),price=103.3),p,state)
+    assert not state['v5_breakout_state'].get('breakout')
+
+
+def test_continuous_still_rejects_downward_direction():
+    p,state,m=setup(V.STAGED_CONTINUOUS_CONTRACT)
+    state['v5_breakout_state']['history']=[(NOW.timestamp(),103.4),(NOW.timestamp()+.4,103.3)]
+    assert V.select(m,p,state)['reason']=='v5_direction_not_upward'
+
+
+def test_delayed_entry_average_excludes_partial_entry_candle():
+    p,state,m=setup(V.STAGED_CONTINUOUS_CONTRACT)
+    state['entry_at']=(NOW+timedelta(seconds=2.5)).isoformat()
+    V.manage(replace(m,observed_at=NOW+timedelta(seconds=3),position_quantity=100,
+        source_timeframe='1s',evaluation_events=('bar_close',)),p,state)
+    assert state['v5_breakout_state']['stages']['count']==0

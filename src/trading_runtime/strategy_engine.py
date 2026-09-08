@@ -5090,6 +5090,8 @@ class LongMomentumStrategyEngine:
         event_id = str(uuid4())
         resolved_metadata = dict(metadata or {})
         if v5_breakout.enabled(assignment.parameters):
+            if assignment.parameters.get('v5_breakout_contract') == v5_breakout.STAGED_CONTINUOUS_CONTRACT:
+                resolved_metadata['v5_gate_evidence'] = v5_breakout.evidence(observation, state)
             resolved_metadata['active_stop'] = state.get('active_stop')
             resolved_metadata['profit_target'] = profit_target_price
             if action == 'enter_long':

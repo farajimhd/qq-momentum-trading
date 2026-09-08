@@ -1,5 +1,6 @@
 """Frozen R1-R4 stages, followed by a causal local-top expansion phase."""
 from math import ceil, isfinite
+from datetime import datetime
 from .v5_breakout import below, target
 
 
@@ -11,7 +12,10 @@ def manage(observation, parameters, state):
     if len(refs) != 4:
         return current
     now, price = observation.observed_at.timestamp(), observation.price
-    stage = dict(data.get('stages') or dict(phase='r4', started=selection['broken_at'],
+    started = selection['broken_at']
+    if parameters.get('v5_breakout_contract') == 'swing-v5-staged-breakout-2':
+        started = datetime.fromisoformat(state['entry_at']).timestamp() if state.get('entry_at') else now
+    stage = dict(data.get('stages') or dict(phase='r4', started=started,
         total=0., count=0, last_bar=0., top=None, broken=refs[3]))
     old_top = stage.get('top')
     average = stage['total']/stage['count'] if stage['count'] else None

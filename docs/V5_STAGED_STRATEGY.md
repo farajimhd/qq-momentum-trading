@@ -37,3 +37,24 @@ instructions, not proof of broker acceptance or fills.
 
 Validation uses focused synthetic strategy and chart fixtures. No backtest is
 performed as part of this implementation.
+
+## Continuous entry correction
+
+Contract `swing-v5-staged-breakout-2` preserves Candidate 111 for comparison.
+It removes the unrequested 250 ms observation-gap rejection and one-second
+expiry of an R4 break. The 400 ms net upward price comparison remains required.
+A previously observed crossing remains usable while price is above frozen R4
+and below frozen R3 and the three upper references remain qualified. Returning
+below R4, reaching R3, or losing those references invalidates it. A newly
+appearing level cannot supply a retroactive crossing. All entry gates are
+reevaluated using the current observation; no stale MACD or liquidity approval
+is retained. The rank/crossing/invalidation evidence is included in decisions.
+
+Audit of JUNS run `69934994-a349-4ee3-ab20-5d1b430c3e64` found entries at
+07:16:57.903635, 07:19:12.351991, 07:22:26.027768, and 07:27:05.821657 Eastern.
+At the 07:22 entry, price was 9.0497 and the current HOD was 9.53. Waiting-for-break decisions
+occurred repeatedly during the preceding 7.28-to-8.50 rise. The journal did not
+retain the rejected crossing state, so the exact number recoverable by each
+correction is unknown. Spread failures above 200 bps are genuine vetoes and
+remain unchanged. The strict R4-only / below-R3 policy inherently excludes
+entry into later portions of a move; this correction does not relax it.
