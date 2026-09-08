@@ -14,6 +14,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base-candidate', required=True)
     parser.add_argument('--base-profile', default='swing-v4-momentum-v1')
+    parser.add_argument('--profile-id')
+    parser.add_argument('--label', default='Swing v4 gaps v3 - research')
+    parser.add_argument('--preserve-parameters', action='store_true')
+    parser.add_argument('--parameters-json', type=Path, help='Explicit incremental parameter patch; preserve the source parameters first')
     args = parser.parse_args()
     from src.backend.trading_configuration_service import configuration_candidate, create_test_candidate, configuration_base
     from src.trading_runtime.swing_gap import CONTRACT, DEFAULTS
@@ -31,7 +35,7 @@ def main():
                 rules.append(deepcopy(rule))
             elif existing['conditions'] != rule['conditions']:
                 raise ValueError('Existing MACD rule differs from the source candidate')
-    profile_id = CONTRACT
+    profile_id = args.profile_id or CONTRACT
     plan_id = profile_id + '-replay'
     mandate_ids = []
     for source in base['payload']['portfolio']['mandates']:
@@ -47,18 +51,31 @@ def main():
     universe['universe_id'] = 'run-plan-' + plan_id + '-candidates'
     payload['run_plans']['universes'] = [u for u in payload['run_plans']['universes'] if u['universe_id'] != universe['universe_id']] + [universe]
     plan['universe_id'] = universe['universe_id']
-    profile.update(profile_id=profile_id, name='Swing v4 gaps v3 - research',
+    profile.update(profile_id=profile_id, name=args.label,
         derived_from_profile_id=args.base_profile, publication_status='draft', editable=True,
         description='Research: confirmed cluster breakout or support bounce, executable-price risk ceiling, mature support at least $0.10 below entry, partial target and support-protected runner. Failed support requires reclaim.')
     parameters = profile['parameters']
-    parameters.pop('swing_momentum_contract', None)
-    parameters.pop('swing_momentum', None)
-    parameters.update(swing_gap_contract=CONTRACT, swing_gap=dict(DEFAULTS))
-    from src.trading_runtime.gap_continuation import DEFAULTS as CONTINUATION_DEFAULTS
-    parameters['gap_continuation'] = dict(CONTINUATION_DEFAULTS)
-    parameters['protection']['stop'].update(method='structure', cap_initial_stop_distance=False)
-    parameters['protection']['profit_ladder'].update(enabled=True, fixed_at_entry=True)
-    parameters['momentum_management']['macd_backstop']['enabled'] = False
+    if not args.preserve_parameters:
+        parameters.pop('swing_momentum_contract', None)
+        parameters.pop('swing_momentum', None)
+        parameters.update(swing_gap_contract=CONTRACT, swing_gap=dict(DEFAULTS))
+        from src.trading_runtime.gap_continuation import DEFAULTS as CONTINUATION_DEFAULTS
+        parameters['gap_continuation'] = dict(CONTINUATION_DEFAULTS)
+        parameters['protection']['stop'].update(method='structure', cap_initial_stop_distance=False)
+        parameters['protection']['profit_ladder'].update(enabled=True, fixed_at_entry=True)
+        parameters['momentum_management']['macd_backstop']['enabled'] = False
+    else:
+        profile['description'] = 'Research candidate cloned from '+args.base_profile+'; incremental changes are recorded in the experiment ledger.'
+    if args.parameters_json:
+        if not args.preserve_parameters:
+            parser.error('--parameters-json requires --preserve-parameters')
+        def update(target, patch):
+            for key, value in patch.items():
+                if isinstance(value, dict) and isinstance(target.get(key), dict):
+                    update(target[key], value)
+                else:
+                    target[key] = value
+        update(parameters, json.loads(args.parameters_json.read_text(encoding='utf-8')))
     plan.update(run_plan_id=plan_id, profile_id=profile_id, name=profile['name'],
         description=profile['description'], compiled=False,
         allowed_environments=['replay', 'backtest', 'backtest_debug'])

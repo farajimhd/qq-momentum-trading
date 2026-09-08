@@ -5451,8 +5451,8 @@ def _protection_profile_from_phase(
             raw.update(quantity_fraction=1., strategy_profit_target_index=0,
                        use_strategy_profit_target=True, stop={'rule_type': 'fixed_price'},
                        trailing={'rule_type': 'none'})
-        if parameters.get('swing_gap_contract') == swing_gap.CONTRACT and configured_slices:
-            fraction = parameters.get('gap_continuation', gap_continuation.DEFAULTS)['take_profit_fraction']
+        if swing_gap.runner_policy(parameters) and configured_slices:
+            fraction = swing_gap.runner_policy(parameters)['take_profit_fraction']
             first = configured_slices[0]
             first['quantity_fraction'] = fraction
             runner = dict(first, slice_id='gap-runner', quantity_fraction=1-fraction,
@@ -5471,7 +5471,7 @@ def _protection_profile_from_phase(
         raw.get("strategy_profit_target_index") is not None
         for raw in configured_slices
     )
-    if parameters.get('swing_gap_contract') == swing_gap.CONTRACT:
+    if swing_gap.runner_policy(parameters):
         has_indexed_slices = False
     indexed_slices = [
         raw
@@ -6185,7 +6185,7 @@ class AssignedLongMomentumStrategy:
                         aggregate_position_quantity is not None
                         and abs(float(aggregate_position_quantity)) > 1e-9
                     ):
-                        state["profit_target_liquidation_required"] = assignment.parameters.get('swing_gap_contract') != swing_gap.CONTRACT
+                        state["profit_target_liquidation_required"] = not bool(swing_gap.runner_policy(assignment.parameters))
                         state["target_replenishment_quantity"] = 0.0
                         state["target_replenishment_pending"] = False
                 if (
@@ -7924,7 +7924,7 @@ def _ratcheted_stop(
 ) -> float:
     current = float(state.get("active_stop") or state.get("initial_stop") or 0)
     if parameters.get('swing_gap_contract'):
-        if parameters.get('swing_gap_contract') == swing_gap.CONTRACT:
+        if swing_gap.runner_policy(parameters):
             return gap_continuation.ratchet(observation, parameters, state, swing_gap.levels(observation, parameters['swing_gap']))
         return current
     entry = float(state.get("entry_reference_price") or observation.average_price or observation.price)

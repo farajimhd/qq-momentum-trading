@@ -10,6 +10,14 @@ DEFAULTS = dict(minimum_p_norm=.2, minimum_stop_distance=.10,
                 minimum_gap_bps=20., proximity_bps=50., minimum_reward_risk=1., cluster_gap_bps=50.)
 
 
+def runner_policy(parameters):
+    if parameters.get('swing_gap_contract') == CONTRACT:
+        from .gap_continuation import DEFAULTS as continuation_defaults
+        return parameters.get('gap_continuation', continuation_defaults)
+    policy = parameters.get('gap_management') or {}
+    return policy if parameters.get('swing_gap_contract') and policy.get('enabled') else None
+
+
 def configure(parameters):
     if parameters['swing_gap_contract'] not in (CONTRACT, CLUSTER_CONTRACT, LEGACY_CONTRACT) or not parameters.get('swing_evidence_contract'):
         raise ValueError('Gap strategy requires the causal MACD evidence contract')
@@ -25,6 +33,10 @@ def configure(parameters):
     parameters['protection']['trailing'].update(enabled=False, mode='qualified_support')
     parameters['protection']['profit_ladder'].update(enabled=True, fixed_at_entry=True)
     parameters['momentum_management']['macd_backstop']['enabled'] = False
+    if parameters.get('gap_management', {}).get('enabled'):
+        fraction = parameters['gap_management'].get('take_profit_fraction')
+        if not isinstance(fraction, (int, float)) or not isfinite(fraction) or not 0 < fraction < 1:
+            raise ValueError('Gap management requires a partial target fraction between zero and one')
     if parameters['swing_gap_contract'] == CONTRACT:
         from . import gap_continuation
         parameters['gap_continuation'] = dict(gap_continuation.DEFAULTS, **parameters.get('gap_continuation', {}))

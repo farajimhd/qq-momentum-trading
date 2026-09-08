@@ -53,6 +53,20 @@ def test_pending_exit_prevents_reentry():
     assert not entered(result)
 
 
+def test_partial_runner_management_keeps_baseline_entry_and_target_selection():
+    baseline = parameters()
+    runner = dict(baseline, gap_management={'enabled': True, 'take_profit_fraction': .5})
+    runner = S.resolve_long_momentum_parameters(runner, revision=47)
+    for price in (103.2, 103.3, 103.39, 103.42, 103.8):
+        m = replace(market(), price=price)
+        assert G.select(m, runner) == G.select(m, baseline)
+    engine = S.LongMomentumStrategyEngine(revision=47)
+    a = engine.evaluate(assignment(strategy_revision=47, parameters=baseline), market())
+    b = engine.evaluate(assignment(strategy_revision=47, parameters=runner), market())
+    assert entered(a) and entered(b)
+    assert a.state['gap_selection'] == b.state['gap_selection']
+
+
 def test_attached_protection_is_one_fixed_stop_and_gap_target():
     p = parameters()
     p['protection_profile_catalog'] = {'test': {'profile_id': 'test', 'slices': [
