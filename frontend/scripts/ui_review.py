@@ -2474,7 +2474,7 @@ def capture(args: argparse.Namespace) -> int:
                     page.wait_for_timeout(args.settle_ms)
                     if args.staged_strategy_fixture:
                         page.evaluate("""async () => {
-                            const {positionLifecycleAnnotations}=await import('/src/features/canvas/chartPresentation.tsx');
+                            const {positionLifecycleAnnotations,historicalMarketLevelZones}=await import('/src/features/canvas/chartPresentation.tsx');
                             const {ChartPanel}=await import('/src/app/components/ChartPanel.tsx');
                             const {default:React}=await import('/node_modules/.vite/deps/react.js');
                             const {default:ReactDOM}=await import('/node_modules/.vite/deps/react-dom_client.js');
@@ -2507,12 +2507,22 @@ def capture(args: argparse.Namespace) -> int:
                             if(annotations[0]?.fills?.filter(f=>f.kind==='target_change').length!==2)throw Error('Missing target adjustments');
                             const candles=Array.from({length:61},(_,i)=>({time:t+i,open:10+i*.015,
                                 close:10.01+i*.015,high:10.04+i*.015,low:9.98+i*.015}));
+                            const level={unified_level_id:'r:0123456789abcdef',side:-1,price:10.7,lower:10.69,upper:10.71,
+                                prominence:40,selection_score:40,book_version:'causal-swing-closing-book-5',timeframes:['1s'],sources:[],
+                                load_contract:'resistance-evidence-selection-1',created_at_ms:t*1000,confirmed_at_ms:t*1000,lifecycle:'active'};
+                            const zones=historicalMarketLevelZones([
+                                {bar_start:iso(0),qmd_structure_unified_levels:[level]},
+                                {bar_start:iso(30),qmd_structure_unified_level_delta:{upserts:[{...level,lifecycle:'awaiting_retest'}],removed:[]}}
+                            ],[{bar_start:iso(0),bar_end:iso(60)}],[],[],['indicator.qmd_unified_structure'],'1s');
+                            if(zones.length!==2 || zones[0].end!==t+30 || zones[1].start!==t+30 ||
+                               zones[1].borderStyle!=='dashed' || !zones[1].latest || !zones[1].label.includes('awaiting retest'))
+                                throw Error('Broken resistance disappeared or its prior active interval was rewritten: '+JSON.stringify(zones));
                             const host=document.createElement('div');host.id='staged-strategy-fixture';host.style.cssText='position:fixed;inset:0;z-index:9999;background:var(--surface);';
                             document.body.append(host);
                             createRoot(host).render(React.createElement(ChartPanel,{ticker:'TEST',timeframe:'1s',timeframes:['1s'],
-                                visibleColumns:[],featureOptions:[],indicatorOptions:[],strategyPresentationEnabled:true,fillHeight:true,initialFitMode:'all',
+                                visibleColumns:['indicator.qmd_unified_structure'],featureOptions:[],indicatorOptions:['indicator.qmd_unified_structure'],strategyPresentationEnabled:true,fillHeight:true,initialFitMode:'all',
                                 settingsStorageKey:'staged-fixture',payload:{candles,volume:[],overlay_series:[],oscillator_series:[],
-                                    markers:[],regions:[],trade_annotations:annotations}}));
+                                    markers:[],regions:[],price_zones:zones,trade_annotations:annotations}}));
                         }""")
                         page.wait_for_timeout(args.settle_ms)
                         if page.get_by_text('Chart renderer stopped', exact=True).count():

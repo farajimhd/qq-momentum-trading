@@ -31,6 +31,7 @@ class StreamingSwingBookV5(SwingBook):
         self.selection_dirty = True
         self.minimum_score, self.maximum_width_bps = minimum_score, maximum_width_bps
         self._selection = None
+        self._qualified_references = {}
         super().__init__(seed, opening, split_factor, version=INTRADAY_VERSION)
         if opening is not None:
             self.last_time = opening
@@ -49,8 +50,30 @@ class StreamingSwingBookV5(SwingBook):
         self.selection_dirty = True
         super()._publish(level,t,reason)
 
-    def snapshot(self):
+    def _refresh_selection(self):
         if self.selection_dirty or self._selection is None:
             self._selection = projection(self, self.last_time, self.minimum_score, self.maximum_width_bps)
+            current = self._selection['unified_levels']
+            active_members = {k for row in current for k in row.get('selection_members', [])}
+            by_id = {str(r['level_id']): r for r in self.active.values()}
+            for key, row in self._qualified_references.items():
+                members = [by_id.get(k) for k in row['selection_members']]
+                if (members and all(r and r['side']=='resistance' and
+                        r['state'] in ('active','awaiting_retest','retest_contact') for r in members)
+                        and not active_members.intersection(row['selection_members'])
+                        and any(r['state']!='active' for r in members)):
+                    lifecycle = ('retest_contact' if any(r['state']=='retest_contact' for r in members)
+                                 else 'awaiting_retest')
+                    current.append(dict(row, lifecycle=lifecycle, retained_qualified_resistance=True))
+            self._qualified_references = {r['unified_level_id']:dict(r) for r in current if r['side']==-1}
             self.selection_dirty = False
+
+    def snapshot(self):
+        self._refresh_selection()
         return deepcopy(self._selection)
+
+    def observe(self, *bar):
+        # Capture qualification at its causal second, independent of UI polling.
+        self._refresh_selection()
+        super().observe(*bar)
+        self._refresh_selection()

@@ -135,3 +135,33 @@ def test_engine_emits_stop_and_target_replacements_on_r3_close():
     target_intent = next(i for i in result.evaluation.intents if i.action == 'replace_profit_target')
     assert target_intent.profit_target_price == pytest.approx(104.98)
     assert target_intent.metadata['v5_gate_evidence']['ladder_stage']['phase'] == 1
+
+
+def test_three_resistances_use_vwap_as_r4_and_entry_snapshot():
+    p,state,m=setup();p['v5_hod_vwap_fallback']=True
+    refs=tuple(resistance(x) for x in (103.5,103.8,104,105,106))
+    m=replace(m,structural_resistance_levels=refs)
+    V.observe(m,p,state)
+    result=S.LongMomentumStrategyEngine(revision=47).evaluate(
+        assignment(strategy_revision=47,parameters=p,state=state),m)
+    entry=next(i for i in result.evaluation.intents if i.action=='enter_long')
+    rows=entry.metadata['unified_structural_trigger']['current_snapshot']['levels']
+    assert rows[-1]['reference_kind']=='vwap' and rows[-1]['entry_boundary']==102
+    assert entry.invalidation_price==pytest.approx(98.13)
+
+
+def test_vwap_fallback_requires_three_and_vwap_below_r3():
+    p,state,m=setup();p['v5_hod_vwap_fallback']=True
+    for prices,vwap in (((103.8,104),102),((103.5,103.8,104),103.6)):
+        current=replace(m,execution_vwap=vwap,structural_resistance_levels=tuple(resistance(x) for x in prices))
+        V.observe(current,p,state);V.observe(current,p,state)
+        assert len(state['v5_breakout_state']['entry_ranked'])<4
+
+
+def test_pending_rows_only_consumed_by_new_candidate():
+    p,state,m=setup()
+    row=dict(resistance(103.2),lifecycle='awaiting_retest',retained_qualified_resistance=True)
+    current=replace(m,structural_resistance_levels=(row,))
+    assert not V.rows(current,p)
+    p['v5_hod_vwap_fallback']=True
+    assert V.rows(current,p)[0]['lifecycle']=='awaiting_retest'

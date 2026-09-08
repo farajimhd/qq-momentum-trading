@@ -846,7 +846,7 @@ function latestForecastsByHorizon(rows: BarGptForecast[]): BarGptForecast[] {
     .sort((left, right) => durationSeconds(left.horizon) - durationSeconds(right.horizon));
 }
 
-function historicalMarketLevelZones(
+export function historicalMarketLevelZones(
   rows: HistoricalIndicator[],
   bars: HistoricalBar[],
   structureEvents: QmdStructureEvent[],
@@ -914,6 +914,7 @@ function pushUnifiedStructureLevels(
         prominence: level.prominence, p_norm: level.p_norm, loadContract: v5 ? undefined : level.load_contract, levelPrice: level.price,
         start, end, latest, extendToRightEdge: latest, lower: level.lower, upper: level.upper,
         minPixelHeight: 3, renderMode: "zone", fillOpacity: 0.08, borderWidth: 1,
+        borderStyle: level.lifecycle === 'active' ? 'solid' : 'dashed',
         historicalLabelsDefault: false, historyBarsDefault: 0,
         tone: support ? "buy" : "sell" });
       return;

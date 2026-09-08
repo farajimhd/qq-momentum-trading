@@ -11,13 +11,15 @@ def is_point_level(row):
     return row.get('book_version') in (BOOK_VERSION, 'causal-swing-closing-book-1', 'causal-swing-closing-book-2', 'causal-swing-closing-book-3', 'causal-swing-closing-book-4', 'causal-swing-closing-book-5')
 
 
-def qualifies(row, observed_at=None):
+def qualifies(row, observed_at=None, *, include_retained=False):
     if not is_point_level(row):
         return False
     try:
         score, price = float(row['prominence']), float(row['price'])
         if row.get('book_version')=='causal-swing-closing-book-5':
-            if row.get('lifecycle')!='active':return False
+            retained = (include_retained and row.get('retained_qualified_resistance') is True
+                        and row.get('side')==-1 and row.get('lifecycle') in ('awaiting_retest','retest_contact'))
+            if row.get('lifecycle')!='active' and not retained:return False
             if row.get('side')==-1:
                 grade=float(row['selection_score'])
                 if not isfinite(grade) or not 30<=grade<=100:return False
@@ -47,4 +49,4 @@ def strategy_snapshot(snapshot, observed_at, minimum_p_norm=DEFAULT_THRESHOLD):
     rows = [dict(row, minimum_p_norm=minimum_p_norm) if row.get('load_contract') else row for row in snapshot['unified_levels']]
     return {'unified_levels': [dict(row, band_lower=row['lower'], band_upper=row['upper'],
         lower=row['price'], upper=row['price'], strategy_level_contract=STRATEGY_CONTRACT)
-        for row in rows if qualifies(row, observed_at)]}
+        for row in rows if qualifies(row, observed_at, include_retained=True)]}

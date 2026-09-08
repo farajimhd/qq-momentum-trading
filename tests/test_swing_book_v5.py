@@ -35,9 +35,38 @@ def test_streaming_matches_approved_selector_on_every_observation():
     for i,p in enumerate([10.,10.3,10.6,10.1,9.8,10.3,10.7,10.,9.9]*15,1):
         e.observe(i,p,p,p)
         expected=[a for a in select_areas(e.active.values(),i) if a['selected']]
-        actual=[r for r in e.snapshot()['unified_levels'] if r['side']==-1]
+        actual=[r for r in e.snapshot()['unified_levels'] if r['side']==-1 and r['lifecycle']=='active']
         assert {a['id'] for a in expected}=={r['unified_level_id'][2:] for r in actual}
         assert all(r['confirmed_at_ms']<=i*1000 for r in actual)
+
+
+def test_qualified_resistance_survives_break_then_expires_on_role_change():
+    e=engine(); e.last_time=3.
+    r=e.active[1]
+    r['best_departure']=r['history_threshold']; e._level_updated(r)
+    original=e.snapshot()['unified_levels'][0]
+    r.update(state='awaiting_retest'); e._level_updated(r)
+    retained=e.snapshot()['unified_levels'][0]
+    assert retained['unified_level_id']==original['unified_level_id']
+    assert retained['lower']==original['lower'] and retained['confirmed_at_ms']==original['confirmed_at_ms']
+    assert retained['lifecycle']=='awaiting_retest' and retained['retained_qualified_resistance']
+    from src.trading_runtime.structure_level_contract import strategy_snapshot
+    assert strategy_snapshot(e.snapshot(),datetime.fromtimestamp(4.,timezone.utc))['unified_levels']
+    r.update(side='support',state='active'); e._level_updated(r)
+    assert not any(row['side']==-1 for row in e.snapshot()['unified_levels'])
+
+
+def test_unqualified_pending_resistance_is_not_promoted():
+    e=engine(); e.active[1]['state']='awaiting_retest'; e._level_updated(e.active[1])
+    assert not e.snapshot()['unified_levels']
+
+
+def test_sparse_and_each_second_readers_have_identical_retained_levels():
+    a,b=StreamingSwingBookV5(opening=0.),StreamingSwingBookV5(opening=0.)
+    for i,p in enumerate([10.,10.3,10.6,10.1,9.8,10.3,10.7,11.,11.1]*8,1):
+        a.observe(i,p,p,p);a.snapshot()
+        b.observe(i,p,p,p)
+    assert a.snapshot()==b.snapshot()
 
 
 def test_split_adjusts_new_seed_without_mutating_old_prices():

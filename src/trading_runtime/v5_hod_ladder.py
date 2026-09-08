@@ -22,6 +22,11 @@ def observe(observation, parameters, state):
     high = data.get('session_high')
     ranked = sorted((r for r in prior if high and r['upper'] <= high),
                     key=lambda r: r['upper'], reverse=True)[:4]
+    if parameters.get('v5_hod_vwap_fallback') and len(ranked)==3:
+        vwap = observation.execution_vwap
+        if vwap and 0 < vwap < ranked[2]['lower']:
+            ranked.append(dict(unified_level_id='reference:vwap', reference_kind='vwap',
+                               price=vwap, lower=vwap, upper=vwap, side=-1))
     data.update(entry_ranked=ranked, decision_high=high, decision_levels=prior,
                 crossed=[], new_levels=[], observed_at=now)
     old_ids = {r['unified_level_id'] for r in prior}
@@ -63,7 +68,9 @@ def select(observation, parameters, state):
         return dict(reason='v5_price_not_above_vwap')
     refs = data.get('entry_ranked', [])
     if len(refs) != 4:
-        return dict(reason='v5_four_resistances_below_hod_unavailable')
+        return dict(reason=('v5_three_resistances_and_lower_vwap_unavailable'
+                            if parameters.get('v5_hod_vwap_fallback') else
+                            'v5_four_resistances_below_hod_unavailable'))
     if price <= refs[3]['upper']:
         return dict(reason='v5_price_not_above_r4')
     selected = target(refs[0], parameters)

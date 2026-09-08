@@ -80,7 +80,10 @@ def levels(observation, settings):
             v5 = row.get('book_version') == 'causal-swing-closing-book-5'
             score = 1. if v5 else float(row['p_norm'])
             created, confirmed = float(row['created_at_ms']), float(row['confirmed_at_ms'])
-            if (row.get('book_version') not in ('causal-swing-closing-book-4','causal-swing-closing-book-5') or row.get('lifecycle') != 'active'
+            retained = (settings.get('include_retained_resistances') and v5 and row.get('side')==-1
+                        and row.get('retained_qualified_resistance') is True
+                        and row.get('lifecycle') in ('awaiting_retest','retest_contact'))
+            if (row.get('book_version') not in ('causal-swing-closing-book-4','causal-swing-closing-book-5') or (row.get('lifecycle') != 'active' and not retained)
                     or row.get('side') not in (1, -1)
                     or not all(isfinite(v) for v in (lower, upper, score, created, confirmed))
                     or not 0 < lower <= upper or max(created, confirmed) > now
