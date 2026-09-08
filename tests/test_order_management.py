@@ -459,6 +459,29 @@ class ExecutionTacticTests(unittest.TestCase):
 
 
 class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_gap_stop_guard_rejects_invalid_submission_and_cancels_remainder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            broker = SimulatedBrokerAdapter(['DU1'], mode=TradingMode.BACKTEST)
+            manager, journal = await self._manager(directory, broker, policy=BrokerCommunicationPolicy(), causal_execution_clock=True)
+            try:
+                base = intent(side_quote=(10, 10.02))
+                request = replace(base, invalidation_price=10.,
+                    metadata={**base.metadata, 'gap_require_valid_stop_on_entry': True})
+                with self.assertRaisesRegex(ValueError, 'stop is already triggered'):
+                    await manager.submit_intent(portfolio_approved(journal, request), account_id='DU1', event=None)
+                request = replace(request, invalidation_price=9.8, execution_policy=ExecutionPolicy(
+                    policy_id='stop-guard', name=ExecutionPolicyName.ADAPTIVE_URGENT,
+                    envelope=ExecutionEnvelope(deadline_ms=5000, maximum_reprices=4)))
+                await manager.submit_intent(portfolio_approved(journal, request), account_id='DU1', event=None)
+                later = NOW+timedelta(milliseconds=100)
+                manager.on_market_snapshot(ExecutionMarketSnapshot('TEST', 9.8, 9.82, .01, later, 'qmd-history'))
+                await manager.advance_adaptive_execution(later)
+                cancels = [r for r in journal.records('run-1') if r.entity_type == 'order_cancel_requested']
+                self.assertTrue(any(r.payload['reason'] == 'gap_entry_economics_invalidated' for r in cancels))
+            finally:
+                await manager.close()
+                journal.close()
+
     async def test_gap_ceiling_rejects_submission_and_cancels_chasing(self):
         with tempfile.TemporaryDirectory() as directory:
             broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.BACKTEST)

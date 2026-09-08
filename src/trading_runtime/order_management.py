@@ -780,6 +780,9 @@ class OrderManagementEngine:
         ceiling = working_intent.metadata.get('gap_entry_ceiling')
         if ceiling is not None and (quote is None or quote.ask > float(ceiling)+1e-9):
             raise ValueError('Gap entry quote exceeds the approved reward-to-risk ceiling')
+        if working_intent.metadata.get('gap_require_valid_stop_on_entry') and (
+                quote is None or quote.bid <= float(working_intent.invalidation_price or 0)):
+            raise ValueError('Gap entry protective stop is already triggered')
         tactic = execution_tactic(
             working_intent,
             self.policy,
@@ -2184,7 +2187,9 @@ class OrderManagementEngine:
             )
             return False
         ceiling = group.intent.metadata.get('gap_entry_ceiling')
-        if ceiling is not None and (quote.ask > float(ceiling)+1e-9 or quote.bid <= float(group.intent.invalidation_price or 0)):
+        if ((ceiling is not None and quote.ask > float(ceiling)+1e-9)
+                or ((ceiling is not None or group.intent.metadata.get('gap_require_valid_stop_on_entry'))
+                    and quote.bid <= float(group.intent.invalidation_price or 0))):
             await self._cancel_open_entry_roots(group, 'gap_entry_economics_invalidated')
             return False
         requested_price = envelope.bound(

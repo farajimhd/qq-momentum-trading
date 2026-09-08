@@ -5224,6 +5224,8 @@ class LongMomentumStrategyEngine:
             intents = tuple(replace(i, execution_policy=replace(i.resolved_execution_policy(),
                 envelope=replace(i.resolved_execution_policy().envelope, maximum_buy_price=ceiling)),
                 metadata={**i.metadata, 'gap_entry_ceiling': ceiling}) for i in intents)
+        if action == 'enter_long' and assignment.parameters.get('gap_require_valid_stop_on_entry'):
+            intents = tuple(replace(i, metadata={**i.metadata, 'gap_require_valid_stop_on_entry': True}) for i in intents)
         payload = {
             "assignment_id": assignment.assignment_id,
             "strategy_id": assignment.strategy_id,

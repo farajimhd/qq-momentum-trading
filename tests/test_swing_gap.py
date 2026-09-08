@@ -53,6 +53,22 @@ def test_pending_exit_prevents_reentry():
     assert not entered(result)
 
 
+def test_bid_must_clear_stop_without_changing_valid_baseline_entries():
+    p = parameters()
+    guarded = dict(p, gap_require_valid_stop_on_entry=True)
+    assert G.select(market(), guarded) == G.select(market(), p)
+    for bid in (102.97, 102.98):
+        m = replace(market(), bid=bid)
+        assert not G.select(m, p)['reason']
+        assert G.select(m, guarded)['reason'] == 'gap_stop_already_triggered'
+        assert not entered(S.LongMomentumStrategyEngine(revision=47).evaluate(
+            assignment(strategy_revision=47, parameters=guarded), m))
+    result = S.LongMomentumStrategyEngine(revision=47).evaluate(
+        assignment(strategy_revision=47, parameters=guarded), market())
+    assert entered(result)
+    assert result.evaluation.intents[0].metadata['gap_require_valid_stop_on_entry']
+
+
 def test_partial_runner_management_keeps_baseline_entry_and_target_selection():
     baseline = parameters()
     runner = dict(baseline, gap_management={'enabled': True, 'take_profit_fraction': .5})

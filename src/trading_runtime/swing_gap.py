@@ -137,6 +137,8 @@ def select(observation, parameters, state=None):
     bid, ask = observation.bid, observation.ask
     if not all(isfinite(v) for v in (bid, ask)) or not 0 < bid <= ask:
         return dict(result, reason='gap_spread_unavailable')
+    if parameters.get('gap_require_valid_stop_on_entry') and bid <= stop:
+        return dict(result, reason='gap_stop_already_triggered')
     target = ((ceil(selected['upper']/tick-1e-9)-1)*tick if corrected else
               floor((selected['upper']-max(tick, ask-bid)+tick*1e-9)/tick)*tick)
     result.update(gap=selected, target=target, reward_risk=(target-price)/(price-stop))
