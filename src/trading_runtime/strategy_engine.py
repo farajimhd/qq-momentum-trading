@@ -7128,6 +7128,20 @@ def _matching_momentum_management_route(
     side: str,
 ) -> dict[str, Any] | None:
     if parameters.get('swing_gap_contract'):
+        runner = swing_gap.runner_policy(parameters) or {}
+        target_fill = state.get('last_profit_target_fill') or {}
+        filled_at, entry_at = target_fill.get('filled_at'), state.get('entry_at')
+        current_target_fill = bool(filled_at and entry_at and float(target_fill.get('quantity') or 0) > 0
+            and datetime.fromisoformat(entry_at) <= datetime.fromisoformat(filled_at) <= observation.observed_at)
+        line = _numeric_source_value(observation, 'indicator.macd.line', '1s')
+        signal = _numeric_source_value(observation, 'indicator.macd.signal', '1s')
+        if (runner.get('exit_after_target_macd_close') and current_target_fill
+                and observation.source_timeframe == '1s' and 'bar_close' in observation.evaluation_events
+                and line is not None and signal is not None and line <= signal):
+            return {'route_id': 'gap-runner-macd-close', 'name': 'MACD closed after partial target',
+                    'mechanism': 'gap_runner_macd_closed', 'position_fraction': 1.,
+                    'evidence': {'macd_timeframe': '1s', 'macd_line': line, 'macd_signal': signal,
+                                 'target_fill': dict(target_fill)}}
         return None
     if parameters.get('swing_momentum_contract') and state.get('swing_resistance_exit'):
         return {'route_id':'swing-resistance-rejection','name':'Failed v4 resistance test',

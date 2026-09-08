@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import timedelta
 import pytest
 from src.trading_runtime import swing_gap as G, strategy_engine as S
 from tests.test_swing_evidence_strategy import policy, obs, entered
@@ -81,6 +82,28 @@ def test_partial_runner_management_keeps_baseline_entry_and_target_selection():
     b = engine.evaluate(assignment(strategy_revision=47, parameters=runner), market())
     assert entered(a) and entered(b)
     assert a.state['gap_selection'] == b.state['gap_selection']
+
+
+def test_runner_macd_exit_requires_current_target_fill_and_completed_bar():
+    p = parameters()
+    p['gap_management'] = dict(enabled=True, take_profit_fraction=.5, exit_after_target_macd_close=True)
+    p = S.resolve_long_momentum_parameters(p, revision=47)
+    m = replace(market(), position_quantity=50, average_price=103.3, macd_line=-.2, macd_signal=-.1,
+                source_timeframe='1s', evaluation_events=('bar_close',))
+    state = dict(active_stop=102.98, entry_at=(NOW-timedelta(seconds=10)).isoformat())
+    def route(observation=m, values=None):
+        return S._matching_momentum_management_route(p, observation, values or state, gain_pct=1., side='long')
+    assert route() is None
+    state['last_profit_target_fill'] = dict(quantity=50, filled_at=(NOW-timedelta(seconds=11)).isoformat())
+    assert route() is None  # A previous position's target cannot arm this exit.
+    state['last_profit_target_fill']['filled_at'] = (NOW-timedelta(seconds=1)).isoformat()
+    assert route()['mechanism'] == 'gap_runner_macd_closed'
+    assert route(replace(m, evaluation_events=('market_data_update',))) is None
+    assert route(replace(m, source_timeframe='100ms')) is None
+    assert route(replace(m, macd_line=.2, macd_signal=.1)) is None
+    result = S.LongMomentumStrategyEngine(revision=47).evaluate(
+        assignment(strategy_revision=47, parameters=p, state=state, status=S.AssignmentStatus.MANAGING), m)
+    assert any(i.action == 'exit' for i in result.evaluation.intents)
 
 
 def test_attached_protection_is_one_fixed_stop_and_gap_target():
