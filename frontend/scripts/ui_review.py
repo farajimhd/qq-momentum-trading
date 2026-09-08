@@ -2299,6 +2299,13 @@ def capture(args: argparse.Namespace) -> int:
                         "localStorage.setItem(" + json.dumps(f"{storage_prefix}.{args.canvas_id}") + ", " + json.dumps(json.dumps(storage_payload)) + ");"
                     )
                 page = context.new_page()
+                if args.resistance_selection_fixture:
+                    base = datetime.fromisoformat(f"{args.canvas_session_date or '2026-08-20'}T10:00:00+00:00").timestamp()
+                    book = dict(id='structure_book_000000000001', ticker=args.canvas_symbol, version='causal-swing-closing-book-4', start='2025-01-01', end='2026-09-04')
+                    page.route('**/api/trading/backtest/structure-books', fulfill_json(json.dumps(dict(items=[book]))))
+                    area = dict(id='test', price=105.2, lower=105.1, upper=105.3, score=60, selected=True, members=['1','2'], reasons=['2 candidates; strongest evidence used, not summed'], valid_from=base+10800, valid_to=None)
+                    fixture = dict(segments=[area, dict(area,id='future',price=106.,valid_from=base+50000)], seconds=.1, book_id=book['id'])
+                    page.route('**/api/research/resistance-selection', fulfill_json(json.dumps(fixture)))
                 if args.structure_gaps_fixture:
                     base = datetime.fromisoformat(f"{args.canvas_session_date or '2026-08-20'}T10:00:00+00:00").timestamp()
                     book = dict(id='structure_book_000000000001',ticker=args.canvas_symbol,version='causal-swing-closing-book-4',start='2025-01-01',end='2026-09-04')
@@ -2528,6 +2535,29 @@ def capture(args: argparse.Namespace) -> int:
                         };
                     }""")
                     hindsight_issue = None
+                    if args.resistance_selection_fixture or args.resistance_selection:
+                        toggle = page.get_by_role('button', name='Selected resistance', exact=True)
+                        toggle.click()
+                        page.get_by_role('button', name='Resistance selection settings', exact=True).click()
+                        dialog = page.get_by_role('dialog', name='Resistance selection · prototype', exact=True)
+                        dialog.get_by_text('selected /', exact=False).wait_for(timeout=180000)
+                        if args.resistance_selection_fixture:
+                            dialog.get_by_text('1 selected / 1 areas', exact=False).wait_for(timeout=15000)
+                        for slider in dialog.get_by_role('slider').all():
+                            box, parent = slider.bounding_box(), dialog.bounding_box()
+                            if not box or not parent or box['x']+box['width'] > parent['x']+parent['width']+1:
+                                raise RuntimeError('Resistance slider clipped')
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__selection-settings.png')), full_page=True)
+                        page.keyboard.press('Escape'); page.mouse.move(0,0); page.wait_for_timeout(150)
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__selection-overlay.png')), full_page=True)
+                        toggle.click(); page.wait_for_timeout(150)
+                        pane = page.locator('.chart-pane-canvas').first
+                        baseline = pane.screenshot()
+                        toggle.click(); page.wait_for_timeout(150)
+                        if pane.screenshot() == baseline: raise RuntimeError('Resistance overlay did not paint')
+                        toggle.click(); page.wait_for_timeout(150)
+                        if pane.screenshot() != baseline: raise RuntimeError('Resistance toggle changed chart viewport')
+                        toggle.click()
                     if args.structure_gaps_fixture or args.structure_gaps:
                         toggle=page.get_by_role('button',name='Gap analysis',exact=True)
                         toggle.click()
@@ -2738,7 +2768,7 @@ def capture(args: argparse.Namespace) -> int:
                         and scenario["scale"] == 1.0
                         and scenario["viewport_name"] == "normal"
                     ) else screenshot_path.with_name(f"{screenshot_path.stem}__chart-interaction.png") if scenario["page"] == "canvas-focus" else None
-                    if not args.hindsight_positions and not args.swing_structure_fixture and not args.structure_gaps_fixture and not args.structure_gaps:
+                    if not args.hindsight_positions and not args.swing_structure_fixture and not args.structure_gaps_fixture and not args.structure_gaps and not args.resistance_selection_fixture and not args.resistance_selection:
                         issues.extend(validate_canvas_interactions(
                             page, scenario, interaction_screenshot,
                             args.canvas_chart_timeframe, args.chart_stress_cycles,
@@ -2814,6 +2844,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--stub-chart-history", action="store_true", help="use deterministic chart history for frontend-only renderer and interaction QA")
     result.add_argument("--hindsight-positions", action="store_true", help="generate real hindsight positions, capture the overlay and verify reversible keyboard toggling")
     result.add_argument('--swing-structure-fixture', action='store_true', help='validate swing controls with synthetic segments; never calculate real levels')
+    result.add_argument('--resistance-selection-fixture', action='store_true', help='validate selection overlay, cutoff, sliders and reversible chart painting with a fixture')
+    result.add_argument('--resistance-selection', action='store_true', help='calculate and inspect resistance selection on a real historical chart')
     result.add_argument('--structure-gaps-fixture', action='store_true', help='validate gap controls, causal cutoff and outcome visibility with deterministic fixtures')
     result.add_argument('--structure-gaps', action='store_true', help='calculate and inspect the real v4 gap preview on a historical chart')
     result.add_argument('--structure-time-placement', action='store_true', help='verify exact confirmation placement across missing and coarse candles')

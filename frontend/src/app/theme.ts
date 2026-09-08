@@ -326,6 +326,7 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
   const tokens = theme.tokens;
   const variables: Record<string, string> = {
     "--accent": tokens.accent,
+    "--resistance-selection": theme.tone === "light" ? "#2459d3" : "#80adff",
     "--accent-foreground": tokens.foreground,
     "--accent-soft": tokens.accentSoft,
     "--background": tokens.background,
