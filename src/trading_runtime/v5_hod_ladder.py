@@ -1,0 +1,128 @@
+"""Dynamic prior-HOD ladder with completed-close-only progression.
+
+Entry snapshots are immutable journal evidence; management uses the current
+causal ladder. Neither ranking changes nor newly observed rows imply a break.
+"""
+from math import ceil, floor
+
+from . import v5_breakout as v5
+
+
+def observe(observation, parameters, state):
+    now = observation.observed_at.timestamp()
+    data = dict(state.get('v5_breakout_state') or {})
+    if data.get('contract') != v5.HOD_CONTRACT:
+        data = dict(contract=v5.HOD_CONTRACT)
+    if now < data.get('observed_at', 0):
+        return
+    levels = v5.rows(observation, parameters)
+    # Use the previous event's authority. In particular, this trade cannot
+    # create a new HOD and simultaneously make a level eligible for a break.
+    prior = data.get('levels', [])
+    high = data.get('session_high')
+    ranked = sorted((r for r in prior if high and r['upper'] <= high),
+                    key=lambda r: r['upper'], reverse=True)[:4]
+    data.update(entry_ranked=ranked, decision_high=high, decision_levels=prior,
+                crossed=[], new_levels=[], observed_at=now)
+    old_ids = {r['unified_level_id'] for r in prior}
+    data['new_levels'] = [r for r in levels if r['unified_level_id'] not in old_ids]
+    if observation.source_timeframe == '1s' and 'bar_close' in observation.evaluation_events:
+        previous = data.get('completed_close')
+        if not previous or now > previous[0]:
+            if previous:
+                data['crossed'] = [r for r in ranked
+                                   if previous[1] <= r['upper'] < observation.price]
+            data['completed_close'] = [now, observation.price]
+            data['break_close_at'] = now
+    if observation.position_quantity <= 0:
+        data.pop('stages', None)
+        data.pop('pending_target', None)
+    data.update(levels=levels, session_high=observation.structural_session_high)
+    state['v5_breakout_state'] = data
+
+
+def target(row, parameters):
+    tick = parameters['execution']['tick_size']
+    price = (ceil(row['lower']/tick-1e-9)
+             - parameters['v5_breakout']['target_offset_ticks']) * tick
+    return dict(price=price, level=row, reference=row['lower'])
+
+
+def select(observation, parameters, state):
+    data = state.get('v5_breakout_state') or {}
+    reference = state.get('entry_body_reference') or {}
+    now, price = observation.observed_at.timestamp(), observation.price
+    if (not reference or not reference['end'] <= now < reference['expires']
+            or 'market_data_update' not in observation.evaluation_events):
+        return dict(reason='v5_body_reference_unavailable')
+    threshold = max(reference['open'], reference['close'])
+    state['entry_body_trigger'] = dict(reference, threshold=threshold, price=price)
+    if price <= threshold:
+        return dict(reason='v5_previous_body_not_broken')
+    if not observation.execution_vwap or price <= observation.execution_vwap:
+        return dict(reason='v5_price_not_above_vwap')
+    refs = data.get('entry_ranked', [])
+    if len(refs) != 4:
+        return dict(reason='v5_four_resistances_below_hod_unavailable')
+    if price <= refs[3]['upper']:
+        return dict(reason='v5_price_not_above_r4')
+    selected = target(refs[0], parameters)
+    if selected['price'] <= max(price, observation.ask):
+        return dict(reason='v5_r1_target_not_above_entry')
+    tick = parameters['execution']['tick_size']
+    stop = floor(price*(1-parameters['v5_breakout']['initial_stop_pct']/100)/tick+1e-9)*tick
+    if not 0 < stop < min(price, observation.bid):
+        return dict(reason='v5_stop_already_triggered')
+    return dict(reason='', stop=stop, target=selected['price'], target_selection=selected,
+                broken=refs[3], broken_at=now, references=refs,
+                session_high=data['decision_high'], interval_based=False)
+
+
+def manage(observation, parameters, state):
+    data = state['v5_breakout_state']
+    selection = state.get('v5_entry_selection')
+    current = float(state.get('active_stop') or state.get('initial_stop') or 0)
+    if not selection:
+        return current
+    now = observation.observed_at.timestamp()
+    stage = dict(data.get('stages') or dict(phase=0, last_break_at=0,
+                                           target=selection['target'], advanced_at=None))
+    refs = data.get('entry_ranked', [])
+    crossed = {r['unified_level_id'] for r in data.get('crossed', [])}
+    if (len(refs) == 4 and data.get('break_close_at') == now
+            and now > max(stage['last_break_at'], selection['broken_at'])):
+        phase = stage['phase']
+        if refs[2]['unified_level_id'] in crossed:
+            phase = max(phase, 1)
+        if phase >= 1 and refs[1]['unified_level_id'] in crossed:
+            phase = max(phase, 2)
+        if phase > stage['phase']:
+            stage['phase'] = phase
+            stage['target_anchor'] = refs[0]
+            stage['target_pending_phase'] = phase
+        stage['last_break_at'] = now
+    # A missing upper level never invents a price. Retry using known rows as
+    # they arrive, while retaining the previous executable target.
+    pending = stage.get('target_pending_phase')
+    if pending:
+        above = [r for r in data['decision_levels']
+                 if r['lower'] > stage['target_anchor']['upper']]
+        if len(above) >= pending:
+            selected = target(above[pending-1], parameters)
+            if selected['price'] > stage['target']:
+                data['pending_target'] = selected
+                stage.update(target=selected['price'], advanced_at=now)
+            stage.pop('target_pending_phase', None)
+    if stage['phase'] >= 1 and len(refs) == 4:
+        current = max(current, v5.below(refs[3], parameters))
+    if stage['advanced_at'] is not None:
+        # Only genuinely new, causally confirmed resistance after advancement
+        # can provide the requested alarming local stop. A returned old row
+        # or a future confirmation is not a newly forming resistance.
+        for row in data['new_levels']:
+            confirmed = row['confirmed_at_ms']/1000
+            if (stage['advanced_at'] < confirmed <= now
+                    and row['lower'] <= float(state.get('high_water_price') or observation.price)):
+                current = max(current, v5.below(row, parameters))
+    data['stages'] = stage
+    return current

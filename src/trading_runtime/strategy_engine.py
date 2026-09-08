@@ -4793,7 +4793,9 @@ class LongMomentumStrategyEngine:
             if existing and selected['price'] <= existing[0]:
                 return None
             state['structural_profit_targets'] = [selected['price']]
-            return self._result(assignment, observation, 'replace_profit_target', 'v5_adaptive_target',
+            reason = ('v5_hod_ladder_target' if parameters.get('v5_breakout_contract') == v5_breakout.HOD_CONTRACT
+                      else 'v5_adaptive_target')
+            return self._result(assignment, observation, 'replace_profit_target', reason,
                 observation.qmd_score, 1., state, AssignmentStatus.MANAGING,
                 quantity=observation.position_quantity, profit_target_price=selected['price'],
                 metadata={'profit_target_selection': selected, 'previous_profit_targets': existing})

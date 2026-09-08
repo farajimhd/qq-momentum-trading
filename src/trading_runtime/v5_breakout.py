@@ -7,21 +7,22 @@ CONTRACT = 'swing-v5-breakout-1'
 STAGED_CONTRACT = 'swing-v5-staged-breakout-1'
 STAGED_CONTINUOUS_CONTRACT = 'swing-v5-staged-breakout-2'
 INTERVAL_CONTRACT = 'swing-v5-interval-breakout-1'
+HOD_CONTRACT = 'swing-v5-hod-ladder-1'
 DEFAULTS = dict(direction_window_ms=400., maximum_sample_gap_ms=250.,
                 breakout_lifetime_ms=1000., stop_offset_bps=5., target_offset_ticks=1,
                 minimum_selection_score=30., entry_resistance_count=3)
 
 
 def enabled(parameters):
-    return parameters.get('v5_breakout_contract') in (CONTRACT, STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT)
+    return parameters.get('v5_breakout_contract') in (CONTRACT, STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT, HOD_CONTRACT)
 
 
 def staged(parameters):
-    return parameters.get('v5_breakout_contract') in (STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT)
+    return parameters.get('v5_breakout_contract') in (STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT, HOD_CONTRACT)
 
 
 def continuous(parameters):
-    return parameters.get('v5_breakout_contract') in (STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT)
+    return parameters.get('v5_breakout_contract') in (STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT, HOD_CONTRACT)
 
 
 def configure(parameters):
@@ -45,6 +46,9 @@ def configure(parameters):
         settings.setdefault('initial_stop_pct', 5.)
         if not 0 < settings['initial_stop_pct'] < 100:
             raise ValueError('Initial stop percentage must be between zero and 100')
+    if parameters.get('v5_breakout_contract') == HOD_CONTRACT:
+        for key in ('direction_window_ms', 'maximum_sample_gap_ms', 'breakout_lifetime_ms'):
+            settings.pop(key, None)
     parameters.update(completed_macd_setup=False, require_completed_entry_candle=False,
                       require_breakout_reset=False)
     parameters['entry_body_breakout'] = dict(enabled=True, offset_ticks=1)
@@ -84,6 +88,9 @@ def target(levels, broken, average, parameters):
 
 
 def observe(observation, parameters, state):
+    if parameters.get('v5_breakout_contract') == HOD_CONTRACT:
+        from .v5_hod_ladder import observe as observe_ladder
+        return observe_ladder(observation, parameters, state)
     now, price = observation.observed_at.timestamp(), observation.price
     policy = parameters['v5_breakout']
     keep_crossing = continuous(parameters)
@@ -166,7 +173,8 @@ def evidence(observation, state):
     data = state.get('v5_breakout_state') or {}
     breakout = data.get('breakout') or {}
     return dict(observed_at=observation.observed_at.isoformat(), price=observation.price,
-        session_high=observation.structural_session_high,
+        session_high=data.get('decision_high', observation.structural_session_high),
+        contract=data.get('contract'), ladder_stage=dict(data.get('stages') or {}),
         ranked_upper=[r['upper'] for r in data.get('entry_ranked', [])],
         crossed_upper=[r['upper'] for r in data.get('crossed', [])],
         breakout_at=breakout.get('at'), frozen_upper=[r['upper'] for r in breakout.get('references', [])],
@@ -174,6 +182,9 @@ def evidence(observation, state):
 
 
 def _select(observation, parameters, state):
+    if parameters.get('v5_breakout_contract') == HOD_CONTRACT:
+        from .v5_hod_ladder import select as select_ladder
+        return select_ladder(observation, parameters, state)
     data = state.get('v5_breakout_state') or {}
     reference = state.get('entry_body_reference') or {}
     now, price = observation.observed_at.timestamp(), observation.price
@@ -226,6 +237,9 @@ def _select(observation, parameters, state):
 
 
 def manage(observation, parameters, state):
+    if parameters.get('v5_breakout_contract') == HOD_CONTRACT:
+        from .v5_hod_ladder import manage as manage_ladder
+        return manage_ladder(observation, parameters, state)
     if staged(parameters):
         from .v5_staged import manage as staged_manage
         return staged_manage(observation, parameters, state)
