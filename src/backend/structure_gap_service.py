@@ -31,7 +31,7 @@ def calculate(request):
     end=datetime.combine(request.session_date,time(20),ny)
     if end>datetime.now(timezone.utc):raise ValueError('Select a completed historical session')
     cursor=SwingBookCursor(request.book_id,request.ticker.upper(),normalized=True)
-    if cursor.build['version']!='causal-swing-closing-book-4':raise ValueError('Select a v4 swing book')
+    if cursor.build['version'] not in ('causal-swing-closing-book-4','causal-swing-closing-book-5'):raise ValueError('Select a v4 or v5 swing book')
     cursor.advance(opening)
     engine=GapAnalyzer(request.proximity_bps,request.cost_bps,request.maximum_gaps,request.minimum_gap_bps)
     ranges=deque(maxlen=30);previous=None
@@ -39,7 +39,8 @@ def calculate(request):
         if t>end.timestamp():break
         noise=median(ranges) if ranges else max(.01,high-low)
         snap=cursor.snapshot(datetime.fromtimestamp(t,timezone.utc))
-        levels=[l for l in snap['unified_levels'] if l.get('p_norm') is not None and l['p_norm']>=request.minimum_p_norm]
+        levels=[l for l in snap['unified_levels'] if l.get('book_version')=='causal-swing-closing-book-5'
+                or l.get('p_norm') is not None and l['p_norm']>=request.minimum_p_norm]
         before=len(engine.setups)
         engine.observe(t,high,low,close,levels,noise)
         for setup in engine.setups[before:]:

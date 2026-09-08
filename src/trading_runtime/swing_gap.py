@@ -77,13 +77,16 @@ def levels(observation, settings):
             row = dict(raw)
             lower = float(row.get('band_lower', row.get('lower')))
             upper = float(row.get('band_upper', row.get('upper')))
-            score = float(row['p_norm'])
+            v5 = row.get('book_version') == 'causal-swing-closing-book-5'
+            score = 1. if v5 else float(row['p_norm'])
             created, confirmed = float(row['created_at_ms']), float(row['confirmed_at_ms'])
-            if (row.get('book_version') != 'causal-swing-closing-book-4' or row.get('lifecycle') != 'active'
+            if (row.get('book_version') not in ('causal-swing-closing-book-4','causal-swing-closing-book-5') or row.get('lifecycle') != 'active'
                     or row.get('side') not in (1, -1)
                     or not all(isfinite(v) for v in (lower, upper, score, created, confirmed))
                     or not 0 < lower <= upper or max(created, confirmed) > now
                     or not settings['minimum_p_norm'] <= score <= 1):
+                continue
+            if v5 and row['side']==-1 and (not isfinite(float(row.get('selection_score',0))) or float(row.get('selection_score',0))<30):
                 continue
             row.update(lower=lower, upper=upper)
             valid[(row['side'], str(row['unified_level_id']))] = row

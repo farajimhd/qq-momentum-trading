@@ -8,7 +8,7 @@ MINIMUM_PROMINENCE = 4.0
 
 
 def is_point_level(row):
-    return row.get('book_version') in (BOOK_VERSION, 'causal-swing-closing-book-1', 'causal-swing-closing-book-2', 'causal-swing-closing-book-3', 'causal-swing-closing-book-4')
+    return row.get('book_version') in (BOOK_VERSION, 'causal-swing-closing-book-1', 'causal-swing-closing-book-2', 'causal-swing-closing-book-3', 'causal-swing-closing-book-4', 'causal-swing-closing-book-5')
 
 
 def qualifies(row, observed_at=None):
@@ -16,7 +16,12 @@ def qualifies(row, observed_at=None):
         return False
     try:
         score, price = float(row['prominence']), float(row['price'])
-        if row.get('load_contract') in {'merged-point-minmax-v1', 'merged-point-minmax-v2', 'merged-point-minmax-v3', CONTRACT}:
+        if row.get('book_version')=='causal-swing-closing-book-5':
+            if row.get('lifecycle')!='active':return False
+            if row.get('side')==-1:
+                grade=float(row['selection_score'])
+                if not isfinite(grade) or not 30<=grade<=100:return False
+        elif row.get('load_contract') in {'merged-point-minmax-v1', 'merged-point-minmax-v2', 'merged-point-minmax-v3', CONTRACT}:
             score = float(row['p_norm'])
             threshold = float(row.get('minimum_p_norm', DEFAULT_THRESHOLD))
             if not 0 <= score <= 1 or not 0 <= threshold <= 1 or score < threshold:

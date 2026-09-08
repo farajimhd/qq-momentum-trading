@@ -9,7 +9,7 @@ type Gap = { id: string; kind: 'support' | 'resistance'; lower: number; upper: n
 type Setup = { id: number; time: number; price: number; support: number; support_lower: number;
   stop: number; target: number; score: number; upside: number; risk: number; reward_risk: number;
   volatility: number; cost: number; upside_gap: number; downside_gap: number | null;
-  prior_retests: number; support_age_seconds: number; support_p_norm: number;
+  prior_retests: number; support_age_seconds: number; support_p_norm: number | null;
   outcome: string; outcome_at: number | null };
 type Result = { segments: Gap[]; setups: Setup[]; seconds: number; book_id: string };
 type Book = { id: string; ticker: string; version: string; start: string; end: string };
@@ -47,7 +47,7 @@ export function useStructureGaps(ticker: string, sessionDate: string | undefined
     if (sessionDate) void api<{ items: Book[] }>('/api/trading/backtest/structure-books', { signal: abort.signal })
       .then(({ items }) => {
         if (abort.signal.aborted) return;
-        const matches = items.filter(b => b.ticker === ticker.toUpperCase() && b.version === 'causal-swing-closing-book-4'
+        const matches = items.filter(b => b.ticker === ticker.toUpperCase() && ['causal-swing-closing-book-4','causal-swing-closing-book-5'].includes(b.version)
           && b.start <= sessionDate && b.end >= sessionDate);
         setBooks(matches); if (matches.length === 1) setBookId(matches[0].id);
       }).catch((e: unknown) => { if (!abort.signal.aborted) setState({ identity, error: String(e) }); });
@@ -80,13 +80,13 @@ export function useStructureGaps(ticker: string, sessionDate: string | undefined
       {anchor ? <HindsightDetails anchor={anchor} onClose={close} title="Gap analysis · v4">
         <p className="chart-settings-help">Research preview. Gaps use band edges and keep support/resistance separate. Other kinds of levels can lie inside a gap. Strategy unchanged.</p>
         <div className="hindsight-summary" role="status">{current.error || (current.busy ? 'Reading certified book and causal 1s bars…' : current.result ?
-          `${eligible.length} setups as of ${clock(cutoff)} ET · ${current.result.seconds.toFixed(2)}s calculation` : 'Choose a v4 book and preview. No historical rows are written.')}</div>
+          `${eligible.length} setups as of ${clock(cutoff)} ET · ${current.result.seconds.toFixed(2)}s calculation` : 'Choose a swing book and preview. No historical rows are written.')}</div>
         <form className="chart-settings-section" onSubmit={e => { e.preventDefault(); generate(); }}>
           <label className="chart-setting-row">Source book<select aria-label="Gap source book" value={bookId} onChange={e => setBookId(e.target.value)}>
-            <option value="">{books.length ? 'Choose book' : 'No matching certified v4 book'}</option>
-            {books.map(b => <option value={b.id} key={b.id}>{b.ticker} · {b.start} – {b.end} · {b.id.slice(-6)}</option>)}
+            <option value="">{books.length ? 'Choose book' : 'No matching certified swing book'}</option>
+            {books.map(b => <option value={b.id} key={b.id}>{b.ticker} · v{b.version.split('-').at(-1)} · {b.start} – {b.end} · {b.id.slice(-6)}</option>)}
           </select></label>
-          {fields.map(([key, label, min, max, step]) => <label className="chart-setting-row" key={key}>{label}<span className="chart-setting-inline"><input aria-label={label} type="range" min={min} max={max} step={step} value={settings[key]} onChange={e => setSettings(s => ({ ...s, [key]: e.target.valueAsNumber }))} /><b>{Number(settings[key].toFixed(2))}</b></span></label>)}
+          {fields.filter(([key]) => key !== 'minimum_p_norm' || books.find(b => b.id===bookId)?.version !== 'causal-swing-closing-book-5').map(([key, label, min, max, step]) => <label className="chart-setting-row" key={key}>{label}<span className="chart-setting-inline"><input aria-label={label} type="range" min={min} max={max} step={step} value={settings[key]} onChange={e => setSettings(s => ({ ...s, [key]: e.target.valueAsNumber }))} /><b>{Number(settings[key].toFixed(2))}</b></span></label>)}
           <button className="toolbar-button hindsight-apply" type="submit" disabled={current.busy || !bookId}>Apply and preview</button>
         </form>
         {current.result ? <>
@@ -109,7 +109,7 @@ export function useStructureGaps(ticker: string, sessionDate: string | undefined
               Net upside {dollars(selected.upside)} · Risk with costs {dollars(selected.risk)} · R/R {selected.reward_risk.toFixed(2)}<br />
               Upside gap {dollars(selected.upside_gap)} · Gap below support {selected.downside_gap === null ? 'unbounded / unknown' : dollars(selected.downside_gap)}<br />
               Prior noise {dollars(selected.volatility)} · Cost allowance {dollars(selected.cost)}<br />
-              Support p_norm {selected.support_p_norm.toFixed(2)} · Prior retests (max member) {selected.prior_retests}
+              {selected.support_p_norm === null ? 'V5 support' : `Support p_norm ${selected.support_p_norm.toFixed(2)}`} · Prior retests (max member) {selected.prior_retests}
             </div>
             <label className="chart-setting-row">Show observed outcome<input type="checkbox" checked={outcomes} onChange={e => setOutcomes(e.target.checked)} /></label>
             {outcomes ? <p className="chart-settings-help">{selected.outcome_at !== null && selected.outcome_at <= cutoff ? `${selected.outcome.replaceAll('_', ' ')} at ${clock(selected.outcome_at)} ET` : 'Unresolved at this chart time.'} Outcomes are separate from the frozen setup score; these are price touches, not simulated fills.</p> : null}

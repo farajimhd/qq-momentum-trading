@@ -918,16 +918,17 @@ function pushUnifiedStructureLevels(
   let latestRank = 0;
   segments.forEach(({ end, latest, level, start }) => {
     if (!Number.isFinite(start) || !(start > 0) || !(chartEnd > start)) return;
-    if (["clickhouse-closing-book-1", "causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4"].includes(String(level.book_version))) {
+    if (["clickhouse-closing-book-1", "causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4", "causal-swing-closing-book-5"].includes(String(level.book_version))) {
       const support = level.side > 0;
-      const bookLabel = ["causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4"].includes(String(level.book_version)) ? "Swing level book" : "Experimental ClickHouse level book";
+      const v5 = level.book_version === 'causal-swing-closing-book-5';
+      const bookLabel = ["causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4", "causal-swing-closing-book-5"].includes(String(level.book_version)) ? "Swing level book" : "Experimental ClickHouse level book";
       zones.push({ annotationKind: "unified-structure-level", axisLabelDefault: latest && latestRank++ < 4,
         color: support ? "var(--success)" : "var(--danger)",
-        compactLabel: `${support ? "S" : "R"} · P${Number(level.prominence ?? 0).toFixed(2)}`,
-        label: `${support ? "Support" : "Resistance"} · ${level.lifecycle.replaceAll("_", " ")} · prominence ${Number(level.prominence ?? 0).toFixed(2)} · ${bookLabel}`,
-        legendLabel: bookLabel, displayItemId: "indicator.qmd_unified_structure",
-        settingsId: level.load_contract ? "indicator.qmd_unified_structure.merged-pnorm-v1" : "indicator.qmd_unified_structure.clickhouse-v1", defaultVisible: true,
-        prominence: level.prominence, p_norm: level.p_norm, loadContract: level.load_contract, levelPrice: level.price,
+        compactLabel: `${support ? "S" : "R"} · ${v5 && !support ? 'Score ' : 'P'}${Number(level.prominence ?? 0).toFixed(2)}`,
+        label: `${support ? "Support" : "Resistance"} · ${level.lifecycle.replaceAll("_", " ")} · ${v5 && !support ? 'evidence score' : 'prominence'} ${Number(level.prominence ?? 0).toFixed(2)} · ${v5 ? 'Swing level book v5' : bookLabel}`,
+        legendLabel: v5 ? 'Swing level book v5' : bookLabel, displayItemId: "indicator.qmd_unified_structure",
+        settingsId: v5 ? 'indicator.qmd_unified_structure.v5' : level.load_contract ? "indicator.qmd_unified_structure.merged-pnorm-v1" : "indicator.qmd_unified_structure.clickhouse-v1", defaultVisible: true,
+        prominence: level.prominence, p_norm: level.p_norm, loadContract: v5 ? undefined : level.load_contract, levelPrice: level.price,
         start, end, latest, extendToRightEdge: latest, lower: level.lower, upper: level.upper,
         minPixelHeight: 3, renderMode: "zone", fillOpacity: 0.08, borderWidth: 1,
         historicalLabelsDefault: false, historyBarsDefault: 0,
@@ -1086,7 +1087,7 @@ function isQmdUnifiedStructureLevel(value: unknown): value is QmdUnifiedStructur
     && (Number(row.side) === 1 || Number(row.side) === -1)
     && Number(row.lower) > 0
     && Number(row.upper) >= Number(row.lower)
-    && (["clickhouse-closing-book-1", "causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4"].includes(String(row.book_version)) ? Number.isFinite(row.prominence) : Number.isFinite(Number(row.hold_probability)))
+    && (["clickhouse-closing-book-1", "causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4", "causal-swing-closing-book-5"].includes(String(row.book_version)) ? Number.isFinite(row.prominence) : Number.isFinite(Number(row.hold_probability)))
     && Array.isArray(row.timeframes)
     && Array.isArray(row.sources);
 }

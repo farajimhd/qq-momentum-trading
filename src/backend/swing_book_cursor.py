@@ -18,6 +18,8 @@ def inputs(build_id, ticker, session, fingerprint):
     build = resolve(build_id)
     if build['ticker']!=ticker or build['fingerprint']!=fingerprint:
         raise ValueError('Swing book identity changed')
+    if build['version']=='causal-swing-closing-book-5':
+        return inputs(build['source_book'],ticker,session,build['source_fingerprint'])
     manifest = json.loads((Path(build['runtime'])/'source_manifest.json').read_text())
     dates = [r['source_date'] for r in manifest[0]]
     if session not in dates:
@@ -65,9 +67,13 @@ class SwingBookCursor:
             if session!=self.session or stamp<self.at:
                 seed, close, self.factor, self.bars = inputs(self.build['id'],self.ticker,session,self.build['fingerprint'])
                 opening, _ = session_bounds(session)
-                self.engine = SwingBook(seed,opening.timestamp(),self.factor,version=self.build['version'])
+                if self.build['version']=='causal-swing-closing-book-5':
+                    from src.market_engine.swing_book_v5 import StreamingSwingBookV5
+                    self.engine = StreamingSwingBookV5(seed,opening.timestamp(),self.factor)
+                else:
+                    self.engine = SwingBook(seed,opening.timestamp(),self.factor,version=self.build['version'])
                 self.index, self.session = 0, session
-                self.basis = calibration(self.engine.snapshot()['unified_levels'],close*self.factor) if close and close>0 else None
+                self.basis = calibration(self.engine.snapshot()['unified_levels'],close*self.factor) if close and close>0 and self.build['version']!='causal-swing-closing-book-5' else None
                 if self.basis is not None:
                     self.basis.update(frozen_at=opening.isoformat(),
                         prior_session=datetime.fromtimestamp(seed['closed_at'],NY).date().isoformat(),
@@ -85,7 +91,7 @@ class SwingBookCursor:
             key = (self.session,self.engine.revision)
             if self.cached_key!=key:
                 raw = self.engine.snapshot()
-                if self.normalized:
+                if self.normalized and self.build['version']!='causal-swing-closing-book-5':
                     if self.basis is None:
                         raise ValueError('Normalized swing book requires a certified preceding regular-session close')
                     raw = transform(raw['unified_levels'],self.basis)

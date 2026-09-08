@@ -230,7 +230,11 @@ class LiveStrategyRuntimeSupervisor:
         runtimes: dict[str, dict[str, Any]] = {}
         try:
             while not self._stop.is_set():
-                delivery = await asyncio.to_thread(self._queue.get)
+                try:
+                    delivery = await asyncio.to_thread(self._queue.get,True,1.)
+                except queue.Empty:
+                    await self._close_swing_sessions(runtimes)
+                    continue
                 if delivery is None:
                     break
                 try:
@@ -266,6 +270,7 @@ class LiveStrategyRuntimeSupervisor:
                 finally:
                     with self._lock:
                         self._status["queued"] = self._queue.qsize()
+                await self._close_swing_sessions(runtimes)
         finally:
             for state in runtimes.values():
                 try:
@@ -273,6 +278,18 @@ class LiveStrategyRuntimeSupervisor:
                 except Exception:
                     pass
             self._update_active_runs({})
+
+    async def _close_swing_sessions(self, runtimes):
+        now=datetime.now(tz=NEW_YORK)
+        for state in runtimes.values():
+            for adapter in state.get('swing_v5',{}).values():
+                if adapter.saved or now.timestamp()<getattr(adapter,'next_close_attempt',0) or now.date()<adapter.day or (now.date()==adapter.day and now.hour<20):continue
+                try:
+                    await asyncio.to_thread(adapter.finish_session,now)
+                except Exception as exc:
+                    adapter.next_close_attempt=now.timestamp()+60
+                    with self._lock:
+                        self._status.update(state='degraded',last_error=f'V5 closing persistence: {exc}')
 
     async def _process(
         self,
@@ -371,7 +388,26 @@ class LiveStrategyRuntimeSupervisor:
         ticker = str(delivery.get("ticker") or "").upper()
         assignments = [row for row in state["strategy"].assignments() if row.ticker == ticker]
         market_row = dict(item.get("row") or {})
-        if assignments and any(
+        v5_ids={str(a.parameters.get('swing_book_v5')) for a in assignments if a.parameters.get('swing_book_v5')}
+        if len(v5_ids)>1:
+            raise ValueError('Live ticker must have one v5 book authority')
+        if v5_ids:
+            from src.backend.live_swing_book_v5 import LiveSwingBookV5
+            from src.backend.experimental_structure_book import context
+            at=_aware_datetime(item.get('as_of'))
+            if at is None:raise ValueError('Live v5 requires an event timestamp')
+            key=(ticker,next(iter(v5_ids)),at.astimezone(NEW_YORK).date())
+            cache=state.setdefault('swing_v5',{})
+            if key not in cache:
+                for old_key in list(cache):
+                    if old_key[0]==ticker:
+                        await asyncio.to_thread(cache[old_key].finish_session,at)
+                        del cache[old_key]
+                cache[key]=await asyncio.to_thread(LiveSwingBookV5,key[1],ticker,at)
+            snapshot=await asyncio.to_thread(cache[key].snapshot,at)
+            market_row.update(context(snapshot,float(market_row.get('price') or market_row.get('last_price') or 0)))
+            market_row['qmd_structure_unified_levels']=snapshot['unified_levels']
+        if not v5_ids and assignments and any(
             bool(dict(assignment.parameters.get("structural_entry") or {}).get("enabled"))
             for assignment in assignments
         ):

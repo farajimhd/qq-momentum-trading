@@ -2535,6 +2535,23 @@ def capture(args: argparse.Namespace) -> int:
                         };
                     }""")
                     hindsight_issue = None
+                    if args.swing_book_v5:
+                        if page.get_by_role('button',name='Selected resistance',exact=True).count():
+                            raise RuntimeError('Retired selected-resistance toolbar remains')
+                        page.get_by_role('button',name='Expand legend',exact=True).first.click()
+                        page.get_by_role('button',name='Configure Swing level book v5',exact=True).click(timeout=180000)
+                        slider=page.get_by_role('slider',name='Minimum resistance score',exact=True)
+                        slider.wait_for()
+                        if slider.input_value()!='30' or slider.get_attribute('max')!='100':
+                            raise RuntimeError('V5 evidence score defaults incorrect')
+                        slider.fill('50')
+                        slider.focus();page.keyboard.press('ArrowRight')
+                        box=slider.bounding_box()
+                        if not box or box['x']+box['width']>page.viewport_size['width']:
+                            raise RuntimeError('V5 score slider clipped')
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__v5-settings.png')),full_page=True)
+                        slider.fill('30');page.keyboard.press('Escape')
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__v5-levels.png')),full_page=True)
                     if args.resistance_selection_fixture or args.resistance_selection:
                         toggle = page.get_by_role('button', name='Selected resistance', exact=True)
                         toggle.click()
@@ -2768,7 +2785,7 @@ def capture(args: argparse.Namespace) -> int:
                         and scenario["scale"] == 1.0
                         and scenario["viewport_name"] == "normal"
                     ) else screenshot_path.with_name(f"{screenshot_path.stem}__chart-interaction.png") if scenario["page"] == "canvas-focus" else None
-                    if not args.hindsight_positions and not args.swing_structure_fixture and not args.structure_gaps_fixture and not args.structure_gaps and not args.resistance_selection_fixture and not args.resistance_selection:
+                    if not args.hindsight_positions and not args.swing_structure_fixture and not args.structure_gaps_fixture and not args.structure_gaps and not args.resistance_selection_fixture and not args.resistance_selection and not args.swing_book_v5:
                         issues.extend(validate_canvas_interactions(
                             page, scenario, interaction_screenshot,
                             args.canvas_chart_timeframe, args.chart_stress_cycles,
@@ -2846,6 +2863,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument('--swing-structure-fixture', action='store_true', help='validate swing controls with synthetic segments; never calculate real levels')
     result.add_argument('--resistance-selection-fixture', action='store_true', help='validate selection overlay, cutoff, sliders and reversible chart painting with a fixture')
     result.add_argument('--resistance-selection', action='store_true', help='calculate and inspect resistance selection on a real historical chart')
+    result.add_argument('--swing-book-v5', action='store_true', help='validate integrated v5 evidence-score controls on a real replay chart')
     result.add_argument('--structure-gaps-fixture', action='store_true', help='validate gap controls, causal cutoff and outcome visibility with deterministic fixtures')
     result.add_argument('--structure-gaps', action='store_true', help='calculate and inspect the real v4 gap preview on a historical chart')
     result.add_argument('--structure-time-placement', action='store_true', help='verify exact confirmation placement across missing and coarse candles')

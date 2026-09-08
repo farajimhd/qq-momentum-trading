@@ -3,7 +3,6 @@ import { macdBpsPoints } from "./macdBps";
 import { HindsightPrimitive, useHindsightPositions } from "./HindsightPositions";
 import { SwingStructurePrimitive, useSwingStructure } from "./SwingStructure";
 import { StructureGapPrimitive, useStructureGaps } from "./StructureGaps";
-import { ResistanceSelectionPrimitive, useResistanceSelection } from "./ResistanceSelection";
 import { structureTimeCoordinate } from "./structureTimeCoordinate";
 import { STRATEGY_ENTRY_REFERENCE_BACKING, STRATEGY_ENTRY_REFERENCE_COLOR } from "../theme";
 import {
@@ -963,10 +962,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const structureGapsRef = useRef(structureGaps);
   structureGapsRef.current = structureGaps;
   const structureGapPrimitiveRef = useRef<StructureGapPrimitive | null>(null);
-  const resistanceSelection = useResistanceSelection(ticker, hindsightSessionDate, payload?.candles.at(-1)?.time ?? 0);
-  const resistanceSelectionRef = useRef(resistanceSelection);
-  resistanceSelectionRef.current = resistanceSelection;
-  const resistanceSelectionPrimitiveRef = useRef<ResistanceSelectionPrimitive | null>(null);
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null);
   const strategyLifecycles = useMemo(() => [...(payload?.trade_annotations ?? [])]
     .sort((a, b) => a.entryTime - b.entryTime || a.id.localeCompare(b.id)), [payload?.trade_annotations]);
@@ -1317,7 +1312,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   useEffect(() => { drawCurrentRegions(); }, [hindsight.positions]);
   useEffect(() => { drawCurrentRegions(); }, [swingStructure.segments, swingStructure.lineOpacity, swingStructure.bandOpacity]);
   useEffect(() => { drawCurrentRegions(); }, [structureGaps.segments, structureGaps.setups, structureGaps.selected, structureGaps.opacity]);
-  useEffect(() => { drawCurrentRegions(); }, [resistanceSelection.segments, resistanceSelection.opacity]);
 
   useEffect(() => {
     oscillatorPaneGroups.forEach((group) => {
@@ -1375,9 +1369,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const gapPrimitive = new StructureGapPrimitive();
     candleSeries.attachPrimitive(gapPrimitive);
     structureGapPrimitiveRef.current = gapPrimitive;
-    const selectionPrimitive = new ResistanceSelectionPrimitive();
-    candleSeries.attachPrimitive(selectionPrimitive);
-    resistanceSelectionPrimitiveRef.current = selectionPrimitive;
     const volume = priceChart.addSeries(HistogramSeries, {
       base: 0,
       lastValueVisible: false,
@@ -1796,9 +1787,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const hindsightDuration = hindsightRef.current.length ? estimateCandleDuration(timeline) : 60;
     hindsightPrimitiveRef.current?.setState(hindsightRef.current, (time) => xForAnnotationTime(chart, time, timeline, hindsightDuration));
     const swing = swingStructureRef.current;
-    resistanceSelectionPrimitiveRef.current?.setState(resistanceSelectionRef.current,
-      time => xForAnnotationTime(chart, Math.max(timeline[0]?.time ?? 0, Math.min(time, timeline.at(-1)?.time ?? 0)), timeline),
-      currentPayload.candles.at(-1)?.time ?? 0, timeline[0]?.time ?? 0);
     structureGapPrimitiveRef.current?.setState(structureGapsRef.current,
       time => xForAnnotationTime(chart, Math.max(timeline[0]?.time ?? 0, Math.min(time, timeline.at(-1)?.time ?? 0)), timeline),
       currentPayload.candles.at(-1)?.time ?? 0, timeline[0]?.time ?? 0);
@@ -1916,8 +1904,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     swingStructurePrimitiveRef.current = null;
     if (structureGapPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(structureGapPrimitiveRef.current);
     structureGapPrimitiveRef.current = null;
-    if (resistanceSelectionPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(resistanceSelectionPrimitiveRef.current);
-    resistanceSelectionPrimitiveRef.current = null;
     if (livePositionPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(livePositionPrimitiveRef.current);
     livePositionPrimitiveRef.current = null;
     if (priceChartRef.current) {
@@ -2145,7 +2131,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         {hindsight.controls}
         {swingStructure.controls}
         {structureGaps.controls}
-        {resistanceSelection.controls}
         <button
           className="toolbar-button"
           data-chart-settings-trigger="true"
@@ -2528,6 +2513,7 @@ function ChartPeriodSelect({
 }
 
 type LegendItem = {
+  settingsId?: string;
   color: string;
   configurable: boolean;
   currentLevelCount?: number;
@@ -2920,15 +2906,15 @@ function LegendEditor({
         </fieldset>
       ) : item.itemKind === "zone" && item.supportsProminenceFilter ? (
         <fieldset className="legend-unified-filters">
-          <legend>Prominence</legend>
+          <legend>{item.settingsId?.endsWith('.v5') ? 'Resistance evidence score' : 'Prominence'}</legend>
           <label className="legend-filter-control">
             <span className="legend-filter-control-copy">
-              <span>Minimum prominence</span>
-              <small>Show levels with P at or above this value. Range: 0 to {Math.max(item.maximumProminence ?? 1, item.minimumProminence ?? 4).toFixed(1)}. Zero shows all scores. Display only.</small>
+              <span>{item.settingsId?.endsWith('.v5') ? 'Minimum resistance score' : 'Minimum prominence'}</span>
+              <small>{item.settingsId?.endsWith('.v5') ? 'Evidence grade, not probability. Supports are unchanged. V5 selects resistance at 30/100; this slider can further filter the display.' : `Show levels with P at or above this value. Range: 0 to ${Math.max(item.maximumProminence ?? 1, item.minimumProminence ?? 4).toFixed(1)}. Zero shows all scores. Display only.`}</small>
             </span>
             <span className="legend-range-control">
-              <input aria-label="Minimum prominence" type="range" min={0} step={0.1}
-                max={Math.max(item.maximumProminence ?? 1, item.minimumProminence ?? 4)}
+              <input aria-label={item.settingsId?.endsWith('.v5') ? 'Minimum resistance score' : 'Minimum prominence'} type="range" min={item.settingsId?.endsWith('.v5') ? 30 : 0} step={0.1}
+                max={item.settingsId?.endsWith('.v5') ? 100 : Math.max(item.maximumProminence ?? 1, item.minimumProminence ?? 4)}
                 value={item.minimumProminence ?? 4}
                 onChange={(event) => onUpdate({ minimumProminence: clampNumber(Number(event.target.value), 0, Number.MAX_VALUE, 0) })} />
               <output>{(item.minimumProminence ?? 4).toFixed(1)}</output>
@@ -3002,6 +2988,10 @@ function LegendEditor({
       {item.supportsProminenceFilter ? (
         <fieldset className="legend-unified-filters">
           <legend>Price line and band</legend>
+          {item.settingsId?.endsWith('.v5') ? <span className="legend-filter-grid">
+            <UnifiedVisibilityToggle checked={item.showUnifiedSupport !== false} label="Support" onChange={(showUnifiedSupport) => onUpdate({ showUnifiedSupport })} />
+            <UnifiedVisibilityToggle checked={item.showUnifiedResistance !== false} label="Resistance" onChange={(showUnifiedResistance) => onUpdate({ showUnifiedResistance })} />
+          </span> : null}
           <label><input type="checkbox" checked={item.showUnifiedQualityLabel === true} onChange={(event) => onUpdate({ showUnifiedQualityLabel: event.target.checked })} /> Show level labels</label>
           <ScoreThresholdControl label="Price line opacity" description="Line at the exact level price. Shape and width above apply to this line."
             value={item.priceOpacity ?? 0.1} onChange={(priceOpacity) => onUpdate({ priceOpacity })} />
@@ -4524,6 +4514,7 @@ function buildPriceZoneLegendItems(
       guideTitle,
       historyBars: settings.historyBars,
       itemKind: "zone" as const,
+      settingsId: itemZones[0]?.settingsId,
       key,
       label: itemZones[0]?.legendLabel ?? guideTitle,
       labelFontSize: settings.labelFontSize,
@@ -4572,7 +4563,7 @@ function buildPriceZoneLegendItems(
       supportsProminenceFilter: itemZones.some((zone) => Number.isFinite(zone.prominence)),
       supportsUnifiedFilters,
       unifiedRelativeQualitySummary,
-      value: itemZones.some((zone) => Boolean(zone.loadContract))
+      value: itemZones.some((zone) => Boolean(zone.loadContract) || zone.settingsId?.endsWith('.v5'))
         ? `${selectedZones.filter((zone) => zone.latest).length.toLocaleString("en-US")} active`
         : itemZones.some((zone) => zone.annotationKind === "signal-episode-range")
         ? `${episodeIds.size} episode${episodeIds.size === 1 ? "" : "s"}`
@@ -5264,7 +5255,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     minimumHoldObservations: Math.max(0, Math.round(stored.minimumHoldObservations ?? 0)),
     bandOpacity: clampNumber(stored.bandOpacity, 0, 1, 0.05),
     priceOpacity: clampNumber(stored.priceOpacity, 0, 1, 0.1),
-    minimumProminence: clampNumber(stored.minimumProminence, 0, Number.MAX_VALUE, 4),
+    minimumProminence: clampNumber(stored.minimumProminence, 0, Number.MAX_VALUE, zone?.settingsId?.endsWith('.v5') ? 30 : 4),
     minimumPNorm: clampNumber(stored.minimumPNorm, 0, 1, 0.5),
     minimumHoldQualityScore: clampNumber(stored.minimumHoldQualityScore ?? stored.minimumHoldProbability, 0, 1, 0),
     minimumPressureMagnitude: clampNumber(stored.minimumPressureMagnitude, 0, 1, 0),
@@ -5295,6 +5286,8 @@ function priceZoneMeetsUnifiedFilters(zone: PriceZone, settings: ResolvedPriceZo
   const roleVisible = zone.tone === "buy" ? settings.showUnifiedSupport : settings.showUnifiedResistance;
   const stateVisible = zone.latest ? settings.showUnifiedActive : settings.showUnifiedBroken;
   const flipVisible = !(Number(zone.roleFlipCount) > 0) || settings.showUnifiedRoleFlipped;
+  if (zone.settingsId?.endsWith('.v5')) return roleVisible && stateVisible && flipVisible
+    && (zone.tone === 'buy' || Number(zone.prominence) >= settings.minimumProminence);
   if (zone.loadContract) return roleVisible && stateVisible && flipVisible
     && (settings.minimumPNorm <= 0 || (Number.isFinite(zone.p_norm) && Number(zone.p_norm) >= settings.minimumPNorm));
   if (Number.isFinite(zone.prominence)) return roleVisible && stateVisible && flipVisible
