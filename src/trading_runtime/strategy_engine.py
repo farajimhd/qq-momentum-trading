@@ -3,7 +3,7 @@ from __future__ import annotations
 from src.trading_runtime import breakout_confirmation
 
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
-from src.trading_runtime import histogram_slope, market_pressure, local_swing, swing_evidence, swing_momentum, swing_gap, gap_continuation, entry_body
+from src.trading_runtime import histogram_slope, market_pressure, local_swing, swing_evidence, swing_momentum, swing_gap, gap_continuation, entry_body, v5_breakout
 
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, time as clock_time, timedelta, timezone
@@ -863,6 +863,8 @@ def resolve_long_momentum_parameters(
         swing_momentum.configure(parameters)
     if parameters.get("swing_gap_contract"):
         swing_gap.configure(parameters)
+    if parameters.get('v5_breakout_contract'):
+        v5_breakout.configure(parameters)
     execution = dict(parameters.get("execution") or {})
     slope_policy = parameters["momentum_management"].get("histogram_slope_exit")
     if slope_policy is not None:
@@ -2674,6 +2676,8 @@ class LongMomentumStrategyEngine:
             gap_continuation.observe(observation, parameters, state, swing_gap.levels(observation, parameters['swing_gap']))
         if entry_body.enabled(parameters):
             entry_body.observe(observation, state)
+        if v5_breakout.enabled(parameters):
+            v5_breakout.observe(observation, parameters, state)
         if parameters.get("completed_macd_setup"):
             closed = "bar_close" in observation.evaluation_events and observation.source_timeframe in {"", "1s"}
             if closed and parameters.get("swing_momentum_contract"):
@@ -2812,7 +2816,7 @@ class LongMomentumStrategyEngine:
         pressure = state.get("market_pressure", {})
         if parameters.get("swing_evidence_contract"):
             state.pop("pressure_exit_latched", None)
-            if swing_evidence.selling_veto(pressure):
+            if not v5_breakout.enabled(parameters) and swing_evidence.selling_veto(pressure):
                 state.pop("pending_capital_request", None)
                 return self._result(assignment, observation, "wait", "entry_selling_pressure_veto",
                                     0., 1., state, AssignmentStatus.WATCHING)
@@ -3201,7 +3205,13 @@ class LongMomentumStrategyEngine:
             )
 
         candle_policy = dict(parameters.get("entry_candle_confirmation") or {})
-        if entry_body.enabled(parameters):
+        if v5_breakout.enabled(parameters):
+            selected = v5_breakout.select(observation, parameters, state)
+            if selected['reason']:
+                return self._result(assignment, observation, 'wait', selected['reason'],
+                    confirmation_score, _confirmation_confidence(observation), state,
+                    AssignmentStatus.WATCHING, metadata={'v5_breakout_selection': selected})
+        if entry_body.enabled(parameters) and not v5_breakout.enabled(parameters):
             body_reason, body_evidence = entry_body.check(observation, parameters, state)
             state['entry_body_trigger'] = body_evidence
             if body_reason:
@@ -3479,7 +3489,8 @@ class LongMomentumStrategyEngine:
                 state.pop('pending_capital_request',None)
                 return self._result(assignment,observation,'wait',reason,0.,1.,state,AssignmentStatus.WATCHING,
                     metadata={'swing_context':ctx,'stop':stop,'progress':state.get('swing_price_progress')})
-        gap_selection = swing_gap.select(observation, parameters, state) if parameters.get('swing_gap_contract') else None
+        gap_selection = (v5_breakout.select(observation, parameters, state) if v5_breakout.enabled(parameters)
+                         else swing_gap.select(observation, parameters, state) if parameters.get('swing_gap_contract') else None)
         if gap_selection and gap_selection['reason']:
             return self._result(assignment, observation, 'wait', gap_selection['reason'], 0., 1.,
                 state, AssignmentStatus.WATCHING, metadata={'gap_selection': gap_selection})
@@ -3529,6 +3540,8 @@ class LongMomentumStrategyEngine:
             profit_targets = [target]
             profit_target_selection = gap_selection
             state['gap_selection'] = gap_selection
+            if v5_breakout.enabled(parameters):
+                state['v5_entry_selection'] = gap_selection
         profit_policy = dict(parameters["protection"].get("profit_ladder") or {})
         minimum_entry_target_gap_bps = max(
             0.0,
@@ -4772,6 +4785,18 @@ class LongMomentumStrategyEngine:
     ) -> StrategyEngineResult | None:
         if parameters["protection"]["profit_ladder"].get("fixed_at_entry"):
             return None
+        if v5_breakout.enabled(parameters):
+            selected = state.get('v5_breakout_state', {}).pop('pending_target', None)
+            if not selected:
+                return None
+            existing = state.get('structural_profit_targets') or []
+            if existing and selected['price'] <= existing[0]:
+                return None
+            state['structural_profit_targets'] = [selected['price']]
+            return self._result(assignment, observation, 'replace_profit_target', 'v5_adaptive_target',
+                observation.qmd_score, 1., state, AssignmentStatus.MANAGING,
+                quantity=observation.position_quantity, profit_target_price=selected['price'],
+                metadata={'profit_target_selection': selected, 'previous_profit_targets': existing})
         if self.revision >= 37:
             return self._moving_target_result(assignment, observation, parameters, state, side=side, stop=stop)
         policy = dict(parameters["protection"].get("profit_ladder") or {})
@@ -5462,7 +5487,7 @@ def _protection_profile_from_phase(
         if isinstance(value, (int, float)) and float(value) > 0
     ]
     configured_slices = [dict(raw) for raw in configured.get("slices") or []]
-    if parameters.get('swing_gap_contract'):
+    if parameters.get('swing_gap_contract') or v5_breakout.enabled(parameters):
         configured_slices = [dict(configured_slices[0])] if configured_slices else []
         for raw in configured_slices:
             raw.update(quantity_fraction=1., strategy_profit_target_index=0,
@@ -7162,6 +7187,8 @@ def _matching_momentum_management_route(
     gain_pct: float,
     side: str,
 ) -> dict[str, Any] | None:
+    if v5_breakout.enabled(parameters):
+        return None
     if parameters.get('swing_gap_contract'):
         runner = swing_gap.runner_policy(parameters) or {}
         target_fill = state.get('last_profit_target_fill') or {}
@@ -7717,6 +7744,11 @@ def _initial_stop(
     candle_state: Mapping[str, Any] | None = None,
 ) -> float:
     stop = parameters["protection"]["stop"]
+    if v5_breakout.enabled(parameters):
+        selected = v5_breakout.select(observation, parameters, candle_state or {})
+        if selection_evidence is not None:
+            selection_evidence.update(selected)
+        return selected.get('stop', 0.)
     if parameters.get('swing_gap_contract'):
         selected = swing_gap.select(observation, parameters, candle_state)
         if selection_evidence is not None:
@@ -7974,6 +8006,8 @@ def _ratcheted_stop(
     side: str,
 ) -> float:
     current = float(state.get("active_stop") or state.get("initial_stop") or 0)
+    if v5_breakout.enabled(parameters):
+        return v5_breakout.manage(observation, parameters, state)
     if parameters.get('swing_gap_contract'):
         if swing_gap.runner_policy(parameters):
             return gap_continuation.ratchet(observation, parameters, state, swing_gap.levels(observation, parameters['swing_gap']))
@@ -8171,6 +8205,8 @@ def _structural_profit_targets(
     qualified_levels_out: list[dict[str, Any]] | None = None,
 ) -> list[float]:
     """Build causal targets from level-book resistance/support evidence."""
+    if v5_breakout.enabled(parameters):
+        return []  # Entry uses the same stateful selection as its broken boundary.
     if parameters.get('swing_gap_contract'):
         selected = swing_gap.select(observation, parameters)
         if selection_evidence is not None:
