@@ -1,5 +1,6 @@
 """Opt-in causal gap trades, with fixed structural protection and target."""
 from math import ceil, floor, isfinite
+from itertools import chain
 
 from src.market_engine.structure_gaps import gaps
 
@@ -69,12 +70,21 @@ def resistance_clusters(rows, maximum_gap):
     return clusters
 
 
-def levels(observation, settings):
+def levels(observation, settings, *, side=None):
+    """Validate causal levels, optionally selecting one side before projection.
+
+    Side filtering uses each row's declared role, not its containing tuple.
+    Copy accepted rows only, keeping caller-owned structural evidence immutable.
+    """
+    if side not in (None, -1, 1):
+        raise ValueError('Structural side must be support, resistance or both')
     now = observation.observed_at.timestamp() * 1000
     valid = {}
-    for raw in (*observation.structural_support_levels, *observation.structural_resistance_levels):
+    for raw in chain(observation.structural_support_levels, observation.structural_resistance_levels):
         try:
-            row = dict(raw)
+            row = raw if isinstance(raw, dict) else dict(raw)
+            if side is not None and row.get('side') != side:
+                continue
             lower = float(row.get('band_lower', row.get('lower')))
             upper = float(row.get('band_upper', row.get('upper')))
             v5 = row.get('book_version') == 'causal-swing-closing-book-5'
@@ -91,8 +101,7 @@ def levels(observation, settings):
                 continue
             if v5 and row['side']==-1 and (not isfinite(float(row.get('selection_score',0))) or float(row.get('selection_score',0))<30):
                 continue
-            row.update(lower=lower, upper=upper)
-            valid[(row['side'], str(row['unified_level_id']))] = row
+            valid[(row['side'], str(row['unified_level_id']))] = dict(row, lower=lower, upper=upper)
         except (KeyError, TypeError, ValueError):
             continue
     return list(valid.values())

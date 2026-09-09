@@ -19,6 +19,41 @@ def market():
                    structural_resistance_levels=(level(103.4, -1), level(104, -1)))
 
 
+def test_side_projection_preserves_role_deduplication_and_causal_filtering():
+    from copy import deepcopy
+    from types import MappingProxyType
+    support = level(101)
+    resistance = level(104, -1)
+    replacement = dict(resistance, upper=104.03)
+    future = level(105, -1, stamp=NOW.timestamp()+1)
+    # Selection follows declared roles even if a producer groups a row in the
+    # other tuple. Later duplicate identities retain their original precedence.
+    observed = replace(market(), structural_support_levels=(support, resistance, future),
+                       structural_resistance_levels=(MappingProxyType(replacement),))
+    before = deepcopy((support, resistance, replacement, future))
+    settings = {'minimum_p_norm': 0}
+    both = G.levels(observed, settings)
+    for side in (1, -1):
+        selected = G.levels(observed, settings, side=side)
+        assert selected == [row for row in both if row['side'] == side]
+    assert len(both) == 2
+    assert both[1]['upper'] == 104.03
+    both[0]['upper'] = 999
+    assert (support, resistance, replacement, future) == before
+
+
+def test_side_projection_preserves_retained_v5_and_invalid_band_rules():
+    retained = dict(level(104, -1), book_version='causal-swing-closing-book-5',
+                    selection_score=35, lifecycle='awaiting_retest', retained_qualified_resistance=True)
+    invalid = dict(retained, unified_level_id='invalid', band_lower=float('nan'))
+    observed = replace(market(), structural_resistance_levels=(retained, invalid))
+    settings = {'minimum_p_norm': 0, 'include_retained_resistances': True}
+    selected = G.levels(observed, settings, side=-1)
+    assert selected == [row for row in G.levels(observed, settings) if row['side'] == -1]
+    assert len(selected) == 1
+    assert not G.levels(observed, {'minimum_p_norm': 0}, side=-1)
+
+
 def test_support_not_red_close_and_minimum_distance():
     selected = G.select(market(), parameters())
     assert not selected['reason']

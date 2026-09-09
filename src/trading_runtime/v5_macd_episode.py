@@ -157,7 +157,7 @@ def observe_rejection(o, d, levels, closed):
 
 
 def initial_stop(o, p, entry_price):
-    supports = [r for r in swing_gap.levels(o, {'minimum_p_norm': 0})
+    supports = [r for r in swing_gap.levels(o, {'minimum_p_norm': 0}, side=1)
                 if r['side'] == 1 and r.get('scale') == 'major' and r['upper'] < entry_price]
     if supports:
         support = max(supports, key=lambda r: (r['confirmed_at_ms'], r['created_at_ms'], r['unified_level_id']))
