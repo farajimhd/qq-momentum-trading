@@ -83,6 +83,10 @@ the limiting portfolio constraints; it never silently increases risk limits.
 - `scripts/measure_strategy_move_capture.py` marks actual execution inventory
   across offline large-move intervals. Its marked interval P&L is not an
   executable liquidation return, and those hindsight extrema never enter strategy inputs.
+- `scripts/measure_strategy_equity.py` measures last-eligible-trade equity,
+  including unrealized drawdown and carried inventory in chronological slices.
+  It requires matching benchmark coverage and reports stale boundary mark ages.
+  Slices use `[start,end)`; the full run includes executions at its exact end.
 
 Use each script's `--help` for required inputs. All generated evidence belongs
 under the designated machine runtime root, never the source repository. Keep

@@ -59,6 +59,7 @@ async def run(args):
             mfe_bps=(max(prices)/entry-1)*10000 if prices else None,
             mae_bps=(min(prices)/entry-1)*10000 if prices else None))
     save(args.output, dict(hindsight_only=True, run_id=run['run_id'], symbol=audit['symbol'],
+        requested_start=run['requested_start'], session_end=run['session_end'],
         objective='Price-only MACD direction episode extrema; not executable profit',
         source_revision=source.source_revision, benchmark=benchmark, excursions=excursions,
         eligible_trade_times=list(labels.times), eligible_trade_prices=list(labels.prices)))
