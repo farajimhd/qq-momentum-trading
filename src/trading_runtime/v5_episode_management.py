@@ -7,7 +7,8 @@ DEFAULTS = dict(rejection_from_below=True, rejection_closes=1,
                 entry_on_close=False, entry_range_seconds=0.,
                 profit_trail_atr_multiple=0., profit_trail_activation_atr=1.,
                 entry_confirmation_window_ms=0., maximum_macd_line_bps=0.,
-                entry_minimum_close_location=0., require_range_context=False)
+                entry_minimum_close_location=0., require_range_context=False,
+                rejection_buffer_requires_armed_trail=False)
 
 
 def configure(parameters):
@@ -17,7 +18,8 @@ def configure(parameters):
     if not isinstance(raw, dict) or set(raw) - set(DEFAULTS):
         raise ValueError('Unknown episode management setting')
     policy = dict(DEFAULTS, **raw)
-    if any(type(policy[key]) is not bool for key in ('rejection_from_below','entry_on_close','require_range_context')):
+    if any(type(policy[key]) is not bool for key in ('rejection_from_below','entry_on_close','require_range_context',
+                                                   'rejection_buffer_requires_armed_trail')):
         raise ValueError('Episode policy flags must be boolean')
     if type(policy['rejection_closes']) is not int or not 1 <= policy['rejection_closes'] <= 60:
         raise ValueError('Rejection confirmation must be one to sixty completed candles')
@@ -38,6 +40,9 @@ def configure(parameters):
         raise ValueError('Close location requires completed-candle entry confirmation')
     if policy['require_range_context'] and not (policy['entry_on_close'] and policy['entry_range_seconds']):
         raise ValueError('Required range context needs a positive range and completed-candle entry')
+    if policy['rejection_buffer_requires_armed_trail'] and not (
+            policy['rejection_atr_multiple'] > 0 and policy['profit_trail_atr_multiple'] > 0):
+        raise ValueError('Earned rejection tolerance requires a positive buffer and profit trail')
     fraction = policy['take_profit_fraction']
     if type(fraction) not in (int, float) or not isfinite(fraction) or not 0 <= fraction <= 1:
         raise ValueError('Target fraction must be between zero and one')
@@ -106,15 +111,30 @@ def observe_rejection(o, d, levels, closed, policy):
         d.pop('resistance_rejection', None)
         return
     contacts = dict(d.get('resistance_contacts') or {})
+    multiple = policy['rejection_atr_multiple']
+    trail = d.get('profit_trail') or {}
+    if policy.get('rejection_buffer_requires_armed_trail'):
+        # Only an already observed completed-close witness can earn tolerance.
+        # Freeze that decision when the attempt starts; later profit must not
+        # retrospectively widen an existing failure boundary.
+        witnessed_at = trail.get('observed_at')
+        earned = (trail.get('armed') is True and type(witnessed_at) in (int, float)
+                  and isfinite(witnessed_at) and witnessed_at <= o.observed_at.timestamp())
+        if not earned or d.get('closed_atr', 0.) <= 0:
+            multiple = 0.
     for level in levels:
         in_band = not strictly_below(o.price, level['lower']) and not strictly_below(level['upper'], o.price)
         approached = previous is not None and strictly_below(previous, level['lower'])
-        volatility_ready = not policy['rejection_atr_multiple'] or d.get('closed_atr', 0.) > 0
+        volatility_ready = not multiple or d.get('closed_atr', 0.) > 0
         if in_band and volatility_ready and (approached or not policy['rejection_from_below']):
-            contacts.setdefault(str(level['unified_level_id']), dict(
+            contact = dict(
                 level=dict(level), touched_at=o.observed_at.isoformat(), touch_price=o.price,
                 approach_price=previous, below_closes=0,
-                rejection_boundary=level['lower'] - policy['rejection_atr_multiple'] * d.get('closed_atr', 0.)))
+                rejection_boundary=level['lower'] - multiple * d.get('closed_atr', 0.))
+            if policy.get('rejection_buffer_requires_armed_trail'):
+                contact.update(rejection_buffer_multiple=multiple,
+                               rejection_buffer_witness=dict(trail) if multiple else None)
+            contacts.setdefault(str(level['unified_level_id']), contact)
     if closed and o.observed_at.timestamp() > d.get('closed_at', 0):
         retained = {}
         for key, contact in contacts.items():

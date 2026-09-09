@@ -60,6 +60,52 @@ def test_invalid_policy_fails_closed(policy):
         S.resolve_long_momentum_parameters(p, revision=47)
 
 
+@pytest.mark.parametrize('witness, atr, boundary', [
+    ({'armed': False, 'observed_at': 99.}, 2., 100.),
+    ({'armed': True, 'observed_at': 99.}, 2., 99.),
+    ({'armed': True, 'observed_at': 101.}, 2., 100.),
+    ({'armed': True}, 2., 100.),
+    ({'armed': True, 'observed_at': 99.}, 0., 100.),
+])
+def test_rejection_tolerance_requires_prior_profit_and_freezes_attempt(witness, atr, boundary):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from src.trading_runtime.v5_episode_management import DEFAULTS, observe_rejection
+    policy = dict(DEFAULTS, rejection_closes=2, rejection_atr_multiple=.5,
+                  profit_trail_atr_multiple=3., rejection_buffer_requires_armed_trail=True)
+    state = dict(attempt_previous_price=99., closed_atr=atr, profit_trail=witness)
+    level = dict(unified_level_id='resistance', lower=100., upper=101.)
+    def observe(at, price, closed=False):
+        observation = SimpleNamespace(price=price, position_quantity=10.,
+            observed_at=datetime.fromtimestamp(at, timezone.utc))
+        observe_rejection(observation, state, [level], closed, policy)
+    observe(100., 100.5)
+    contact = state['resistance_contacts']['resistance']
+    assert contact['rejection_boundary'] == boundary
+    assert bool(contact['rejection_buffer_witness']) == (boundary == 99.)
+    # Becoming profitable later cannot excuse an already failed attempt.
+    state['profit_trail'] = dict(armed=True, observed_at=100.)
+    observe(101., 99.5, True)
+    observe(102., 99.5, True)
+    assert bool(state.get('resistance_rejection')) == (boundary == 100.)
+    if boundary == 99.:
+        observe(103., 98.5, True)
+        observe(104., 98.5, True)
+        assert state['resistance_rejection']['rejection_boundary'] == 99.
+
+
+@pytest.mark.parametrize('patch', [
+    dict(rejection_buffer_requires_armed_trail=1),
+    dict(rejection_buffer_requires_armed_trail=True),
+    dict(rejection_buffer_requires_armed_trail=True, rejection_atr_multiple=.5),
+])
+def test_earned_tolerance_configuration_requires_its_profit_witness(patch):
+    p, _, _ = rejection_setup()
+    p['episode_management'] = patch
+    with pytest.raises(ValueError):
+        S.resolve_long_momentum_parameters(p, revision=47)
+
+
 @pytest.mark.parametrize('fraction', [.5, 0.])
 def test_protected_runner_has_no_inherited_target(fraction):
     from tests.test_long_momentum_strategy import assignment
