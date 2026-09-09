@@ -2788,6 +2788,19 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(controller._strategy_quality_admitted_tickers, set())
 
+    async def test_explicit_symbol_survives_unrelated_signal_computation_pruning(self) -> None:
+        controller = ReplayRunController(ReplayRunDefinition(
+            session_date=date(2026,8,21),start_time=time(4,0),tickers=('SUGP',),
+            configuration_revision=approved_configuration()),runtime_root=Path(tempfile.gettempdir()))
+        controller._strategy = MagicMock()
+        controller._strategy.assignments.return_value = ()
+        controller._historical_watchlist_members = MagicMock(return_value=[])
+        controller._historical_external_signal_events = [SimpleNamespace(ticker='OTHER')]
+        self.assertEqual(controller._resolved_tickers(),('SUGP',))
+        controller._strategy.assignments.return_value = (SimpleNamespace(ticker='ACTIVE'),)
+        controller._historical_external_signal_events.append(SimpleNamespace(ticker='ACTIVE'))
+        self.assertEqual(controller._resolved_tickers(),('ACTIVE','SUGP'))
+
     async def test_one_second_frames_project_absolute_liquidity_causally(self) -> None:
         controller = ReplayRunController(
             ReplayRunDefinition(

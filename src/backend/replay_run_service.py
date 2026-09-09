@@ -3482,7 +3482,7 @@ class ReplayRunController:
             return False
         # Published value records are replaced, never edited in place. Copy
         # the mapping for this event while retaining unchanged structural and
-        # indicator evidence; copying the entire level book per trade is costly.
+        # indicator evidence instead of deep-copying unchanged records per trade.
         source_values = dict(base.source_values)
         market_price = {
             "observed_at": event.ts.isoformat(),
@@ -4202,6 +4202,14 @@ class ReplayRunController:
         configuration = self.definition.configuration_revision["payload"]
         run_plan = dict(configuration.get("run_plan") or {})
         activation = dict(configuration.get("signal_activation") or {})
+        streams = [stream for stream in activation.get('signal_streams') or []
+                   if stream.get('signal_stream_id') and bool(stream.get('enabled', True))
+                   and stream.get('occurrence_source') != 'qmd_squeeze_episode']
+        if not streams:
+            # Source-native occurrences are consumed on their own causal clock.
+            # Do not rebuild the complete rule/column catalog for every candle
+            # when no synthetic stream can use it.
+            return
         rules = {
             str(row.get("rule_set_id") or ""): dict(row)
             for row in activation.get("rule_sets") or []
@@ -4211,7 +4219,7 @@ class ReplayRunController:
             for row in activation.get("column_catalog") or []
         }
         eligible = self._historical_signal_eligible_tickers(run_plan)
-        for stream in activation.get("signal_streams") or []:
+        for stream in streams:
             stream_id = str(stream.get("signal_stream_id") or "")
             if not stream_id or not bool(stream.get("enabled", True)):
                 continue
@@ -5111,12 +5119,15 @@ class ReplayRunController:
             # This is a computation-only projection. A source-native signal is
             # a mandatory activation prerequisite, so an assignment with no
             # occurrence cannot evaluate or trade. Pruning it cannot alter the
-            # strategy path and avoids replaying irrelevant raw market events.
+            # strategy path. Explicitly requested symbols still own a market
+            # stream even when no assignment activates; they must not disappear
+            # because some unrelated symbol has a source-native occurrence.
             assigned = set(assignment_tickers)
+            explicit = set(self.definition.tickers)
             tickers = tuple(
                 ticker
                 for ticker in tickers
-                if ticker in assigned and ticker in source_native_signal_tickers
+                if ticker in explicit or ticker in assigned and ticker in source_native_signal_tickers
             )
         if not tickers:
             raise ValueError(
