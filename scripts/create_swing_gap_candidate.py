@@ -9,6 +9,29 @@ import argparse
 from copy import deepcopy
 import json
 import math
+from datetime import time as clock_time
+
+
+def patch_trading_behavior(profile, patch):
+    allowed = {'eligible_sessions', 'entry_cutoff_time', 'flatten_time'}
+    if not isinstance(patch, dict) or not patch or set(patch)-allowed:
+        raise ValueError('Trading behavior patch accepts sessions and session cutoff times only')
+    behavior = deepcopy(profile['lifecycle']['trading_behavior'])
+    behavior.update(deepcopy(patch))
+    sessions = behavior.get('eligible_sessions')
+    if (not isinstance(sessions, list) or not sessions
+            or any(s not in ('premarket', 'regular', 'after_hours') for s in sessions)
+            or len(set(sessions)) != len(sessions)):
+        raise ValueError('Specify unique supported trading sessions')
+    times = {}
+    for key in ('entry_cutoff_time', 'flatten_time'):
+        if behavior.get(key):
+            times[key] = clock_time.fromisoformat(behavior[key])
+            if times[key].tzinfo is not None:
+                raise ValueError('Session times use the existing exchange timezone')
+    if len(times) == 2 and times['entry_cutoff_time'] > times['flatten_time']:
+        raise ValueError('Entry cutoff must not follow flatten time')
+    profile['lifecycle']['trading_behavior'] = behavior
 
 
 def main():
@@ -20,6 +43,8 @@ def main():
     parser.add_argument('--description', help='Describe the isolated strategy contract')
     parser.add_argument('--preserve-parameters', action='store_true')
     parser.add_argument('--parameters-json', type=Path, help='Explicit incremental parameter patch; preserve the source parameters first')
+    parser.add_argument('--trading-behavior-json', type=Path,
+        help='Explicit cloned-profile session and cutoff patch; does not alter published profiles')
     parser.add_argument('--mandate-risk-fraction', type=float,
         help='Lower the cloned mandates maximum planned risk fraction; never increases the source limit')
     args = parser.parse_args()
@@ -92,6 +117,8 @@ def main():
         update(parameters, json.loads(args.parameters_json.read_text(encoding='utf-8')))
     if args.description:
         profile['description'] = args.description
+    if args.trading_behavior_json:
+        patch_trading_behavior(profile, json.loads(args.trading_behavior_json.read_text(encoding='utf-8')))
     plan.update(run_plan_id=plan_id, profile_id=profile_id, name=profile['name'],
         description=profile['description'], compiled=False,
         allowed_environments=['replay', 'backtest', 'backtest_debug'])
