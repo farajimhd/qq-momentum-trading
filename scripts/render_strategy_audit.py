@@ -8,6 +8,7 @@ import argparse
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import json
+from math import isfinite
 
 
 def price_line_with_gaps(timestamps, prices, maximum_gap_seconds):
@@ -30,7 +31,13 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--maximum-line-gap-seconds', type=float, default=5.,
         help='Break the price path after this long without an eligible trade; preserves all observations')
+    parser.add_argument('--position', type=int,
+        help='Zoom the lower panel to this one-based position number instead of the hindsight episode')
+    parser.add_argument('--context-seconds', type=float, default=10.,
+        help='Observed context before and after the selected position')
     args = parser.parse_args()
+    if not isfinite(args.context_seconds) or args.context_seconds < 0:
+        parser.error('--context-seconds must be finite and nonnegative')
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -49,10 +56,14 @@ def main():
         & np.r_[True, np.isnan(line_prices[:-1])]
         & np.r_[np.isnan(line_prices[1:]), True]).tolist() if len(line_prices) else [])
     positions = sorted(r['position_lifecycles'],key=lambda p:p['opened_at'])
+    if args.position is not None and not 1 <= args.position <= len(positions):
+        parser.error('--position must identify an existing position')
     figure, axes = plt.subplots(2,1,figsize=(17,10),constrained_layout=True)
     biggest = max((p for p in b['benchmark']['positions'] if p['direction']=='long'),
                   key=lambda p:p['gross_return_bps'],default=None)
     for ax in axes:
+        protection_alpha = .7 if args.position is not None and ax is axes[1] else .35
+        protection_width = 1. if args.position is not None and ax is axes[1] else .6
         ax.plot(times,line_prices,color='#37474f',linewidth=.65,
             marker='.', markersize=2, markevery=isolated,
             label=f'Eligible trade price (breaks after >{args.maximum_line_gap_seconds:g}s without trades)')
@@ -75,16 +86,29 @@ def main():
                 for event in timeline:
                     t = dt(event['event_time'])
                     if active:
-                        ax.plot([active[0],t],[active[1],active[1]],color=linecolor,alpha=.35,linewidth=.6)
+                        ax.plot([active[0],t],[active[1],active[1]],color=linecolor,alpha=protection_alpha,linewidth=protection_width)
                     active = (t,float(event['price'])) if event.get('active') and event.get('price') else None
                 if active:
-                    ax.plot([active[0],end],[active[1],active[1]],color=linecolor,alpha=.35,linewidth=.6)
+                    ax.plot([active[0],end],[active[1],active[1]],color=linecolor,alpha=protection_alpha,linewidth=protection_width)
         ax.xaxis.set_major_formatter(dates.DateFormatter('%H:%M:%S',tz=ny))
         ax.set_ylabel('Price ($)')
         ax.grid(alpha=.15)
     axes[0].set_title(f"{b['symbol']} | {r['run'].get('configuration_label','Research candidate')} | Actual fills and effective protection")
     axes[0].legend(loc='upper left', fontsize=8)
-    if biggest:
+    if args.position is not None:
+        selected = positions[args.position-1]
+        left = dt(selected['opened_at']).timestamp()-args.context_seconds
+        right = dt(selected['closed_at'] or r['run']['session_end']).timestamp()+args.context_seconds
+        axes[1].set_xlim(datetime.fromtimestamp(left,ny),datetime.fromtimestamp(right,ny))
+        visible = [p for t,p in zip(b['eligible_trade_times'],b['eligible_trade_prices']) if left<=t<=right]
+        visible.extend(float(e['price']) for e in selected.get('protection_timeline', [])
+                       if e['phase']=='effective' and e.get('active') and e.get('price') is not None)
+        visible.extend(float(e['price']) for e in r['executions'] if e['execution_id'] in selected['execution_ids'])
+        if visible:
+            margin = max(max(visible)-min(visible),max(visible)*.01)*.1
+            axes[1].set_ylim(min(visible)-margin,max(visible)+margin)
+        axes[1].set_title(f'Position {args.position} | actual fills and effective protection')
+    elif biggest:
         width = max(10.,biggest['exit_time']-biggest['entry_time'])
         left,right = biggest['entry_time']-.3*width,biggest['exit_time']+.3*width
         axes[1].set_xlim(datetime.fromtimestamp(left,ny),datetime.fromtimestamp(right,ny))
@@ -93,7 +117,7 @@ def main():
             margin = max(max(visible)-min(visible),max(visible)*.01)*.1
             axes[1].set_ylim(min(visible)-margin,max(visible)+margin)
         axes[1].set_title('Largest price-only hindsight episode — offline diagnostic, not an executable return')
-    axes[1].set_xlabel('New York time | triangles: individual fills; green/red lines: position average prices; faint red/blue: effective stop/target')
+    axes[1].set_xlabel('New York time | triangles: individual fills; green/red lines: position average prices; red/blue steps: effective stop/target')
     args.output.parent.mkdir(parents=True,exist_ok=True)
     figure.savefig(args.output,dpi=150)
     plt.close(figure)

@@ -127,6 +127,9 @@ the audit reports that price relationship separately from entry validity.
   valuation, not a claim that all inventory can be liquidated at that bid.
 - `scripts/render_strategy_audit.py` renders actual fills and effective protection
   paths against the eligible-price stream, including an offline large-move inset.
+  `--position N` instead zooms the lower panel to a specific lifecycle, including
+  its effective protection prices in the vertical scale. `--context-seconds`
+  controls the surrounding observed period; long gaps in trades remain visible.
 - `scripts/summarize_strategy_research.py` consolidates every experiment and
   audited position without selecting a winner or treating active cases as zero returns.
 - `scripts/measure_strategy_move_capture.py` marks actual execution inventory
