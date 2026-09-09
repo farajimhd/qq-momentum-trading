@@ -113,6 +113,9 @@ def observe(o, p, state):
         d.update(closed_at=now, closed_price=o.price, closed_levels=current_levels)
         if p.get('episode_management'):
             d['closed_atr'] = max(0., o.volatility) if isfinite(o.volatility) else 0.
+            high, low = o.bar_high, o.bar_low
+            d['entry_close_location'] = ((o.price-low)/(high-low)
+                if high is not None and low is not None and high > low and low <= o.price <= high else None)
         d['decision_levels'] = list({r['unified_level_id']: r for r in [*current_levels, *d['crossed']]}.values())
     d['levels'] = current_levels
     d['entry_high_threshold'] = d['prior_max'] * (1 + p['v5_breakout']['episode_high_offset_bps'] / 10_000)
@@ -184,6 +187,9 @@ def select(o, p, state):
     if policy.get('maximum_macd_line_bps') and (d.get('macd_line_bps') is None
             or d['macd_line_bps'] > policy['maximum_macd_line_bps']):
         return {'reason': 'v5_macd_trend_extended'}
+    if policy.get('entry_minimum_close_location') and (d.get('entry_close_location') is None
+            or d['entry_close_location'] < policy['entry_minimum_close_location'] - 1e-12):
+        return {'reason': 'v5_breakout_close_weak'}
     if ((policy.get('stop_atr_multiple', 0) or policy.get('rejection_atr_multiple', 0)
          or policy.get('profit_trail_atr_multiple', 0))
             and d.get('closed_atr', 0) <= 0):

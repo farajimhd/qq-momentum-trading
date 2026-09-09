@@ -24,6 +24,7 @@ settings. Omitting it preserves the earlier episode policy.
 | `profit_trail_activation_atr` | 1 | Arm that trail after a held completed close exceeds actual average entry by this many ATR units frozen at entry approval. |
 | `entry_confirmation_window_ms` | 0 | With close-only confirmation, permit execution during this bounded window after the close, strictly less than one candle interval old. Both the confirming close and current price must clear its frozen threshold; current VWAP, MACD and execution checks still apply. Maximum 1000 ms. |
 | `maximum_macd_line_bps` | 0 | Optional ceiling on positive fast/slow MACD separation divided by its normalization close. Zero disables it. With completed MACD evaluation, both operands remain frozen at that close. |
+| `entry_minimum_close_location` | 0 | Optional minimum `(close-low)/(high-low)` of the confirming candle. Requires close confirmation; flat or invalid candles fail closed. Zero disables it. |
 
 The closing candle is compared with prior completed candles before being retained
 in the episode maximum for the next decision. MACD evaluation remains separately

@@ -256,3 +256,25 @@ def test_macd_extension_ceiling_freezes_the_completed_normalization_price():
     next_close = replace(closed,macd_line=1.,macd_signal=.5,observed_at=closed.observed_at+timedelta(seconds=1))
     M.observe(next_close,p,state)
     assert state['v5_breakout_state']['macd_line_bps'] == 100.
+
+
+def test_close_quality_uses_completed_candle_and_rejects_flat_or_intrabar_only_strength():
+    p, state, o = rejection_setup()
+    p['episode_management'] = dict(entry_on_close=True,entry_confirmation_window_ms=1000.,
+                                  entry_minimum_close_location=.75)
+    p = S.resolve_long_momentum_parameters(p,revision=47)
+    closed = replace(o,price=103.5,bar_high=103.6,bar_low=103.4,
+        observed_at=o.observed_at+timedelta(seconds=1),source_timeframe='1s',evaluation_events=('bar_close',))
+    M.observe(closed,p,state)
+    assert M.select(closed,p,state)['reason'] == 'v5_breakout_close_weak'
+    intrabar = replace(closed,price=103.6,observed_at=closed.observed_at+timedelta(milliseconds=200),
+        source_timeframe='',evaluation_events=('market_data_update',))
+    M.observe(intrabar,p,state)
+    assert M.select(intrabar,p,state)['reason'] == 'v5_breakout_close_weak'
+    flat = replace(closed,bar_high=103.5,bar_low=103.5,observed_at=closed.observed_at+timedelta(seconds=1))
+    M.observe(flat,p,state)
+    assert M.select(flat,p,state)['reason'] == 'v5_breakout_close_weak'
+    strong = replace(closed,price=103.8,bar_high=103.9,bar_low=103.5,
+        observed_at=closed.observed_at+timedelta(seconds=2),ask=103.81,bid=103.79)
+    M.observe(strong,p,state)
+    assert M.select(strong,p,state)['reason'] == ''

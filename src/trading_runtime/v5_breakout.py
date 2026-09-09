@@ -220,6 +220,7 @@ def evidence(observation, state):
             confirmed_macd=state.get('confirmed_episode_macd'),
             profit_trail=data.get('profit_trail'),
             entry_confirmation=data.get('entry_confirmation'),
+            entry_close_location=data.get('entry_close_location'),
             crossed_lower=[r['lower'] for r in data.get('crossed', [])],
             forming_resistance=data.get('forming'))
     breakout = data.get('breakout') or {}

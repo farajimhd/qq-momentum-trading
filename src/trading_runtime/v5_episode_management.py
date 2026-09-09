@@ -6,7 +6,8 @@ DEFAULTS = dict(rejection_from_below=True, rejection_closes=1,
                 rejection_atr_multiple=0., stop_atr_multiple=0., take_profit_fraction=1.,
                 entry_on_close=False, entry_range_seconds=0.,
                 profit_trail_atr_multiple=0., profit_trail_activation_atr=1.,
-                entry_confirmation_window_ms=0., maximum_macd_line_bps=0.)
+                entry_confirmation_window_ms=0., maximum_macd_line_bps=0.,
+                entry_minimum_close_location=0.)
 
 
 def configure(parameters):
@@ -22,7 +23,7 @@ def configure(parameters):
         raise ValueError('Rejection confirmation must be one to sixty completed candles')
     for key in ('rejection_atr_multiple', 'stop_atr_multiple', 'entry_range_seconds',
                 'profit_trail_atr_multiple', 'profit_trail_activation_atr', 'entry_confirmation_window_ms',
-                'maximum_macd_line_bps'):
+                'maximum_macd_line_bps', 'entry_minimum_close_location'):
         if type(policy[key]) not in (int, float) or not isfinite(policy[key]) or policy[key] < 0:
             raise ValueError('ATR multiples must be finite and nonnegative')
     if policy['entry_range_seconds'] > 3600:
@@ -31,6 +32,10 @@ def configure(parameters):
         raise ValueError('Entry confirmation cannot outlive its one-second candle interval')
     if policy['entry_confirmation_window_ms'] and not policy['entry_on_close']:
         raise ValueError('An execution window requires completed-candle entry confirmation')
+    if policy['entry_minimum_close_location'] > 1:
+        raise ValueError('Close location must be between zero and one')
+    if policy['entry_minimum_close_location'] and not policy['entry_on_close']:
+        raise ValueError('Close location requires completed-candle entry confirmation')
     fraction = policy['take_profit_fraction']
     if type(fraction) not in (int, float) or not isfinite(fraction) or not 0 < fraction <= 1:
         raise ValueError('Target fraction must be positive and at most one')
