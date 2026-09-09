@@ -207,6 +207,7 @@ class PortfolioReservation:
     filled_quantity: float = 0.0
     admission_epoch: int = 0
     admission_owner: str = ""
+    reserved_entry_fees: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -761,6 +762,8 @@ class PortfolioManagementEngine:
                 if reservation.remaining_quantity > 0
                 else 0.0
             ),
+            reserved_entry_fees=(reservation.reserved_entry_fees * remaining / reservation.remaining_quantity
+                                 if reservation.remaining_quantity > 0 else 0.0),
         )
         self._record(
             "portfolio_reservation",
@@ -1152,7 +1155,7 @@ class PortfolioManagementEngine:
             )
             return decision, None
         notional = approved * base_price * self._entry_funding_factor(intent, policy)
-        planned_loss = _planned_loss(intent, approved) * fx_to_base
+        planned_loss = _reserved_entry_loss(intent, approved) * fx_to_base
         decision_id = str(uuid4())
         reservation_id = str(uuid4())
         status = (
@@ -1181,6 +1184,7 @@ class PortfolioManagementEngine:
             reference_price=price,
             reserved_notional=notional if entry else 0.0,
             reserved_planned_risk=planned_loss if entry else 0.0,
+            reserved_entry_fees=approved * self._entry_fee_per_share(intent, policy, base_price) if entry else 0.0,
             created_at=now,
             admission_epoch=int((self._active_admission_lease or {}).get("epoch") or 0),
             admission_owner=str((self._active_admission_lease or {}).get("owner_id") or ""),
@@ -1248,6 +1252,14 @@ class PortfolioManagementEngine:
         reserved_price = max(price, float(intent.metadata.get("entry_funding_price") or price))
         return reserved_price / price * (1 + policy.entry_fee_buffer_bps / 10_000)
 
+    @staticmethod
+    def _entry_fee_per_share(intent: StrategyIntent, policy: PortfolioPolicy, base_price: float) -> float:
+        if intent.metadata.get('entry_completion_quote') not in {'bid', 'ask'}:
+            return 0.0
+        price = _worst_entry_price(intent)
+        funded = max(price, float(intent.metadata.get('entry_funding_price') or price))
+        return base_price * funded / price * policy.entry_fee_buffer_bps / 10_000
+
     async def authorize_entry_reprice(self, intent: StrategyIntent, account_id: str,
                                       price: float, remaining: float) -> bool:
         """Reauthorize the same remaining allocation under the admission fence."""
@@ -1276,7 +1288,7 @@ class PortfolioManagementEngine:
             repriced = replace(intent, reference_price=price, quantity=remaining,
                                metadata={**intent.metadata, "ask": price, "bid": price})
             try:
-                planned_risk = _planned_loss(repriced, remaining) * fx
+                planned_risk = _reserved_entry_loss(repriced, remaining) * fx
             except ValueError as exc:
                 self._record("entry_reprice_rejected", intent, account_id,
                              {"reason": "invalid_protection_at_reprice", "detail": str(exc),
@@ -1299,11 +1311,16 @@ class PortfolioManagementEngine:
             finally:
                 self.reservations[reservation_id] = reservation
             if capacity + 1e-9 < remaining:
+                self._record('entry_reprice_capacity', intent.intent_id, account_id,
+                    {'reason': 'insufficient_reserved_capacity', 'limiting_reasons': list(reasons),
+                     'price': price, 'remaining_quantity': remaining, 'capacity_quantity': capacity,
+                     'entry_funding_price': intent.metadata.get('entry_funding_price')})
                 return False
             self._assert_active_admission_lease()
             updated = replace(reservation, reference_price=price,
                               reserved_notional=remaining * price * fx * self._entry_funding_factor(repriced, policy),
-                              reserved_planned_risk=planned_risk)
+                              reserved_planned_risk=planned_risk,
+                              reserved_entry_fees=remaining * self._entry_fee_per_share(repriced, policy, price*fx))
             self.reservations[reservation_id] = updated
             self._record("portfolio_reservation", reservation_id, account_id,
                          {"event": "entry_reprice_authorized", "price": price,
@@ -1454,7 +1471,10 @@ class PortfolioManagementEngine:
         # position's risk from a cash-only base double-counts its capital use.
         # Actual buying capacity below remains bounded by unspent broker cash.
         funded_cost = sum(abs(float(row.position) * float(row.avgCost)) for row in state.positions.values())
-        risk_capital = max(0.0, broker_cash_capacity + funded_cost - policy.minimum_cash_reserve)
+        pending_entry_fees = sum(row.reserved_entry_fees for row in self.reservations.values()
+            if row.account_id == state.profile.account_id
+            and row.status not in {'released','filled','cancelled','rejected','policy_blocked'})
+        risk_capital = max(0.0, broker_cash_capacity + funded_cost - policy.minimum_cash_reserve - pending_entry_fees)
         current_position = state.positions.get(intent.ticker.upper())
         current_value = abs(float(current_position.mktValue)) if current_position else 0.0
         reserved_notional = sum(
@@ -1497,14 +1517,20 @@ class PortfolioManagementEngine:
             - policy.minimum_cash_reserve
             - reserved_notional,
         )
+        # A persistent acquisition must be sized for the reserved execution
+        # price across every notional limit, not only its cash requirement.
+        price = _worst_entry_price(intent)
+        capacity_price = base_price
+        if intent.metadata.get('entry_completion_quote') in {'bid', 'ask'} and price > 0:
+            capacity_price *= max(price, float(intent.metadata.get('entry_funding_price') or price)) / price
         capacities = {
             "requested": requested,
-            "order_notional": policy.maximum_order_notional / base_price,
+            "order_notional": policy.maximum_order_notional / capacity_price,
             "available_funds": available_cash / (base_price * self._entry_funding_factor(intent, policy)),
-            "gross_exposure": max(0.0, policy.maximum_gross_exposure - gross - reserved_notional) / base_price,
-            "position": max(0.0, eligible_equity * policy.maximum_position_fraction - current_value) / base_price,
-            "ticker": max(0.0, eligible_equity * policy.maximum_ticker_fraction - current_value) / base_price,
-            "strategy": max(0.0, eligible_equity * strategy_fraction - attributed - reserved_notional) / base_price,
+            "gross_exposure": max(0.0, policy.maximum_gross_exposure - gross - reserved_notional) / capacity_price,
+            "position": max(0.0, eligible_equity * policy.maximum_position_fraction - current_value) / capacity_price,
+            "ticker": max(0.0, eligible_equity * policy.maximum_ticker_fraction - current_value) / capacity_price,
+            "strategy": max(0.0, eligible_equity * strategy_fraction - attributed - reserved_notional) / capacity_price,
         }
         if state.profile.mode in {"live", "paper"}:
             capacities["account_cash_percentage"] = max(
@@ -1512,11 +1538,12 @@ class PortfolioManagementEngine:
                 - policy.minimum_cash_reserve - reserved_notional,
             ) / (base_price * self._entry_funding_factor(intent, policy))
         if intent.action in {"enter_long", "add_long"}:
-            capacities["net_exposure"] = max(0.0, policy.maximum_net_long_exposure - max(0.0, net) - reserved_notional) / base_price
+            capacities["net_exposure"] = max(0.0, policy.maximum_net_long_exposure - max(0.0, net) - reserved_notional) / capacity_price
         else:
-            capacities["net_exposure"] = max(0.0, policy.maximum_net_short_exposure - max(0.0, -net) - reserved_notional) / base_price
+            capacities["net_exposure"] = max(0.0, policy.maximum_net_short_exposure - max(0.0, -net) - reserved_notional) / capacity_price
         risk_per_share = _risk_per_share(intent, requested) * float(intent.metadata.get("fx_to_base") or 1.0)
         if risk_per_share > 0:
+            entry_fee_per_share = self._entry_fee_per_share(intent, policy, base_price)
             mandate = dict(
                 state.profile.strategy_mandates.get(self.allocation_identity)
                 or state.profile.strategy_mandates.get(self.strategy_id)
@@ -1534,13 +1561,13 @@ class PortfolioManagementEngine:
             capacities["planned_risk"] = max(
                 0.0,
                 risk_capital * planned_risk_fraction,
-            ) / risk_per_share
+            ) / (risk_per_share + entry_fee_per_share * planned_risk_fraction)
             capacities["open_risk"] = max(
                 0.0,
                 risk_capital * policy.maximum_open_risk_fraction
                 - allocated_risk
                 - reserved_risk,
-            ) / risk_per_share
+            ) / (risk_per_share + entry_fee_per_share * policy.maximum_open_risk_fraction)
         occupied_tickers = {ticker for ticker, row in state.positions.items() if abs(float(row.position)) > 1e-12}
         occupied_tickers.update(row.ticker for row in self.reservations.values()
             if row.account_id == state.profile.account_id and row.reserved_notional > 0
@@ -1560,8 +1587,8 @@ class PortfolioManagementEngine:
                 for row in state.positions.values()
                 if str(row.raw.get(dimension) or "").strip() == value
             )
-            capacities[dimension] = max(0.0, eligible_equity * fraction - existing) / base_price
-        group_capacity = self._group_capacity(state, intent.ticker, base_price)
+            capacities[dimension] = max(0.0, eligible_equity * fraction - existing) / capacity_price
+        group_capacity = self._group_capacity(state, intent.ticker, capacity_price)
         if group_capacity is not None:
             capacities["portfolio_group"] = group_capacity
         approved = min(capacities.values())
@@ -2072,7 +2099,7 @@ def _intent_correlation(run_id: str, intent: StrategyIntent) -> str:
     )["correlation_id"]
 
 
-def _planned_loss(intent: StrategyIntent, quantity: float) -> float:
+def _planned_loss(intent: StrategyIntent, quantity: float, *, entry_price: float | None = None) -> float:
     if intent.action not in {"enter_long", "add_long", "enter_short", "add_short"}:
         # Planned-loss sizing governs newly admitted exposure. A full exit may
         # legitimately retain the original stop beyond the current price after
@@ -2082,7 +2109,7 @@ def _planned_loss(intent: StrategyIntent, quantity: float) -> float:
     profile = intent.resolved_protection_profile()
     if profile is None:
         return 0.0
-    entry_price = _worst_entry_price(intent)
+    entry_price = _worst_entry_price(intent) if entry_price is None else entry_price
     position_side = "short" if intent.action in {"enter_short", "add_short"} else "long"
     volatility = float(intent.metadata.get("volatility") or 0)
     planned = 0.0
@@ -2113,7 +2140,16 @@ def _planned_loss(intent: StrategyIntent, quantity: float) -> float:
 
 
 def _risk_per_share(intent: StrategyIntent, quantity: float = 1.0) -> float:
-    return _planned_loss(intent, max(quantity, 1e-12)) / max(quantity, 1e-12)
+    return _reserved_entry_loss(intent, max(quantity, 1e-12)) / max(quantity, 1e-12)
+
+
+def _reserved_entry_loss(intent: StrategyIntent, quantity: float) -> float:
+    actual = _planned_loss(intent, quantity)  # Validate protection at the actual entry too.
+    if (intent.action in {'enter_long', 'add_long'}
+            and intent.metadata.get('entry_completion_quote') in {'bid', 'ask'}):
+        funded = max(_worst_entry_price(intent), float(intent.metadata.get('entry_funding_price') or 0))
+        return max(actual, _planned_loss(intent, quantity, entry_price=funded))
+    return actual
 
 
 def _worst_entry_price(intent: StrategyIntent) -> float:

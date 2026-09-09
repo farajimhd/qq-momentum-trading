@@ -2363,6 +2363,7 @@ class OrderManagementEngine:
                                      {"reason": "portfolio_allocation_capacity", "requested_price": requested_price,
                                       "remaining_quantity": remaining})
                     group.deferred_reprice = fingerprint
+                    group.failed_reprice_at = record_time
                     continue
             try:
                 async with self._command_lane(group.account_id):

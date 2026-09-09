@@ -440,6 +440,59 @@ class PortfolioContractTests(unittest.IsolatedAsyncioTestCase):
                                     ledger=ledger("A", cash=6000), positions=[position("A", "AAPL", quantity=40)])
         self.assertTrue(await engine.authorize_entry_reprice(approved, "A", 100, 59))
 
+    async def test_acquisition_headroom_reserves_risk_as_well_as_cash(self):
+        engine = self.make_portfolio()
+        state = engine.states['A']
+        state.profile = replace(state.profile, policy=replace(state.profile.policy,
+            maximum_planned_risk_fraction=.08, maximum_open_risk_fraction=.08))
+        request = replace(intent('entry', quantity=100, price=100, invalidation=90),
+            metadata={'assignment_id':'assignment-AAPL', 'entry_completion_quote':'ask',
+                      'entry_acquisition_buffer_bps':500.})
+        decision, approved = await engine.approve(request, account_id='A')
+        self.assertEqual(decision.approved_quantity, 53)
+        reservation = engine.reservations[approved.metadata['portfolio_reservation_id']]
+        self.assertAlmostEqual(reservation.reserved_planned_risk, 795)
+        self.assertTrue(await engine.authorize_entry_reprice(approved, 'A', 105, 53))
+        self.assertFalse(await engine.authorize_entry_reprice(approved, 'A', 106, 53))
+
+    async def test_acquisition_headroom_reserves_position_capacity(self):
+        engine = self.make_portfolio()
+        state = engine.states['A']
+        state.profile = replace(state.profile, policy=replace(state.profile.policy,
+            maximum_position_fraction=.2))
+        request = replace(intent('entry', quantity=100, price=100, invalidation=90),
+            metadata={'assignment_id':'assignment-AAPL', 'entry_completion_quote':'ask',
+                      'entry_acquisition_buffer_bps':500.})
+        decision, approved = await engine.approve(request, account_id='A')
+        self.assertEqual(decision.approved_quantity, 38)
+        self.assertTrue(await engine.authorize_entry_reprice(approved, 'A', 105, 38))
+
+    async def test_partial_fill_fees_do_not_consume_unreserved_risk_headroom(self):
+        from tests.test_portfolio_management import position
+        from src.trading_runtime.order_management import OrderGroupSnapshot
+        engine = self.make_portfolio()
+        state = engine.states['A']
+        state.profile = replace(state.profile, policy=replace(state.profile.policy,
+            maximum_planned_risk_fraction=.08, maximum_open_risk_fraction=.08))
+        request = replace(intent('entry', quantity=3000, price=3.5, invalidation=3.275),
+            metadata={'assignment_id':'assignment-AAPL', 'entry_completion_quote':'ask',
+                      'entry_acquisition_buffer_bps':500.})
+        decision, approved = await engine.approve(request, account_id='A')
+        self.assertEqual(decision.approved_quantity, 1992)
+        engine.on_order_group_update(OrderGroupSnapshot(
+            group_id='g', intent_id='entry', account_id='A', ticker='AAPL', action='enter_long',
+            state=OrderManagementState.PARTIALLY_FILLED, client_order_ids=('c',), broker_order_ids=('b',),
+            submitted_at=request.event_time, updated_at=request.event_time, filled_quantity=1000,
+            remaining_quantity=992, warning_message_ids=(), rejection_reason='', decision_to_submit_ms=0,
+            policy_version=1, reentry_after_fill=False, assignment_id='assignment-AAPL'))
+        held = position('A','AAPL',quantity=1000)
+        held = replace(held, avgCost=3.5, mktValue=3500.)
+        engine.synchronize_snapshot('A', summary=summary('A',equity=9995,available=6495),
+                                    ledger=ledger('A',cash=6495),positions=[held])
+        self.assertTrue(await engine.authorize_entry_reprice(approved,'A',3.6,992))
+        reservation = engine.reservations[approved.metadata['portfolio_reservation_id']]
+        self.assertAlmostEqual(reservation.reserved_entry_fees,992*3.675*.005)
+
     async def test_repeated_partial_fills_release_reservation_proportionally(self):
         from src.trading_runtime.order_management import OrderGroupSnapshot
         engine = self.make_portfolio()
@@ -575,6 +628,9 @@ class OmsContractTests(unittest.IsolatedAsyncioTestCase):
         count = len(self.broker.modifications)
         self.assertFalse(await self.manager._attempt_reprice(group, record_time=at))
         self.assertEqual(len(self.broker.modifications), count)
+        authorization_count = self.authorize.call_count
+        self.assertFalse(await self.manager._attempt_reprice(group, record_time=at+timedelta(milliseconds=10)))
+        self.assertEqual(self.authorize.call_count, authorization_count)
 
     async def test_stop_and_target_amendments_preserve_oca_and_repair_contract(self):
         from src.market_engine.events import QuoteEvent

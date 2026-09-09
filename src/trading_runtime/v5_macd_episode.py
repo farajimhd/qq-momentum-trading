@@ -75,8 +75,15 @@ def observe(o, p, state):
     d.update(observed_at=now, macd_open=opened, macd_gap_bps=gap,
              prior_max=d.get('period_max', 0.0), decision_levels=prior, crossed=[])
     closed = o.source_timeframe == '1s' and 'bar_close' in o.evaluation_events
+    if p.get('episode_management'):
+        from .v5_episode_management import observe_entry
+        observe_entry(o, d, closed, p['episode_management'])
     if p['v5_breakout_contract'] == v5.MACD_REJECTION_CONTRACT:
-        observe_rejection(o, d, current_levels, closed)
+        if p.get('episode_management'):
+            from .v5_episode_management import observe_rejection as observe_attempt
+            observe_attempt(o, d, current_levels, closed, p['episode_management'])
+        else:
+            observe_rejection(o, d, current_levels, closed)
     if closed and now > d.get('closed_at', 0):
         previous = d.get('closed_price')
         # Trade observations must not erase the last completed-bar witnesses
@@ -90,11 +97,19 @@ def observe(o, p, state):
         if opened:
             d['period_max'] = max(d.get('period_max', 0.0), o.bar_open or o.price, o.price)
             # At the close boundary this candle is now part of the past.
-            d['prior_max'] = d['period_max']
+            # A close-only decision compares this closing candle with the
+            # already completed prior candles, then retains it for next time.
+            if not (p.get('episode_management') or {}).get('entry_on_close'):
+                d['prior_max'] = d['period_max']
         d.update(closed_at=now, closed_price=o.price, closed_levels=current_levels)
+        if p.get('episode_management'):
+            d['closed_atr'] = max(0., o.volatility) if isfinite(o.volatility) else 0.
         d['decision_levels'] = list({r['unified_level_id']: r for r in [*current_levels, *d['crossed']]}.values())
     d['levels'] = current_levels
     d['entry_high_threshold'] = d['prior_max'] * (1 + p['v5_breakout']['episode_high_offset_bps'] / 10_000)
+    if (p.get('episode_management') or {}).get('entry_range_seconds') and d.get('entry_range_high') is not None:
+        d['entry_high_threshold'] = max(d['entry_high_threshold'],
+            d['entry_range_high'] * (1 + p['v5_breakout']['episode_high_offset_bps'] / 10_000))
     if o.position_quantity <= 0:
         for key in ('position_gaps', 'pending_target', 'fill_stop_initialized'):
             d.pop(key, None)
@@ -147,11 +162,22 @@ def overhead(levels, price, p):
 
 def select(o, p, state):
     d = state.get('v5_breakout_state', {})
+    policy = p.get('episode_management') or {}
+    if ((p.get('episode_management') or {}).get('entry_on_close')
+            and not (o.source_timeframe == '1s' and 'bar_close' in o.evaluation_events)):
+        return {'reason': 'v5_waiting_for_entry_close'}
     if not d.get('macd_open'):
         return {'reason': 'v5_macd_gap_below_minimum'}
+    if ((policy.get('stop_atr_multiple', 0) or policy.get('rejection_atr_multiple', 0))
+            and d.get('closed_atr', 0) <= 0):
+        return {'reason': 'v5_volatility_unavailable'}
     if not acquisition_valid(o, p, state):
         return {'reason': 'v5_price_not_above_vwap'}
     threshold = d.get('prior_max', 0.0) * (1 + p['v5_breakout']['episode_high_offset_bps'] / 10_000)
+    if policy.get('entry_range_seconds'):
+        if d.get('entry_range_high') is None:
+            return {'reason': 'v5_recent_range_unavailable'}
+        threshold = max(threshold, d['entry_range_high']*(1+p['v5_breakout']['episode_high_offset_bps']/10_000))
     if not strictly_below(threshold, o.price):
         return {'reason': 'v5_period_high_not_reclaimed'}
     levels = d.get('decision_levels', [])
@@ -198,7 +224,15 @@ def manage(o, p, state):
         if below:
             sample_gaps(d, entry_levels, max(below, key=lambda r: r['upper']))
     for broken in d.get('crossed', []):
-        current = max(current, v5.below(broken, p))
+        proposed = v5.below(broken, p)
+        multiple = (p.get('episode_management') or {}).get('stop_atr_multiple', 0.)
+        if multiple:
+            atr = d.get('closed_atr', 0.)
+            if atr <= 0:
+                continue
+            tick = p['execution']['tick_size']
+            proposed = min(proposed, floor((broken['lower']-multiple*atr)/tick+1e-9)*tick)
+        current = max(current, proposed)
         average = sample_gaps(d, d['decision_levels'], broken)
         above = overhead(d['decision_levels'], max(o.price, o.ask), p)
         if average is None or len(above) < 2:

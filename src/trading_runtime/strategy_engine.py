@@ -5533,6 +5533,9 @@ def _protection_profile_from_phase(
         or {}
     )
     if not configured:
+        if (action in {'enter_long', 'add_long'}
+                and (parameters.get('episode_management') or {}).get('take_profit_fraction', 1.) < 1.):
+            raise ValueError('Episode runner requires an explicit protection profile')
         return None
     side = "short" if action in {"enter_short", "add_short"} else "long"
     strategy_targets = [
@@ -5547,8 +5550,9 @@ def _protection_profile_from_phase(
             raw.update(quantity_fraction=1., strategy_profit_target_index=0,
                        use_strategy_profit_target=True, stop={'rule_type': 'fixed_price'},
                        trailing={'rule_type': 'none'})
-        if swing_gap.runner_policy(parameters) and configured_slices:
-            fraction = swing_gap.runner_policy(parameters)['take_profit_fraction']
+        episode_fraction = (parameters.get('episode_management') or {}).get('take_profit_fraction', 1.)
+        if (swing_gap.runner_policy(parameters) or episode_fraction < 1.) and configured_slices:
+            fraction = (swing_gap.runner_policy(parameters) or {}).get('take_profit_fraction', episode_fraction)
             first = configured_slices[0]
             first['quantity_fraction'] = fraction
             runner = dict(first, slice_id='gap-runner', quantity_fraction=1-fraction,
@@ -5567,7 +5571,7 @@ def _protection_profile_from_phase(
         raw.get("strategy_profit_target_index") is not None
         for raw in configured_slices
     )
-    if swing_gap.runner_policy(parameters):
+    if swing_gap.runner_policy(parameters) or (parameters.get('episode_management') or {}).get('take_profit_fraction', 1.) < 1.:
         has_indexed_slices = False
     indexed_slices = [
         raw
