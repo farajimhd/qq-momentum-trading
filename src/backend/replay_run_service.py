@@ -3480,7 +3480,10 @@ class ReplayRunController:
         price = float(event.price) if isinstance(event, TradeEvent) else float(base.price)
         if price <= 0:
             return False
-        source_values = deepcopy(base.source_values)
+        # Published value records are replaced, never edited in place. Copy
+        # the mapping for this event while retaining unchanged structural and
+        # indicator evidence; copying the entire level book per trade is costly.
+        source_values = dict(base.source_values)
         market_price = {
             "observed_at": event.ts.isoformat(),
             "value": price,

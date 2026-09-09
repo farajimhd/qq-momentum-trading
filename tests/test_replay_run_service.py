@@ -3516,6 +3516,8 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             committed_at=now,
             sample_count=26,
         )
+        published = controller._latest_strategy_observations['SUGP']
+        published_values = deepcopy(published.source_values)
         event = _debug_market_events(({
             "kind": "trade",
             "ticker": "SUGP",
@@ -3528,6 +3530,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         processed = await controller._process_strategy_market_event(event)
 
         self.assertTrue(processed)
+        self.assertEqual(published.source_values, published_values)
         controller._event_structure_context.assert_awaited_once_with(event)
         observation = runtime.process_account_strategy_observation.await_args.args[0]
         self.assertEqual(observation.observed_at, event.ts)
@@ -3612,6 +3615,8 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             committed_at=now,
             sample_count=26,
         )
+        published = controller._latest_strategy_observations['SUGP']
+        published_values = deepcopy(published.source_values)
         event = _debug_market_events(({
             "kind": "trade",
             "ticker": "SUGP",
@@ -3665,6 +3670,8 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         next_observation = runtime.process_account_strategy_observation.await_args.args[0]
         self.assertEqual(next_observation.bar_open, 3.47)
         self.assertEqual(next_observation.price, 3.45)
+        self.assertEqual(observation.source_values['market.last_price@1s']['value'],3.47)
+        self.assertEqual(published.source_values,published_values)
 
     async def test_quote_updates_execution_state_without_strategy_evaluation(self) -> None:
         now = datetime(2026, 8, 21, 4, 2, 57, tzinfo=NEW_YORK)
