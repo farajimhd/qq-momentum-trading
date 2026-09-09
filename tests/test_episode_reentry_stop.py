@@ -72,3 +72,45 @@ def test_fill_callback_marks_acquired_episode_only_after_actual_fill():
         await strategy.on_order_group_update(snapshot, aggregate_position_quantity=10)
         assert strategy.assignments()[0].state['last_acquired_macd_episode'] == selected['episode_started_at']
     asyncio.run(check())
+
+
+def test_position_spanning_episode_reset_gets_reentry_stop_at_latest_completed_high():
+    p, state, o = setup()
+    p['episode_management'].update(entry_on_close=True, entry_confirmation_window_ms=1000.)
+    p['macd_evaluation_mode'] = 'completed_1s'
+    original_episode = state['v5_breakout_state']['episode_started_at']
+    state['last_acquired_macd_episode'] = original_episode
+    below = replace(o, observed_at=o.observed_at+timedelta(seconds=1), macd_line=.51,
+                    position_quantity=10., price=103.5, bar_open=103.5,
+                    source_timeframe='1s', evaluation_events=('bar_close',))
+    M.observe(below, p, state)
+    resumed = replace(below, observed_at=below.observed_at+timedelta(seconds=1),
+                      macd_line=1., price=103.6, bar_open=103.55)
+    M.observe(resumed, p, state)
+    new_episode = state['v5_breakout_state']['episode_started_at']
+    assert new_episode != original_episode
+    assert state['last_acquired_macd_episode'] == original_episode
+    assert state['last_held_macd_episode'] == new_episode
+    # First position exits after the confirming close. The next intrabar
+    # entry must clear that completed candle, even though its cached prior=0.
+    reentry = replace(resumed, observed_at=resumed.observed_at+timedelta(milliseconds=800),
+                      position_quantity=0., price=103.8, bid=103.79, ask=103.81,
+                      source_timeframe='', evaluation_events=('market_data_update',))
+    M.observe(reentry, p, state)
+    assert state['v5_breakout_state']['prior_max'] == 0.
+    selected = M.select(reentry, p, state)
+    assert selected['reason'] == ''
+    assert selected['stop_selection']['source'] == 'macd_episode_high'
+    assert selected['stop_selection']['high'] == 103.6
+    assert selected['stop'] == 103.54
+    equal = replace(reentry, price=103.6*1.0015)
+    assert M.select(equal, p, state)['reason'] == 'v5_period_high_not_reclaimed'
+
+
+def test_flat_new_episode_is_still_first_entry():
+    p, state, o = setup()
+    state['last_acquired_macd_episode'] = state['v5_breakout_state']['episode_started_at']
+    M.observe(replace(o, observed_at=o.observed_at+timedelta(seconds=1), macd_line=.51), p, state)
+    M.observe(replace(o, observed_at=o.observed_at+timedelta(seconds=2)), p, state)
+    assert 'last_held_macd_episode' not in state
+    assert M.select(o, p, state)['stop_selection']['source'] != 'macd_episode_high'

@@ -58,12 +58,15 @@ Configuration used for the first opt-in candidate:
 These are configurable engineering defaults, not fitted ticker/date rules.
 An additional opt-in setting, `same_episode_reentry_stop`, replaces the initial
 stop on a subsequent acquisition in the same MACD episode. Its anchor is the
-prior maximum of completed candle opens/closes, before the breakout candle is
-included. `reentry_stop_offset_bps` defaults to 5; the stop is at least one tick
+prior maximum of completed candle opens/closes. At a candle-close decision the
+current candle is excluded; at a later intrabar execution it is already complete
+and is included. `reentry_stop_offset_bps` defaults to 5; the stop is at least one tick
 below that anchor and rounds downward to a valid tick. The entry's separate
 15-bps clearance requirement is unchanged. Only an actual entry fill marks an
-episode as acquired; unfilled or rejected requests do not. A confirmed MACD
-episode reset restores the normal first-entry stop rule. The selected anchor is
+episode as acquired; unfilled or rejected requests do not. Holding a position
+into a new qualifying episode also marks that episode as occupied, so exiting
+and entering again there uses the re-entry stop. A new episode observed while
+flat retains the normal first-entry stop rule. The selected anchor is
 frozen through partial acquisition and is not rebased to a later average fill.
 
 Position swing history contains at most `left + right + 1` bars (maximum 121),
