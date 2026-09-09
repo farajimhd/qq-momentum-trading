@@ -28,12 +28,20 @@ Each query uses at most two ClickHouse threads by default. Scheduling starts
 larger event histories first. Workers have isolated logs and checkpoints;
 failures do not strand other queued tickers. Configure concurrency at planning
 time; the plan pins source-code hashes and settings. Changed code needs a new plan.
+The launcher supports up to 64 workers and a combined query-thread budget of
+128 (`workers * threads`). On the 128-core workstation, explicitly select
+`--workers 64 --threads 2` when planning; the conservative default remains four
+workers. This is a supported limit, not a measured 64-worker speedup.
 
-Progress prints every 15 seconds: active/queued/completed/deferred/failed/
+Progress prints every second by default: active/queued/completed/deferred/failed/
 interrupted counts, each active ticker's completed sessions and elapsed time,
 and a measured ETA. ETA is unavailable until measurements exist and is approximate:
 liquid tickers can cost much more than SUGP/JUNS. `--progress-seconds` changes the
 report interval. `--tickers SUGP AAPL` on `plan` creates an explicit bounded pilot.
+Pass `--progress-seconds` to `run` to override the display interval. The display
+refresh does not rewrite the full manifest; durable state is saved on worker
+transitions and controller shutdown. Session counters advance when each session
+finishes, while elapsed times refresh every second.
 
 ```powershell
 python -B scripts/build_swing_book_campaign.py status --runtime $campaign

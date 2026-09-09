@@ -22,6 +22,15 @@ import prototype_structure_book_clickhouse as P
 from build_swing_structure_book import policy
 
 RUNTIME=Path(r'D:\TradingML\runtimes')
+MAX_WORKERS=64
+MAX_QUERY_THREADS=128
+
+
+def validate_concurrency(workers, threads):
+    if not 1<=workers<=MAX_WORKERS or not 1<=threads<=8 or workers*threads>MAX_QUERY_THREADS:
+        raise ValueError('Use 1..64 workers, 1..8 threads; combined query thread budget <=128')
+
+
 TRACKED=('scripts/build_swing_book_campaign.py','scripts/build_swing_structure_book.py',
  'src/market_engine/swing_book_v6.py','src/market_engine/swing_book.py',
  'src/market_engine/swing_structure.py','src/market_engine/swing_level_index.py',
@@ -164,6 +173,7 @@ def worker(args):
 
 def run(args):
     root=args.runtime;m=json.loads((root/'manifest.json').read_text())
+    validate_concurrency(m['workers'],m['threads'])
     if m.get('schema_version')!=2 or m.get('book_version')!='causal-swing-closing-book-6':raise ValueError('Not a V6 campaign plan')
     if m['code_hash']!=code_hash():raise ValueError('Code changed since plan; create a new campaign directory')
     if P.digest(m['universe'])!=m['universe_hash']:raise ValueError('Frozen universe hash mismatch')
@@ -202,7 +212,9 @@ def run(args):
                 active.pop(pid);save(root,m)
                 print(f'{row["ticker"]}: {status} | {duration(row["elapsed_seconds"])} | {row["reason"]}',flush=True)
             if time.monotonic()-last>=args.progress_seconds:
-                show(m);last=time.monotonic();save(root,m)
+                # State transitions already persist the manifest. A display
+                # heartbeat must not rewrite the frozen universe every second.
+                show(m);last=time.monotonic()
             if stopping and not active:break
             try:time.sleep(.5)
             except KeyboardInterrupt:
@@ -217,19 +229,25 @@ def run(args):
     return 1 if any(r['status']=='failed' for r in m['rows']) else 130 if stopping else 2 if any(r['status']=='deferred' for r in m['rows']) else 0
 
 
-def main():
+def parser():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('action',choices=('plan','run','status','stop','worker'))
     p.add_argument('--runtime',type=Path,required=True)
     p.add_argument('--start',default='2025-01-01');p.add_argument('--end',default=date.today().isoformat())
     p.add_argument('--workers',type=int,default=4);p.add_argument('--threads',type=int,default=2)
-    p.add_argument('--progress-seconds',type=int,default=15);p.add_argument('--retry-failed',action='store_true')
+    p.add_argument('--progress-seconds',type=int,default=1);p.add_argument('--retry-failed',action='store_true')
     p.add_argument('--ticker')
     p.add_argument('--tickers',nargs='+',help='Explicit subset for a pilot; omitted means every published tradable ticker')
     p.add_argument('--env-file',type=Path,default=Path(r'D:\TradingML\secrets\.env'))
+    return p
+
+
+def main():
+    p=parser()
     args=p.parse_args();args.runtime=args.runtime.resolve()
     if not RUNTIME.is_dir() or not args.runtime.is_relative_to(RUNTIME):p.error('Use the required D:/TradingML/runtimes root')
-    if not 1<=args.workers<=16 or not 1<=args.threads<=8 or args.workers*args.threads>32:p.error('Use 1..16 workers, 1..8 threads; combined budget <=32')
+    try:validate_concurrency(args.workers,args.threads)
+    except ValueError as exc:p.error(str(exc))
     if args.progress_seconds<1 or date.fromisoformat(args.start)>date.fromisoformat(args.end):p.error('Invalid dates or progress interval')
     args.runtime.mkdir(parents=True,exist_ok=True)
     if args.action=='status':show(json.loads((args.runtime/'manifest.json').read_text()));return 0
