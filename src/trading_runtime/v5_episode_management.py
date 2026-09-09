@@ -19,7 +19,8 @@ DEFAULTS = dict(rejection_from_below=True, rejection_closes=1,
                 expansion_stop_enabled=False, expansion_stop_gap_fraction=.5,
                 expansion_stop_minimum_breaks=2, expansion_stop_close_location=.75,
                 expansion_stop_atr_multiple=.25, expansion_stop_gap_cap=.25,
-                defensive_structure_enabled=False, structural_stop_offset_bps=0.)
+                defensive_structure_enabled=False, structural_stop_offset_bps=0.,
+                completed_body_reentry_enabled=False)
 
 
 def configure(parameters):
@@ -32,7 +33,7 @@ def configure(parameters):
     if any(type(policy[key]) is not bool for key in ('rejection_from_below','entry_on_close','require_range_context',
                                                    'rejection_buffer_requires_armed_trail', 'position_structure_enabled',
                                                    'same_episode_reentry_stop', 'adaptive_target_enabled', 'expansion_stop_enabled',
-                                                   'defensive_structure_enabled')):
+                                                   'defensive_structure_enabled', 'completed_body_reentry_enabled')):
         raise ValueError('Episode policy flags must be boolean')
     if type(policy['rejection_closes']) is not int or not 1 <= policy['rejection_closes'] <= 60:
         raise ValueError('Rejection confirmation must be one to sixty completed candles')
@@ -87,6 +88,9 @@ def configure(parameters):
         raise ValueError('Expansion stops require adaptive targets and position structure')
     if policy['defensive_structure_enabled'] and not policy['expansion_stop_enabled']:
         raise ValueError('Defensive structure requires expansion protection')
+    if policy['completed_body_reentry_enabled'] and (not policy['same_episode_reentry_stop']
+            or parameters.get('macd_evaluation_mode') != 'completed_1s'):
+        raise ValueError('Completed-body reentry requires episode stops and completed 1s MACD')
     if policy['structural_stop_offset_bps'] >= 10000:
         raise ValueError('Structural offset must be less than 100 percent')
     if policy['position_structure_enabled']:

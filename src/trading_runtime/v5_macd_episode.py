@@ -83,7 +83,8 @@ def observe(o, p, state):
         # A position can span several qualifying episodes. Exiting and then
         # entering again in an episode it already occupied is still re-entry.
         state['last_held_macd_episode'] = d['episode_started_at']
-    if opened and (p.get('episode_management') or {}).get('same_episode_reentry_stop'):
+    if (opened and (p.get('episode_management') or {}).get('same_episode_reentry_stop')
+            and not (p.get('episode_management') or {}).get('completed_body_reentry_enabled')):
         # Snapshot before consuming this price: a breakout must not compare
         # against itself. Repeated evaluation of the same frame is idempotent.
         witness = [now, o.price]
@@ -149,6 +150,11 @@ def observe(o, p, state):
     if (p.get('episode_management') or {}).get('entry_range_seconds') and d.get('entry_range_high') is not None:
         d['entry_high_threshold'] = max(d['entry_high_threshold'],
             d['entry_range_high'] * (1 + p['v5_breakout']['episode_high_offset_bps'] / 10_000))
+    if ((p.get('episode_management') or {}).get('completed_body_reentry_enabled')
+            and d.get('episode_started_at') is not None
+            and d['episode_started_at'] in (state.get('last_acquired_macd_episode'), state.get('last_held_macd_episode'))):
+        high = d.get('prior_max', 0.) if closed else max(d.get('prior_max', 0.), d.get('period_max', 0.))
+        d['entry_high_threshold'] = high*(1+p['v5_breakout']['episode_high_offset_bps']/10000)
     if o.position_quantity <= 0:
         for key in ('position_gaps', 'pending_target', 'fill_stop_initialized', 'profit_trail', 'expansion_stop',
                     'defensive_structure_failure'):
@@ -205,6 +211,10 @@ def select(o, p, state):
     policy = p.get('episode_management') or {}
     at_close = o.source_timeframe == '1s' and 'bar_close' in o.evaluation_events
     confirmation = d.get('entry_confirmation') or {}
+    episode = d.get('episode_started_at')
+    same_episode_reentry = (policy.get('same_episode_reentry_stop') and episode is not None
+        and episode in (state.get('last_acquired_macd_episode'), state.get('last_held_macd_episode')))
+    body_reentry = same_episode_reentry and policy.get('completed_body_reentry_enabled')
     if policy.get('same_episode_reentry_stop'):
         filled_at = (state.get('last_profit_target_fill') or {}).get('filled_at')
         if filled_at:
@@ -214,7 +224,7 @@ def select(o, p, state):
                 return {'reason': 'v5_waiting_for_post_target_close'}
             if policy.get('entry_confirmation_window_ms') and confirmation.get('at', 0.) <= fill_time:
                 return {'reason': 'v5_waiting_for_post_target_close'}
-    if policy.get('entry_on_close') and not at_close:
+    if policy.get('entry_on_close') and not at_close and not body_reentry:
         age_ms = (o.observed_at.timestamp()-confirmation.get('at', 0))*1000
         if not (policy.get('entry_confirmation_window_ms', 0) and
                 0 <= age_ms < policy['entry_confirmation_window_ms']):
@@ -226,7 +236,7 @@ def select(o, p, state):
     if policy.get('maximum_macd_line_bps') and (d.get('macd_line_bps') is None
             or d['macd_line_bps'] > policy['maximum_macd_line_bps']):
         return {'reason': 'v5_macd_trend_extended'}
-    if policy.get('entry_minimum_close_location') and (d.get('entry_close_location') is None
+    if not body_reentry and policy.get('entry_minimum_close_location') and (d.get('entry_close_location') is None
             or d['entry_close_location'] < policy['entry_minimum_close_location'] - 1e-12):
         return {'reason': 'v5_breakout_close_weak'}
     if ((policy.get('stop_atr_multiple', 0) or policy.get('rejection_atr_multiple', 0)
@@ -235,27 +245,25 @@ def select(o, p, state):
         return {'reason': 'v5_volatility_unavailable'}
     if not acquisition_valid(o, p, state):
         return {'reason': 'v5_price_not_above_vwap'}
-    episode = d.get('episode_started_at')
-    same_episode_reentry = (policy.get('same_episode_reentry_stop') and episode is not None
-        and episode in (state.get('last_acquired_macd_episode'), state.get('last_held_macd_episode')))
     # At the close, compare with earlier candles. During the execution window,
     # the confirming candle is already complete and belongs to the past too.
     reentry_high = (d.get('prior_max', 0.) if at_close else
                     max(d.get('prior_max', 0.), d.get('period_max', 0.)))
-    reentry_high = max(reentry_high, d.get('prior_observed_episode_high', 0.))
+    if not body_reentry:
+        reentry_high = max(reentry_high, d.get('prior_observed_episode_high', 0.))
     threshold = d.get('prior_max', 0.0) * (1 + p['v5_breakout']['episode_high_offset_bps'] / 10_000)
     if same_episode_reentry:
         threshold = max(threshold, reentry_high*(1+p['v5_breakout']['episode_high_offset_bps']/10000))
-    if policy.get('entry_range_seconds'):
+    if policy.get('entry_range_seconds') and not body_reentry:
         if d.get('entry_range_high') is None:
             return {'reason': 'v5_recent_range_unavailable'}
         threshold = max(threshold, d['entry_range_high']*(1+p['v5_breakout']['episode_high_offset_bps']/10_000))
     if not strictly_below(threshold, o.price):
         return {'reason': 'v5_period_high_not_reclaimed'}
     confirmation_threshold = d.get('prior_max', 0.0)*(1+p['v5_breakout']['episode_high_offset_bps']/10000)
-    if policy.get('entry_range_seconds'):
+    if policy.get('entry_range_seconds') and not body_reentry:
         confirmation_threshold = max(confirmation_threshold, d['entry_range_high']*(1+p['v5_breakout']['episode_high_offset_bps']/10000))
-    if policy.get('entry_confirmation_window_ms') and not strictly_below(confirmation_threshold, confirmation.get('price', 0)):
+    if not body_reentry and policy.get('entry_confirmation_window_ms') and not strictly_below(confirmation_threshold, confirmation.get('price', 0)):
         return {'reason': 'v5_breakout_close_not_confirmed'}
     levels = d.get('decision_levels', [])
     above = overhead(levels, max(o.price, o.ask), p)
@@ -278,7 +286,7 @@ def select(o, p, state):
         stop = floor((high-max(tick, high*offset/10000))/tick+1e-9)*tick
         stop_selection = dict(source='macd_episode_high', episode_started_at=episode,
                               high=high, offset_bps=offset, tick_size=tick)
-    if stop <= 0 or stop >= min(o.price, o.bid):
+    if stop <= 0 or stop >= (o.price if body_reentry else min(o.price, o.bid)):
         return {'reason': 'v5_stop_already_triggered'}
     return dict(reason='', stop=stop, stop_selection=stop_selection,
                 target=selected['price'], target_selection=selected,

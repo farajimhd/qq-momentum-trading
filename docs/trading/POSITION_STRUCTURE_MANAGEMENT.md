@@ -169,6 +169,23 @@ not the time its formation became knowable. Journal evidence carries the actual
 confirmation time. Targets remain broker-held during management and the usual
 OMS exit/cancellation reconciliation handles liquidation.
 
+## Completed-body intrabar re-entry
+
+`swing-v5-completed-body-reentry-v1` enables `completed_body_reentry_enabled`
+on the defensive successor. For an already occupied MACD episode, the reference
+is the maximum open/close of previous completed one-second candles. Intrabar
+prices and wicks never update it. At a closing decision the current body is
+excluded; subsequent intrabar decisions include that newly completed body.
+The strict configured clearance and the re-entry stop share this reference.
+
+Same-episode re-entry can occur intrabar without a prior candle confirming the
+breakout or meeting a close-location threshold. Its price threshold does not
+use the wick-based recent range. Canonical context availability, completed MACD,
+VWAP, execution admission and position/pending-exit gates still apply. A target
+exit still requires a newer completed candle. Strategy stop validation uses
+the reference price, not the bid; OMS owns execution against the current book.
+Initial entries and earlier candidates retain their existing rules.
+
 Focused tests cover causal pivot confirmation, ordinary pullbacks, strict
 breaks, failed support, missing candles, MACD reset continuity, restart state,
 full-target entry construction, partial acquisition and bracket activation,
