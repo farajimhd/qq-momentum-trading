@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
-from math import floor, isclose
+from math import floor, isclose, isfinite
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -86,8 +86,12 @@ class SimulationConfig:
     marketable_liquidity_participation: float | None = None
     market_slippage_bps: float = 0.0
     allow_short: bool = False
+    new_order_activation_delay_ms: float = 0.0
 
     def __post_init__(self) -> None:
+        if (not isfinite(self.new_order_activation_delay_ms)
+                or not 0 <= self.new_order_activation_delay_ms <= 60_000):
+            raise ValueError('New order activation delay must be finite and in [0,60000] ms')
         if self.initial_cash < 0:
             raise ValueError("initial_cash cannot be negative")
         if not 0 < self.liquidity_participation <= 1:
@@ -701,7 +705,7 @@ class SimulatedBrokerAdapter:
                 await self._match_orders(
                     quote,
                     fill_time=at,
-                    broker_order_ids=requested_ids,
+                    broker_order_ids=requested_ids or None,
                 )
             )
         return executions
@@ -730,6 +734,10 @@ class SimulatedBrokerAdapter:
                 and state.status in {OrderStatus.SUBMITTED, OrderStatus.PRE_SUBMITTED}
             ]
             for state in eligible:
+                if (self.config.new_order_activation_delay_ms
+                        and fill_time < state.submitted_at + timedelta(
+                            milliseconds=self.config.new_order_activation_delay_ms)):
+                    continue
                 # Eligibility is frozen to prevent a newly activated child
                 # from seeing the parent's market event. OCA cancellation is
                 # different: a sibling cancelled by an earlier fill on this
@@ -1320,9 +1328,11 @@ class SimulatedBrokerAdapter:
     def _order_submission_time(self, request: OrderRequest) -> datetime:
         """Bound simulated submission by both market and decision clocks."""
 
-        market_time = self._event_time(request.conid, request.ticker).astimezone(
-            timezone.utc
-        )
+        events = (self._trades.get(request.conid), self._quotes.get(request.conid),
+                  self._trades_by_ticker.get(request.ticker.upper()),
+                  self._quotes_by_ticker.get(request.ticker.upper()))
+        market_time = max((event.ts.astimezone(timezone.utc) for event in events if event is not None),
+                          default=self._event_time(request.conid, request.ticker).astimezone(timezone.utc))
         metadata = dict(request.raw.get("canonical_metadata") or {})
         decision_raw = metadata.get("decision_event_time")
         if not decision_raw:

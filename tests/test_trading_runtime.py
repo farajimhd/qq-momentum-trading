@@ -70,6 +70,38 @@ def trade(*, price: float, size: float = 100) -> TradeEvent:
 
 
 class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_order_delay_uses_latest_quote_clock_and_survives_recovery(self):
+        broker = SimulatedBrokerAdapter(['DELAY'], SimulationConfig(initial_cash=10000,
+            commission_per_share=0, minimum_commission=0, liquidity_participation=1,
+            new_order_activation_delay_ms=100), mode=RunMode.BACKTEST)
+        await broker.initialize()
+        broker.observe_market_event(trade(price=99))
+        submitted = TS + timedelta(seconds=1)
+        broker.observe_market_event(replace(quote(bid=99, ask=100), ts=submitted))
+        await broker.place_orders('DELAY', [OrderRequest(acctId='DELAY', conid=265598,
+            cOID='delayed', ticker='AAPL', orderType='LMT', side='BUY', quantity=10, price=100)])
+        self.assertEqual((await broker.live_orders())[0].lastExecutionTime, submitted)
+        self.assertEqual(await broker.match_current_orders('AAPL', submitted), [])
+        restored = SimulatedBrokerAdapter(['DELAY'], broker.config, mode=RunMode.BACKTEST)
+        await restored.initialize()
+        restored.restore_checkpoint_state(broker.checkpoint_state())
+        before = submitted + timedelta(milliseconds=99)
+        self.assertEqual(await restored.on_market_event(replace(quote(bid=99, ask=100), ts=before)), [])
+        ready = submitted + timedelta(milliseconds=100)
+        fills = await restored.match_current_orders('AAPL', ready)
+        self.assertEqual(sum(f.size for f in fills), 10)
+        self.assertEqual(fills[0].trade_time, ready)
+
+    async def test_cancelled_delayed_order_cannot_fill_when_delay_expires(self):
+        broker = SimulatedBrokerAdapter(['DELAY'], SimulationConfig(new_order_activation_delay_ms=100),
+            mode=RunMode.BACKTEST)
+        await broker.initialize()
+        broker.observe_market_event(quote(bid=99, ask=100))
+        rows = await broker.place_orders('DELAY', [OrderRequest(acctId='DELAY', conid=265598,
+            cOID='cancel-delayed', ticker='AAPL', orderType='LMT', side='BUY', quantity=10, price=100)])
+        await broker.cancel_order('DELAY', rows[0]['order_id'])
+        self.assertEqual(await broker.match_current_orders('AAPL', TS+timedelta(seconds=1)), [])
+
     async def test_repeated_match_and_restore_cannot_reuse_displayed_liquidity(self):
         orders = [OrderRequest(acctId="DU123", conid=265598, cOID=name, ticker="AAPL",
             orderType="LMT", side="BUY", quantity=40, price=100) for name in ("a", "b")]

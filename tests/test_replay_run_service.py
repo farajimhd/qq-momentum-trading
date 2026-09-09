@@ -266,6 +266,16 @@ class ReplayRunDefinitionTests(unittest.TestCase):
         self.assertEqual(stress_config.liquidity_participation, 0.10)
         self.assertEqual(stress_config.marketable_liquidity_participation, 0.25)
         self.assertEqual(stress_config.market_slippage_bps, 10.0)
+        delayed = replace(stress, new_order_activation_delay_ms=250)
+        self.assertEqual(_simulation_config(delayed).new_order_activation_delay_ms, 250)
+        self.assertEqual(delayed.payload()['new_order_activation_delay_ms'], 250)
+        from src.backend.replay_run_service import _definition_from_manifest
+        restored = _definition_from_manifest(dict(definition=delayed.payload(),
+            approved_configuration=delayed.configuration_revision), run_dir=Path('.'))
+        self.assertEqual(restored.new_order_activation_delay_ms, 250)
+        for invalid in (-1, float('nan'), float('inf'), 60001):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                replace(stress, new_order_activation_delay_ms=invalid)
 
     def test_definition_builds_timezone_aware_session_boundaries(self) -> None:
         definition = ReplayRunDefinition(

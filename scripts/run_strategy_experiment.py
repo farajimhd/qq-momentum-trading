@@ -62,6 +62,8 @@ async def run(args):
     identity = dict(candidate=args.candidate, plan=args.plan, baseline_runs=args.baseline_run,
                     simulation_profile=args.simulation_profile, source_identity=source_identity,
                     session_date=args.session_date, start_time=args.start_time, end_time=args.end_time)
+    if args.new_order_activation_delay_ms is not None:
+        identity['new_order_activation_delay_ms'] = args.new_order_activation_delay_ms
     ledger_path = args.output/'ledger.json'
     ledger = json.loads(ledger_path.read_text()) if ledger_path.exists() else dict(identity=identity, cases={})
     if ledger['identity'] != identity:
@@ -79,6 +81,8 @@ async def run(args):
         definition = _definition_from_manifest(json.loads((old/'manifest.json').read_text()), run_dir=old)
         definition = replace(definition, configuration_revision=config,
             simulation_profile=args.simulation_profile or definition.simulation_profile)
+        if args.new_order_activation_delay_ms is not None:
+            definition = replace(definition, new_order_activation_delay_ms=args.new_order_activation_delay_ms)
         if args.session_date:
             session = date.fromisoformat(args.session_date)
             definition = replace(definition, session_date=session, final_session_date=session)
@@ -135,6 +139,8 @@ def main():
     parser.add_argument('--runtime-root', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--simulation-profile', choices=['baseline', 'stress'])
+    parser.add_argument('--new-order-activation-delay-ms', type=float,
+        help='Explicit new-order eligibility delay; cancellation and amendments remain immediate')
     parser.add_argument('--session-date', help='ISO session date; otherwise preserve each baseline date')
     parser.add_argument('--start-time', help='New York start time; otherwise preserve the baseline window')
     parser.add_argument('--end-time', help='New York end time; otherwise preserve the baseline window')

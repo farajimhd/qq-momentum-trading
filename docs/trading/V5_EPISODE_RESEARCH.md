@@ -68,7 +68,13 @@ the limiting portfolio constraints; it never silently increases risk limits.
   time or simulation overrides are supplied. It records source hashes and a
   restart ledger, prevents simultaneous use of the same output directory, and
   preserves prior failed/interrupted attempts. Changed source requires a new
-  experiment directory.
+  experiment directory. `--new-order-activation-delay-ms` delays eligibility of
+  newly submitted orders, using the latest causal instrument/decision clock.
+  It is persisted in the run definition and remains effective after recovery.
+  This isolated sensitivity test does not model acknowledgement, cancellation
+  or amendment transmission delays; those remain immediate. Zero preserves
+  existing matching behavior. A delayed order fills only on a later eligible
+  matching event or explicit current-quote match, never on a future quote.
 - `scripts/audit_strategy_positions.py` joins every canonical lifecycle to its
   entry decision and Portfolio approval by identity, hydrates verified journal
   evidence, checks entry thresholds and approved quantities, and measures costs

@@ -7,6 +7,7 @@ from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD, CONTRAC
 import asyncio
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -398,6 +399,7 @@ class ReplayRunDefinition:
     final_session_date: date | None = None
     debug_fixture: HistoricalDebugFixture | None = None
     simulation_profile: str = "baseline"
+    new_order_activation_delay_ms: float = 0.0
     experimental_structure_book: str = ""
     experimental_structure_fingerprint: str = ""
     minimum_p_norm: float = DEFAULT_THRESHOLD
@@ -442,6 +444,9 @@ class ReplayRunDefinition:
             raise ValueError("Debug fixtures may only be used by Backtest Debug")
         if self.simulation_profile not in {"baseline", "stress"}:
             raise ValueError("Simulation profile must be baseline or stress")
+        if (not math.isfinite(self.new_order_activation_delay_ms)
+                or not 0 <= self.new_order_activation_delay_ms <= 60_000):
+            raise ValueError('New order activation delay must be finite and in [0,60000] ms')
         if self.mode == RunMode.REPLAY and self.final_session_date not in {None, self.session_date}:
             raise ValueError("Replay is limited to one exchange session")
         if self.final_session_date is not None and self.final_session_date < self.session_date:
@@ -513,6 +518,7 @@ class ReplayRunDefinition:
             "requested_start": self.requested_start.isoformat(),
             "initial_cash": self.initial_cash,
             "simulation_profile": self.simulation_profile,
+            "new_order_activation_delay_ms": self.new_order_activation_delay_ms,
             "experimental_structure_book": self.experimental_structure_book,
             "minimum_p_norm": self.minimum_p_norm,
             "experimental_structure_fingerprint": self.experimental_structure_fingerprint,
@@ -879,6 +885,7 @@ def _simulation_config(definition: ReplayRunDefinition) -> SimulationConfig:
         # immediately executable. Stress retains a conservative 25% sweep.
         marketable_liquidity_participation=0.25 if stress else 1.0,
         market_slippage_bps=10.0 if stress else 5.0 if definition.mode == RunMode.BACKTEST else 0.0,
+        new_order_activation_delay_ms=definition.new_order_activation_delay_ms,
     )
 
 
@@ -6631,6 +6638,7 @@ def _definition_from_manifest(
         mode=mode,
         debug_fixture=fixture,
         simulation_profile=str(definition.get("simulation_profile") or "baseline"),
+        new_order_activation_delay_ms=float(definition.get('new_order_activation_delay_ms') or 0),
         experimental_structure_book=str(definition.get('experimental_structure_book') or ''),
         minimum_p_norm=float(definition.get('minimum_p_norm', .5)),
         experimental_structure_fingerprint=str(definition.get('experimental_structure_fingerprint') or ''),
