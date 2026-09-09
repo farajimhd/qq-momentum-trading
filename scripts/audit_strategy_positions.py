@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import argparse
 import json
 import sqlite3
+from decimal import Decimal
 from collections import Counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -23,6 +24,25 @@ def timestamp(value):
 
 def readonly(path):
     return sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)
+
+
+def entry_fill_location(position, executions, threshold):
+    """Describe actual acquisition prices without redefining signal validity."""
+    linked = [executions[key] for key in position['execution_ids']]
+    buys = sorted((row for row in linked if row['side'] == 'BUY'),
+                  key=lambda row: timestamp(row['source_event_time']))
+    if not buys:
+        raise ValueError('Long position has no linked acquisition executions')
+    boundary = Decimal(str(threshold)) if threshold is not None else None
+    quantity = sum((Decimal(row['quantity']) for row in buys), Decimal(0))
+    below = sum((Decimal(row['quantity']) for row in buys
+                 if boundary is not None and Decimal(row['price']) <= boundary), Decimal(0))
+    first = buys[0]
+    return dict(first_execution_id=first['execution_id'], first_fill_at=first['source_event_time'],
+                first_fill_price=first['price'], frozen_signal_threshold=threshold,
+                first_fill_above_threshold=(Decimal(first['price']) > boundary if boundary is not None else None),
+                acquired_quantity=str(quantity), quantity_at_or_below_threshold=(str(below) if boundary is not None else None),
+                interpretation='Fill-location diagnostic; the entry threshold governs the signal, not the price of a later persistent acquisition fill.')
 
 
 def check_completed_range(gate, frames, session_start, requested):
@@ -90,6 +110,9 @@ def audit(results, runtime_root):
                 approvals[approval['request_id']] = approval
     entries = [d for d in decisions if d['action'] == 'enter_long']
     exits = [d for d in decisions if d['action'] == 'exit']
+    executions = {row['execution_id']: row for row in results['executions']}
+    if len(executions) != len(results['executions']):
+        raise ValueError('Duplicate execution identity in audit input')
     rows = []
     for number, position in enumerate(positions, 1):
         start = timestamp(position['opened_at'])
@@ -119,6 +142,7 @@ def audit(results, runtime_root):
             entry_gate_passed=metadata.get('reference_price',0) > gate.get('entry_high_threshold',float('inf')),
             initial_selection=selection)
         flags = []
+        row['entry_fill_location'] = entry_fill_location(position, executions, gate.get('entry_high_threshold'))
         row['completed_range_audit'] = check_completed_range(gate, frames, timestamp(run['session_start']), requested)
         if row['completed_range_audit']['status'] == 'failed':
             flags.append('canonical_completed_range_mismatch')
@@ -152,6 +176,7 @@ def audit(results, runtime_root):
         under_two_seconds=sum(r['duration_seconds']<2 for r in rows),
         closed_equity_drawdown=drawdown, funding_defers=funding_defers,
         entry_gate_failures=sum(not r['entry_gate_passed'] for r in rows),
+        first_fills_at_or_below_signal_threshold=sum(r['entry_fill_location']['first_fill_above_threshold'] is False for r in rows),
         completed_range_checks=sum(r['completed_range_audit']['status'] != 'not_recorded' for r in rows),
         completed_range_failures=sum(r['completed_range_audit']['status'] == 'failed' for r in rows),
         approval_links_missing=sum(r['portfolio_approval'] is None for r in rows),
