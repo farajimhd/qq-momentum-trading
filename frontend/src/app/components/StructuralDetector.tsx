@@ -10,17 +10,23 @@ import './DataTable.css';
 import './structuralDetector.css';
 
 type Candle = { time: number; endTime?: number; open: number; high: number; low: number; close: number };
-type Event = { state: string; level: Record<string, unknown> };
+type Event = { state: string; level: Record<string, unknown>; band_id?: string; encounters?: number; rejection_closes?: number; source_ids?: string[] };
+type Cycle = { number: number; attempts: number; failed_attempts: number; depth: number; candles: number; recovery_progress: number };
 export type StructuralState = { time: number; effective_at: number; state: string; reason: string;
   global_context: string; global_status: string; local_events: Event[]; global_events: Event[];
   direction?: string; local_bias?: string; global_bias?: string; candle_shape?: { tags: string[] };
+  progression?: { tags: string[]; cycle?: Cycle | null; closed_cycle?: Cycle | null; completed_cycles: number;
+    crossed: { local: number; global: number }; lost: { local: number; global: number }; accepted_levels: number; accepted_by_scope: {local:number;global:number}; structure_context: string };
+  retained_context?: { local: { tracked_bands: number; pending_retests: number }; global_context: { tracked_bands: number; pending_retests: number } };
+  focus_interactions?: { local: {primary:Event|null;other_bands:number}; global_context: {primary:Event|null;other_bands:number} };
   body_baseline: number; candle: Candle; local_swings: Record<string, unknown>[];
   confirmed_swings: Record<string, unknown>[]; developing_swings?: Record<string, unknown>;
   macd: { histogram_bps: number; warmup: boolean; active?: boolean; direction?: number; episode_started_at?: number | null }; gap_before: boolean };
 type Result = { rows: StructuralState[]; pending_count: number; global_available_count: number;
   global_book: { id: string; fingerprint: string } | null; context_start: number | null };
 const defaults = { reversal_bps: 50, volatility_multiple: 2, body_half_life: 5,
-  consolidation_body_multiple: .25, proximity_body_multiple: 1, macd_gap_bps: 25, tail_range_fraction: .5, indecision_body_fraction: .2, expansion_body_multiple: 1.5, expansion_body_fraction: .65 };
+  consolidation_body_multiple: .25, proximity_body_multiple: 1, macd_gap_bps: 25, tail_range_fraction: .5, indecision_body_fraction: .2, expansion_body_multiple: 1.5, expansion_body_fraction: .65,
+  movement_body_multiple: .1, movement_min_bps: 1, deep_correction_multiple: 2, evidence_memory_candles: 1800, pressure_closes: 2 };
 const fields = [ ['reversal_bps', 'Minimum local reversal (bps)', 1, 1000, 1],
   ['volatility_multiple', 'Local volatility multiple', .1, 10, .1],
   ['body_half_life', 'Body average half-life (candles)', 1, 100, 1],
@@ -30,21 +36,41 @@ const fields = [ ['reversal_bps', 'Minimum local reversal (bps)', 1, 1000, 1],
   ['tail_range_fraction', 'Tail minimum fraction of range', .1, 1, .05],
   ['indecision_body_fraction', 'Indecision maximum body fraction', .01, 1, .05],
   ['expansion_body_multiple', 'Expansion recent-body multiple', .1, 10, .1],
-  ['expansion_body_fraction', 'Expansion minimum body fraction', .1, 1, .05] ] as const;
+  ['expansion_body_fraction', 'Expansion minimum body fraction', .1, 1, .05],
+  ['movement_body_multiple', 'Meaningful close progress · recent body multiple', .01, 2, .01],
+  ['movement_min_bps', 'Minimum close progress (bps)', .01, 100, .1],
+  ['deep_correction_multiple', 'Deep correction · starting body multiple', .5, 20, .5],
+  ['evidence_memory_candles', 'Retain absent structural evidence (candles)', 10, 20000, 1],
+  ['pressure_closes', 'Persistent pressure · rejection closes', 2, 20, 1] ] as const;
 const human = (s: string) => s.replaceAll('_', ' ');
 const labelFields = { state: 'Movement', direction: 'Direction', local: 'Local interactions', global: 'Global interactions',
-  localBias: 'Local swing trend', globalBias: 'Global swing trend', shape: 'Candle shape', macd: 'MACD context', body: 'Recent body size', source: 'Global availability' };
+  localBias: 'Local swing trend', globalBias: 'Global swing trend', shape: 'Candle shape', macd: 'MACD context', body: 'Recent body size', source: 'Global availability',
+  progression: 'Progression', cycle: 'Recovery cycle', levelProgress: 'Levels crossed / lost', context: 'Combined structure context', retained: 'Retained structural history',
+  localDetails: 'All local band details', globalDetails: 'All global band details' };
 type LabelField = keyof typeof labelFields;
 export type LabelRows = LabelField[][];
-const defaultRows: LabelRows = [['state'], ['local'], ['global'], ['shape']];
-const eventText = (events: Event[]) => [...new Set(events.map(e => human(e.state)))].join(' · ') || '·';
+const defaultRows: LabelRows = [['state'], ['progression'], ['local'], ['global'], ['shape']];
+const price = (n: unknown) => typeof n==='number' ? n.toLocaleString('en-US',{maximumFractionDigits:6}) : '?';
+const eventText = (events: Event[]) => [...new Map(events.map(e => [e.state+':'+(e.band_id || JSON.stringify(e.level)),
+  `${human(e.state)} ${e.level.lower!=null ? price(e.level.lower)+'–'+price(e.level.upper) : price(e.level.price)}${e.encounters ? ' #'+e.encounters : ''}${(e.rejection_closes || 0)>1 ? ' · '+e.rejection_closes+' rejection closes' : ''}`])).values()].join(' · ') || 'none';
 export function structuralLabelRows(row: StructuralState, rows: LabelRows) {
+  const p=row.progression, c=p?.cycle || p?.closed_cycle;
+  const focused=(scope:'local'|'global_context',fallback:Event[]) => {
+    const focus=row.focus_interactions?.[scope];
+    return focus ? eventText(focus.primary ? [focus.primary] : [])+(focus.other_bands ? ` · +${focus.other_bands} other bands` : '') : eventText(fallback);
+  };
   const values: Record<LabelField,string> = { state: human(row.state), direction: row.direction || 'unknown',
-    local: 'L: '+eventText(row.local_events), global: 'G: '+eventText(row.global_events),
+    local: 'L: '+focused('local',row.local_events), global: 'G: '+focused('global_context',row.global_events),
+    localDetails:'Local details: '+eventText(row.local_events), globalDetails:'Global details: '+eventText(row.global_events),
     localBias: 'Local: '+(row.local_bias || 'unknown'), globalBias: 'Global: '+(row.global_bias || 'unknown'),
     shape: (row.candle_shape?.tags || ['unavailable']).map(human).join(' · '),
     macd: row.macd.warmup ? 'MACD warming up' : `MACD ${row.macd.histogram_bps.toFixed(1)} bps`,
-    body: `Body ${row.body_baseline.toFixed(4)}`, source: human(row.global_status) };
+    body: `Body ${row.body_baseline.toFixed(4)}`, source: human(row.global_status),
+    progression: p?.tags.filter(tag => tag!=='levels_crossed' || !p.tags.includes('multiple_levels_crossed')).map(human).join(' · ') || 'unavailable',
+    cycle: c ? `Cycle ${c.number} · attempt ${c.attempts} · ${c.failed_attempts} failed · depth ${price(c.depth)} · ${c.candles} candles · ${(c.recovery_progress*100).toFixed(0)}% recovered` : `${p?.completed_cycles || 0} completed cycles`,
+    levelProgress: p ? `Crossed L${p.crossed.local}/G${p.crossed.global} · lost L${p.lost.local}/G${p.lost.global} · accepted L${p.accepted_by_scope?.local ?? 0}/G${p.accepted_by_scope?.global ?? 0}` : 'unavailable',
+    context: `Local ${row.local_bias || 'unknown'} / global ${row.global_bias || 'unknown'}${row.local_bias==='bullish' && row.global_bias==='bearish' || row.local_bias==='bearish' && row.global_bias==='bullish' ? ' · opposing trends' : ''}`,
+    retained: row.retained_context ? `History L${row.retained_context.local.tracked_bands}/G${row.retained_context.global_context.tracked_bands} bands (includes distant levels)` : 'unavailable' };
   return rows.filter(fields => fields.length).map(fields => fields.map(field => values[field]).join(' · '));
 }
 function readRows(value: unknown): LabelRows {
@@ -132,6 +158,7 @@ export function useStructuralDetector(ticker: string, timeframe: string, candles
         {checkbox}<p className="chart-settings-help" role="status">{status}</p>
         <section className="chart-settings-section"><h3>Candle labels</h3>
           <p className="chart-settings-help">Choose the contents of each row. Labels appear below completed candles without hovering. Zoom in to separate dense labels. Empty rows are hidden.</p>
+          <p className="chart-settings-help">Add Progression or Recovery cycle to an existing layout to see the new sequence evidence. Band # is the independent encounter number. Local/global rows show the primary band and count other bands; select All band details for the complete list. Retained history includes distant levels, not current tests.</p>
           {stored.labelRows.map((row,index) => <fieldset className="structural-label-row-config" key={index}>
             <legend>Row {index+1}</legend>
             <div className="structural-label-fields">{Object.entries(labelFields).map(([key,label]) => <label className="chart-setting-toggle" key={key}>

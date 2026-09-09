@@ -41,6 +41,11 @@ class Settings(BaseModel):
     indecision_body_fraction: float = Field(default=.2, ge=.01, le=1)
     expansion_body_multiple: float = Field(default=1.5, ge=.1, le=10)
     expansion_body_fraction: float = Field(default=.65, ge=.1, le=1)
+    movement_body_multiple: float = Field(default=.1, ge=.01, le=2)
+    movement_min_bps: float = Field(default=1, ge=.01, le=100)
+    deep_correction_multiple: float = Field(default=2, ge=.5, le=20)
+    evidence_memory_candles: int = Field(default=1800, ge=10, le=20000)
+    pressure_closes: int = Field(default=2, ge=2, le=20)
 
 
 class DetectorRequest(BaseModel):

@@ -2522,11 +2522,12 @@ def capture(args: argparse.Namespace) -> int:
                         panel.get_by_role('button', name='Structural detector settings', exact=True).click()
                         dialog=page.get_by_role('dialog',name='Structural detector settings',exact=True)
                         dialog.get_by_role('checkbox',name='Row 1: Direction',exact=True).check()
-                        dialog.get_by_role('checkbox',name='Row 2: Local interactions',exact=True).uncheck()
+                        dialog.get_by_role('checkbox',name='Row 2: Recovery cycle',exact=True).check()
+                        dialog.get_by_role('checkbox',name='Row 3: Local interactions',exact=True).uncheck()
                         dialog.get_by_role('button',name='Add row',exact=True).click()
-                        dialog.get_by_role('checkbox',name='Row 5: MACD context',exact=True).check()
+                        dialog.get_by_role('checkbox',name='Row 6: MACD context',exact=True).check()
                         layout=page.evaluate("JSON.parse(localStorage.getItem('review.structural.structural-detector')).labelRows")
-                        if layout[0]!=['state','direction'] or layout[1] or layout[4]!=['macd']:
+                        if layout[0]!=['state','direction'] or layout[1]!=['progression','cycle'] or layout[2] or layout[5]!=['macd']:
                             raise RuntimeError('Label row selections did not persist')
                         dialog.get_by_role('button',name='Done',exact=True).click()
                         page.wait_for_function("[...document.querySelectorAll('.structural-label-layer .structural-candle-label')].some(n=>n.textContent.includes('MACD'))")
@@ -2534,7 +2535,7 @@ def capture(args: argparse.Namespace) -> int:
                         if page.get_by_role('dialog',name='Structural detector settings',exact=True).count():
                             raise RuntimeError('Hover opened detector inspection')
                         panel.get_by_role('button',name='Structural detector settings',exact=True).click()
-                        if not dialog.get_by_role('checkbox',name='Row 5: MACD context',exact=True).is_checked():
+                        if not dialog.get_by_role('checkbox',name='Row 6: MACD context',exact=True).is_checked():
                             raise RuntimeError('Reopened configuration lost row settings')
                         dialog.get_by_role('button',name='Reset label rows',exact=True).click()
                         dialog.get_by_role('checkbox',name='Row 1: Movement',exact=True).focus()

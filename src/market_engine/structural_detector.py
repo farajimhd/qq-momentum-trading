@@ -9,9 +9,10 @@ from dataclasses import dataclass, asdict
 from math import isfinite
 
 from .swing_structure import SwingSettings, SwingStructure
-from .structural_evidence import Interactions, morphology, swing_bias
+from .structural_evidence import Interactions, morphology, swing_bias, interaction_focus
+from .structural_progression import Progression
 
-VERSION = 'structural-candle-detector-2'
+VERSION = 'structural-candle-detector-3'
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,11 @@ class DetectorSettings:
     indecision_body_fraction: float = .2
     expansion_body_multiple: float = 1.5
     expansion_body_fraction: float = .65
+    movement_body_multiple: float = .1
+    movement_min_bps: float = 1
+    deep_correction_multiple: float = 2
+    evidence_memory_candles: int = 1800
+    pressure_closes: int = 2
 
     def __post_init__(self):
         if any(not isfinite(v) or v <= 0 for v in asdict(self).values()):
@@ -52,13 +58,16 @@ class StructuralDetector:
         self.last_resistance = None
         self.trend = 0
         self.extreme = None
-        self.local_interactions = Interactions()
-        self.global_interactions = Interactions()
+        self.movement_anchor = None
+        self.progression = Progression(settings)
+        self.local_interactions = Interactions(settings.evidence_memory_candles)
+        self.global_interactions = Interactions(settings.evidence_memory_candles)
         self.pivots = deque(maxlen=64)
         self.episode_direction = 0
         self.ema_fast = self.ema_slow = self.signal = None
         self.episode = None
         self.close_times = {}
+        self.forming_witness = {}
 
     def local_evidence(self, level):
         result = compact(level)
@@ -77,6 +86,7 @@ class StructuralDetector:
             raise ValueError('Candles must be distinct, ordered, and non-overlapping')
         previous = self.last['close'] if self.last else None
         baseline = self.body or max(abs(bar['close']-bar['open']), bar['close']*self.settings.reversal_bps/10000)
+        threshold = max(baseline*self.settings.movement_body_multiple,bar['close']*self.settings.movement_min_bps/10000)
         local_before = [self.local_evidence(l) for l in self.swings.active.values() if l['scale']=='local' and l['state']=='active']
         local_events, local_expired = self.local_interactions.observe(bar, previous, local_before, baseline*self.settings.proximity_body_multiple, self.sequence)
         # Use the previous as-of snapshot for crossings. A level can disappear
@@ -115,17 +125,23 @@ class StructuralDetector:
         forming = self.swings.detectors[0]
         for side, sign, name in [('high',1,'resistance_forming'),('low',-1,'support_forming')]:
             extreme = forming.get(side)
-            if extreme and extreme[1]<local_time and sign*(extreme[0]-bar['close'])>=baseline and previous is not None and sign*(bar['close']-previous)<0:
+            distance=sign*(extreme[0]-bar['close']) if extreme else 0
+            fresh=bool(extreme and self.forming_witness.get(side)!=extreme[1])
+            if extreme and extreme[1]<local_time and distance>=baseline and (fresh or distance<=baseline*(1+self.settings.proximity_body_multiple)) and previous is not None and sign*(bar['close']-previous)<-threshold:
                 local_events.append(dict(state=name,level=dict(price=extreme[0],pivot_at=self.close_times[extreme[1]],confirmed_at=None)))
+                self.forming_witness[side]=extreme[1]
         local_bias = swing_bias(list(self.pivots))
         global_bias = swing_bias(list(available.values())) if global_status=='available' else 'unknown'
-        delta = bar['close']-previous if previous is not None else 0
+        anchor = self.movement_anchor if self.movement_anchor is not None else previous
+        delta = bar['close']-anchor if anchor is not None else 0
         broken_up = any(e['state'] in ('breakout','support_reclaim') for e in local_events)
         broken_down = any(e['state'] in ('support_failure','resistance_reclaim') for e in local_events)
         if broken_up != broken_down:
-            self.trend = 1 if broken_up else -1
-            self.extreme = bar['close']
-            self.pullback = None
+            new_trend = 1 if broken_up else -1
+            if new_trend != self.trend:
+                self.trend = new_trend
+                self.extreme = previous
+                self.pullback = None
         elif new_local and local_bias in ('bullish','bearish'):
             structural_trend = 1 if local_bias=='bullish' else -1
             if structural_trend != self.trend:
@@ -135,11 +151,13 @@ class StructuralDetector:
         if previous is None:
             state, reason = 'unknown','insufficient_history'
         else:
-            if self.trend==0 and delta!=0:
+            if self.trend==0 and abs(delta)>threshold:
                 self.trend = 1 if delta>0 else -1
                 self.extreme = previous
             sign = self.trend or 1
-            if sign*delta<0:
+            if abs(delta)<=threshold:
+                state,reason = 'no_change','close_progress_below_noise_threshold'
+            elif sign*delta<0:
                 state = 'pullback' if sign==1 else 'upward_retracement'
                 reason = 'countertrend_close_without_confirmed_local_break'
                 if self.pullback is None:
@@ -155,6 +173,9 @@ class StructuralDetector:
                 self.pullback = None
             if self.extreme is None or sign*(bar['close']-self.extreme)>0:
                 self.extreme = bar['close']
+        if self.movement_anchor is None or abs(delta)>threshold:
+            self.movement_anchor = bar['close']
+        progress = self.progression.observe(bar,previous,self.trend,baseline,threshold,local_events,global_events,local_bias,global_bias,movement_delta=delta)
         shape = morphology(bar,self.last,baseline,self.settings)
         alpha = 1-2**(-1/self.settings.body_half_life)
         self.body = abs(bar['close']-bar['open']) if self.body is None else self.body+alpha*(abs(bar['close']-bar['open'])-self.body)
@@ -173,7 +194,9 @@ class StructuralDetector:
         self.episode_direction = episode_direction
         result = dict(contract=VERSION, sequence=self.sequence, time=start, effective_at=end,
             state=state, reason=reason, direction=('bullish' if self.trend==1 else 'bearish' if self.trend==-1 else 'unknown'),
-            local_bias=local_bias, global_bias=global_bias, candle_shape=shape,
+            local_bias=local_bias, global_bias=global_bias, candle_shape=shape, progression=progress,
+            movement_threshold=threshold, retained_context=dict(local=self.local_interactions.context(),global_context=self.global_interactions.context()),
+            focus_interactions=dict(local=interaction_focus(local_events,bar['close']),global_context=interaction_focus(global_events,bar['close'])),
             expired_interactions=dict(local=local_expired,global_count=global_expired), local_events=local_events, global_events=global_events,
             global_context=('mixed_breaks' if held and below else 'above_broken_resistance' if held else 'below_broken_support' if below else 'between_levels') if global_status=='available' else 'unavailable',
             global_status=global_status, local_swings=local_before, confirmed_swings=new_local,

@@ -170,7 +170,7 @@ def test_bullish_and_bearish_movement_are_mirrors():
         (10.5,10.48),(10.48,10.49),(10.49,10.6)])]
     up,down=StructuralDetector(),StructuralDetector()
     pairs={'unknown':'unknown','advance':'decline','pullback':'upward_retracement',
-           'recovery':'downward_recovery','consolidation':'consolidation'}
+           'recovery':'downward_recovery','consolidation':'consolidation','no_change':'no_change'}
     for bar in bars:
         a,b=up.observe(bar),down.observe(mirror(bar))
         assert pairs[a['state']]==b['state']
@@ -183,8 +183,8 @@ def test_retest_lifecycle_is_symmetric_and_does_not_repaint():
     support=dict(resistance,side=1,lower=20-resistance['upper'],upper=20-resistance['lower'],price=20-resistance['price'])
     bars=[candle(0,10,10.1),candle(1,10.1,10.3),candle(2,10.3,10.4,10.41,10.3),
           candle(3,10.4,10.2,10.4,10.2),candle(4,10.2,10.3,10.31,10.2),candle(5,10.3,10.1)]
-    expected=[[],['breakout'],['support_retest_pending'],['support_retest_unresolved'],['support_retest_held'],['resistance_reclaim']]
-    mirrored=[[],['support_failure'],['resistance_retest_pending'],['resistance_retest_unresolved'],['resistance_retest_held'],['support_reclaim']]
+    expected=[[],['breakout'],[],['support_retest_unresolved'],['support_retest_held'],['resistance_reclaim']]
+    mirrored=[[],['support_failure'],[],['resistance_retest_unresolved'],['resistance_retest_held'],['support_reclaim']]
     previous=None
     saved=[]
     for i,bar in enumerate(bars):
@@ -192,6 +192,8 @@ def test_retest_lifecycle_is_symmetric_and_does_not_repaint():
         inverse,_=b.observe(mirror(bar),20-previous if previous is not None else None,[support] if i<2 else [],.05,i)
         assert [e['state'] for e in events]==expected[i]
         assert [e['state'] for e in inverse]==mirrored[i]
+        if i==2:
+            assert a.context()['pending_retests']==b.context()['pending_retests']==1
         saved.append(events)
         if i==1:
             witness=deepcopy(events)
@@ -250,3 +252,115 @@ def test_reclaimed_role_updates_local_movement_direction(event,expected):
     close=10.2 if expected=='advance' else 10
     with patch.object(engine.local_interactions,'observe',return_value=([dict(state=event,level=level())],0)):
         assert engine.observe(candle(1,10.1,close))['state']==expected
+
+
+def test_small_or_unchanged_close_is_not_a_new_pullback_or_recovery():
+    engine=StructuralDetector()
+    for bar in [candle(0,6.1,6.2),candle(1,6.2,6.5)]:
+        engine.observe(bar)
+    assert engine.observe(candle(2,6.39,6.4997,6.57,6.39))['state']=='no_change'
+    assert engine.observe(candle(3,6.5,6.4997))['state']=='no_change'
+
+
+def test_small_changes_accumulate_to_meaningful_progress():
+    engine=StructuralDetector(DetectorSettings(movement_body_multiple=1,movement_min_bps=10))
+    engine.observe(candle(0,10,10.01))
+    rows=[engine.observe(candle(i,10.01+(i-1)*.005,10.01+i*.005)) for i in range(1,8)]
+    assert any(r['state']=='no_change' for r in rows)
+    assert any(r['state']=='advance' for r in rows)
+
+
+def test_duplicate_band_sources_share_one_encounter_and_persistent_pressure():
+    from src.market_engine.structural_evidence import Interactions
+    from src.market_engine.structural_progression import Progression
+    tracker=Interactions(); settings=DetectorSettings(); progression=Progression(settings)
+    band=dict(level(6.75),lower=6.72,upper=6.78)
+    sources=[band,dict(band,unified_level_id='another-source')]
+    first=candle(0,6.7,6.6,6.88,6.6)
+    events,_=tracker.observe(first,6.6,sources,.07,0)
+    assert len(events)==1 and len(events[0]['source_ids'])==2
+    second=candle(1,6.73,6.67,6.85,6.62)
+    events,_=tracker.observe(second,6.6,sources,.07,1)
+    assert len(events)==1 and events[0]['encounters']==1 and events[0]['rejection_closes']==2
+    progress=progression.observe(second,6.6,1,.07,.007,[],events,'bullish','bearish')
+    assert 'persistent_resistance_pressure' in progress['tags']
+    assert 'local_global_conflict' in progress['tags']
+
+
+def test_one_bar_outside_band_does_not_automatically_create_new_encounter():
+    from src.market_engine.structural_evidence import Interactions
+    tracker=Interactions()
+    tracker.observe(candle(0,10.1,10.19,10.2,10.1),10.1,[level()],.05,0)
+    tracker.observe(candle(1,10.18,10.18,10.18,10.18),10.19,[level()],.05,1)
+    events,_=tracker.observe(candle(2,10.18,10.19,10.2,10.18),10.18,[level()],.05,2)
+    assert events[0]['encounters']==1
+
+
+def test_cycle_memory_failed_attempts_completion_and_comparison():
+    from src.market_engine.structural_progression import Progression
+    p=Progression(DetectorSettings()); previous=10
+    prices=[11,10.5,10.7,10.6,10.8,10.7,11.1,10.9,11.2]
+    results=[]
+    for i,close in enumerate(prices):
+        results.append(p.observe(candle(i,previous,close),previous,1,.1,.005,[],[],'bullish','bullish'))
+        previous=close
+    assert 'repeated_failed_recovery' in results[5]['tags']
+    assert results[5]['cycle']['failed_attempts']==2
+    assert results[6]['closed_cycle']['outcome']=='recovered'
+    assert results[-1]['completed_cycles']==2
+    assert 'improving_cycles' in results[-1]['tags']
+
+
+def test_impulse_level_progress_and_deep_correction_are_symmetric():
+    from src.market_engine.structural_progression import Progression
+    up,down=Progression(DetectorSettings()),Progression(DetectorSettings())
+    levels=[level(10.2),level(10.3)]
+    events=[dict(state='breakout',level=l) for l in levels]
+    inverse=[dict(state='support_failure',level=dict(l,side=1,price=20-l['price'],lower=20-l['upper'],upper=20-l['lower'])) for l in levels]
+    first=candle(0,10,10.5)
+    a=up.observe(first,10,1,.1,.01,[],events,'bullish','bullish')
+    b=down.observe(mirror(first),10,-1,.1,.01,[],inverse,'bearish','bearish')
+    assert a['crossed']==b['crossed']=={'local':0,'global':2}
+    assert 'multiple_levels_crossed' in a['tags']
+    second=candle(1,10.5,10.1)
+    a=up.observe(second,10.5,1,.1,.01,[],[dict(events[0],state='failed_breakout')],'bullish','bullish')
+    b=down.observe(mirror(second),9.5,-1,.1,.01,[],[dict(inverse[0],state='failed_breakdown')],'bearish','bearish')
+    assert a['lost']==b['lost']=={'local':0,'global':1}
+    assert 'deep_correction' in a['tags'] and set(a['tags'])==set(b['tags'])
+
+
+def test_progression_decisions_do_not_repaint():
+    engine=StructuralDetector()
+    bars=[candle(i,p,p+.03) for i,p in enumerate([10,10.3,10.2,10.25,10.15,10.4])]
+    prefix=[engine.observe(b) for b in bars[:4]]; frozen=deepcopy(prefix)
+    for b in bars[4:]: engine.observe(b)
+    assert prefix==frozen
+
+
+def test_focus_exposes_primary_band_and_counts_without_discarding_events():
+    from src.market_engine.structural_evidence import interaction_focus
+    events=[dict(state='breakout',level=level(p)) for p in [10.1,10.2,10.3]]
+    frozen=deepcopy(events)
+    focus=interaction_focus(events,10.4)
+    assert focus['primary']['level']['price']==10.3
+    assert focus['other_bands']==2 and focus['event_count']==3
+    assert events==frozen
+
+
+def test_direction_change_reports_loss_of_previous_leg_levels():
+    from src.market_engine.structural_progression import Progression
+    p=Progression(DetectorSettings()); band=level()
+    p.observe(candle(0,10,10.4),10,1,.1,.01,[dict(state='breakout',level=band)],[],'bullish','bullish')
+    result=p.observe(candle(1,10.4,10),10.4,-1,.1,.01,[dict(state='resistance_reclaim',level=band)],[],'bearish','bullish')
+    assert result['lost']['local']==1
+    assert 'losing_gained_levels' in result['tags']
+
+
+def test_retained_band_expiry_is_explicit_and_distant_pending_is_not_current():
+    from src.market_engine.structural_evidence import Interactions
+    p=Interactions(retention_candles=2)
+    p.observe(candle(0,10,10.4),10,[level()],.01,0)
+    events,expired=p.observe(candle(1,10.4,10.5),10.4,[],.01,1)
+    assert events==[] and expired==0 and p.context()['pending_retests']==1
+    events,expired=p.observe(candle(3,10.5,10.6),10.5,[],.01,3)
+    assert events==[] and expired==1 and p.context()['tracked_bands']==0
