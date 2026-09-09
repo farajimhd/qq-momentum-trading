@@ -37,8 +37,8 @@ def configure(parameters):
     if policy['entry_minimum_close_location'] and not policy['entry_on_close']:
         raise ValueError('Close location requires completed-candle entry confirmation')
     fraction = policy['take_profit_fraction']
-    if type(fraction) not in (int, float) or not isfinite(fraction) or not 0 < fraction <= 1:
-        raise ValueError('Target fraction must be positive and at most one')
+    if type(fraction) not in (int, float) or not isfinite(fraction) or not 0 <= fraction <= 1:
+        raise ValueError('Target fraction must be between zero and one')
     parameters['episode_management'] = policy
 
 

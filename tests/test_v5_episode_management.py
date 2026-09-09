@@ -60,10 +60,11 @@ def test_invalid_policy_fails_closed(policy):
         S.resolve_long_momentum_parameters(p, revision=47)
 
 
-def test_protected_runner_has_no_inherited_target():
+@pytest.mark.parametrize('fraction', [.5, 0.])
+def test_protected_runner_has_no_inherited_target(fraction):
     from tests.test_long_momentum_strategy import assignment
     p, state, o = rejection_setup()
-    p['episode_management'] = dict(take_profit_fraction=.5)
+    p['episode_management'] = dict(take_profit_fraction=fraction)
     p['protection_profile_catalog'] = {'test': {'profile_id':'test', 'slices':[
         {'slice_id':'target', 'quantity_fraction':1., 'stop':{'rule_type':'fixed_price'}}]}}
     p['phase_policy']['initial_entry'] = dict(order_intent=dict(protection_profile='test',
@@ -72,12 +73,14 @@ def test_protected_runner_has_no_inherited_target():
         assignment(strategy_revision=47, parameters=p, state=state), o)
     entry = next(i for i in result.evaluation.intents if i.action == 'enter_long')
     slices = entry.resolved_protection_profile().slices
-    assert len(slices) == 2
+    assert len(slices) == (2 if fraction else 1)
     assert sum(s.quantity_fraction for s in slices) == 1
-    assert slices[0].profit_target_price > o.price
-    assert slices[1].profit_target_price is None
-    assert not slices[1].inherit_profit_target
-    assert slices[0].stop == slices[1].stop
+    if fraction:
+        assert slices[0].profit_target_price > o.price
+        assert slices[0].stop == slices[1].stop
+    assert slices[-1].profit_target_price is None
+    assert not slices[-1].inherit_profit_target
+    assert all(s.quantity_fraction > 0 for s in slices)
 
 
 def test_structural_stop_buffer_uses_closed_atr_and_never_lowers_stop():

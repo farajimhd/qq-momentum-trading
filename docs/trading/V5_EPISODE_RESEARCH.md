@@ -17,7 +17,7 @@ settings. Omitting it preserves the earlier episode policy.
 | `rejection_closes` | 1 | Consecutive completed 1-second closes below the rejection boundary. |
 | `rejection_atr_multiple` | 0 | Subtract this multiple of the last completed ATR from the contacted lower band; freeze it at contact. |
 | `stop_atr_multiple` | 0 | Keep a ratcheted stop at least this many completed-bar ATR units below a confirmed broken resistance's lower band. |
-| `take_profit_fraction` | 1 | Fraction attached to the structural target. The remainder keeps its stop and cannot inherit the target. Requires an explicit protection profile. |
+| `take_profit_fraction` | 1 | Fraction attached to the structural target. The remainder keeps its stop and cannot inherit the target. Zero makes the entire position a protected runner without a fixed profit order; structural entry eligibility is unchanged. Requires an explicit protection profile. |
 | `entry_on_close` | false | Authorize entries only at a completed 1-second close, strictly above prior episode candle bodies plus the configured offset. |
 | `entry_range_seconds` | 0 | Additionally clear the highest completed candle high in this observation window. Persists across MACD resets and is bounded to one hour. Close-only entry excludes the candle being evaluated; intrabar entry includes all completed candles. |
 | `profit_trail_atr_multiple` | 0 | Optional completed-close peak minus current completed ATR stop. Zero disables this research departure from structural-only ratcheting. It never lowers existing protection. |

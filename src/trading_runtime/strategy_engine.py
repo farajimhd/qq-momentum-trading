@@ -5558,7 +5558,7 @@ def _protection_profile_from_phase(
             runner = dict(first, slice_id='gap-runner', quantity_fraction=1-fraction,
                           use_strategy_profit_target=False, profit_target_price=None, inherit_profit_target=False)
             runner.pop('strategy_profit_target_index', None)
-            configured_slices.append(runner)
+            configured_slices = [first, runner] if fraction > 0 else [runner]
     if parameters.get("broken_level_stop_only"):
         # One fully protected position, with no attached fixed-profit order.
         configured_slices = [dict(configured_slices[0])] if configured_slices else []
