@@ -75,6 +75,12 @@ def observe(o, p, state):
     d.update(observed_at=now, macd_open=opened, macd_gap_bps=gap,
              prior_max=d.get('period_max', 0.0), decision_levels=prior, crossed=[])
     closed = o.source_timeframe == '1s' and 'bar_close' in o.evaluation_events
+    window = (p.get('episode_management') or {}).get('entry_confirmation_window_ms', 0.)
+    if window:
+        if closed and now > d.get('closed_at', 0):
+            d['entry_confirmation'] = dict(at=now, price=o.price, prior_max=d['prior_max'])
+        elif d.get('entry_confirmation'):
+            d['prior_max'] = d['entry_confirmation']['prior_max']
     if p.get('episode_management'):
         from .v5_episode_management import observe_entry
         observe_entry(o, d, closed, p['episode_management'])
@@ -163,9 +169,13 @@ def overhead(levels, price, p):
 def select(o, p, state):
     d = state.get('v5_breakout_state', {})
     policy = p.get('episode_management') or {}
-    if ((p.get('episode_management') or {}).get('entry_on_close')
-            and not (o.source_timeframe == '1s' and 'bar_close' in o.evaluation_events)):
-        return {'reason': 'v5_waiting_for_entry_close'}
+    at_close = o.source_timeframe == '1s' and 'bar_close' in o.evaluation_events
+    confirmation = d.get('entry_confirmation') or {}
+    if policy.get('entry_on_close') and not at_close:
+        age_ms = (o.observed_at.timestamp()-confirmation.get('at', 0))*1000
+        if not (policy.get('entry_confirmation_window_ms', 0) and
+                0 <= age_ms < policy['entry_confirmation_window_ms']):
+            return {'reason': 'v5_waiting_for_entry_close'}
     if not d.get('macd_open'):
         return {'reason': 'v5_macd_gap_below_minimum'}
     if ((policy.get('stop_atr_multiple', 0) or policy.get('rejection_atr_multiple', 0)
@@ -181,6 +191,8 @@ def select(o, p, state):
         threshold = max(threshold, d['entry_range_high']*(1+p['v5_breakout']['episode_high_offset_bps']/10_000))
     if not strictly_below(threshold, o.price):
         return {'reason': 'v5_period_high_not_reclaimed'}
+    if policy.get('entry_confirmation_window_ms') and not strictly_below(threshold, confirmation.get('price', 0)):
+        return {'reason': 'v5_breakout_close_not_confirmed'}
     levels = d.get('decision_levels', [])
     above = overhead(levels, max(o.price, o.ask), p)
     ordinal = p['v5_breakout']['initial_target_ordinal']

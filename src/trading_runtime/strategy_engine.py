@@ -6236,10 +6236,22 @@ class AssignedLongMomentumStrategy:
                     level = selection.get("selected_level") or selection.get("selected_resistance_level")
                     if level:
                         state["stopped_level_recovery"] = dict(level)
+                target_preserves_remainder = (v5_breakout.episode(assignment.parameters)
+                    or bool(swing_gap.runner_policy(assignment.parameters)))
+                planned_target_reduction = (fill_role == 'profit_target' and target_preserves_remainder
+                    and aggregate_position_quantity is not None and abs(float(aggregate_position_quantity)) > 1e-9)
+                if (incremental_fill > 0 and target_preserves_remainder
+                        and state.get('liquidation_origin_fill_role') == 'profit_target'):
+                    # Older state may have latched a planned reduction as a
+                    # liquidation. The subsequent actual exit owns its cause.
+                    state.pop('liquidation_origin_fill_role', None)
+                    state.pop('liquidation_origin_reentry_after_fill', None)
+                    if state.get('last_exit_reason') == 'profit_target':
+                        state.pop('last_exit_reason', None)
                 if (assignment.strategy_revision >= 40 and incremental_fill > 0
-                        and not state.get("liquidation_origin_fill_role")):
-                    # The first sell owns the liquidation cause. A managed
-                    # remainder must not erase a partially filled stop/target.
+                        and not planned_target_reduction and not state.get("liquidation_origin_fill_role")):
+                    # The first liquidation sell owns its cause. A planned
+                    # partial target does not begin liquidating the runner.
                     state["liquidation_origin_fill_role"] = fill_role or "managed_exit"
                     state["liquidation_origin_reentry_after_fill"] = bool(
                         getattr(snapshot, "reentry_after_fill", False)
@@ -6285,8 +6297,7 @@ class AssignedLongMomentumStrategy:
                         aggregate_position_quantity is not None
                         and abs(float(aggregate_position_quantity)) > 1e-9
                     ):
-                        state["profit_target_liquidation_required"] = (not v5_breakout.episode(assignment.parameters)
-                            and not bool(swing_gap.runner_policy(assignment.parameters)))
+                        state["profit_target_liquidation_required"] = not target_preserves_remainder
                         state["target_replenishment_quantity"] = 0.0
                         state["target_replenishment_pending"] = False
                 if (

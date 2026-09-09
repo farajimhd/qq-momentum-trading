@@ -197,3 +197,41 @@ def test_intrabar_range_includes_latest_completed_high_and_freezes_between_close
     observe_entry(expired,d,True,policy)
     assert d['entry_range_high'] == 102.
     assert d['entry_range_samples'] == 1
+
+
+def test_confirmed_breakout_window_preserves_reference_but_rechecks_current_price():
+    p, state, o = rejection_setup()
+    p['episode_management'] = dict(entry_on_close=True,entry_confirmation_window_ms=1000.)
+    p = S.resolve_long_momentum_parameters(p,revision=47)
+    state['v5_breakout_state']['period_max'] = 103.3
+    closed = replace(o,price=103.5,bar_open=103.4,ask=103.51,bid=103.49,
+        observed_at=o.observed_at+timedelta(seconds=1),source_timeframe='1s',evaluation_events=('bar_close',))
+    M.observe(closed,p,state)
+    threshold = state['v5_breakout_state']['entry_high_threshold']
+    assert threshold < closed.price
+    after = replace(closed,observed_at=closed.observed_at+timedelta(milliseconds=400),
+        source_timeframe='',evaluation_events=('market_data_update',))
+    M.observe(after,p,state)
+    assert state['v5_breakout_state']['entry_high_threshold'] == threshold
+    assert M.select(after,p,state)['reason'] == ''
+    below = replace(after,price=threshold)
+    M.observe(below,p,state)
+    assert M.select(below,p,state)['reason'] == 'v5_period_high_not_reclaimed'
+    expired = replace(after,observed_at=closed.observed_at+timedelta(seconds=1))
+    M.observe(expired,p,state)
+    assert M.select(expired,p,state)['reason'] == 'v5_waiting_for_entry_close'
+
+
+def test_confirmation_window_cannot_authorize_an_unconfirmed_intrabar_break():
+    p, state, o = rejection_setup()
+    p['episode_management'] = dict(entry_on_close=True,entry_confirmation_window_ms=1000.)
+    p = S.resolve_long_momentum_parameters(p,revision=47)
+    state['v5_breakout_state']['period_max'] = 103.5
+    closed = replace(o,price=103.5,observed_at=o.observed_at+timedelta(seconds=1),
+        source_timeframe='1s',evaluation_events=('bar_close',))
+    M.observe(closed,p,state)
+    spike = replace(closed,price=103.8,ask=103.81,bid=103.79,
+        observed_at=closed.observed_at+timedelta(milliseconds=200),
+        source_timeframe='',evaluation_events=('market_data_update',))
+    M.observe(spike,p,state)
+    assert M.select(spike,p,state)['reason'] == 'v5_breakout_close_not_confirmed'

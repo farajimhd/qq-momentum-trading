@@ -5,7 +5,8 @@ from math import isfinite
 DEFAULTS = dict(rejection_from_below=True, rejection_closes=1,
                 rejection_atr_multiple=0., stop_atr_multiple=0., take_profit_fraction=1.,
                 entry_on_close=False, entry_range_seconds=0.,
-                profit_trail_atr_multiple=0., profit_trail_activation_atr=1.)
+                profit_trail_atr_multiple=0., profit_trail_activation_atr=1.,
+                entry_confirmation_window_ms=0.)
 
 
 def configure(parameters):
@@ -20,11 +21,15 @@ def configure(parameters):
     if type(policy['rejection_closes']) is not int or not 1 <= policy['rejection_closes'] <= 60:
         raise ValueError('Rejection confirmation must be one to sixty completed candles')
     for key in ('rejection_atr_multiple', 'stop_atr_multiple', 'entry_range_seconds',
-                'profit_trail_atr_multiple', 'profit_trail_activation_atr'):
+                'profit_trail_atr_multiple', 'profit_trail_activation_atr', 'entry_confirmation_window_ms'):
         if type(policy[key]) not in (int, float) or not isfinite(policy[key]) or policy[key] < 0:
             raise ValueError('ATR multiples must be finite and nonnegative')
     if policy['entry_range_seconds'] > 3600:
         raise ValueError('Recent-range history is bounded to one hour')
+    if policy['entry_confirmation_window_ms'] > 1000:
+        raise ValueError('Entry confirmation cannot outlive its one-second candle interval')
+    if policy['entry_confirmation_window_ms'] and not policy['entry_on_close']:
+        raise ValueError('An execution window requires completed-candle entry confirmation')
     fraction = policy['take_profit_fraction']
     if type(fraction) not in (int, float) or not isfinite(fraction) or not 0 < fraction <= 1:
         raise ValueError('Target fraction must be positive and at most one')

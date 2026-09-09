@@ -177,9 +177,18 @@ def test_partial_target_fill_does_not_order_urgent_liquidation():
     remaining = strategy.assignments()[0]
     assert remaining.status == S.AssignmentStatus.MANAGING
     assert not remaining.state.get('profit_target_liquidation_required')
+    assert not remaining.state.get('liquidation_origin_fill_role')
     result = engine.evaluate(remaining, replace(o, observed_at=NOW+timedelta(seconds=1),
                              position_quantity=98, average_price=103.3))
     assert not any(i.action == 'exit' for i in result.evaluation.intents)
+    asyncio.run(strategy.on_order_group_update(SimpleNamespace(
+        action='exit', assignment_id=assigned.assignment_id, fill_role='protective_stop',
+        fill_incremental_quantity=1, state='partially_filled', updated_at=NOW+timedelta(seconds=2)),
+        aggregate_position_quantity=97))
+    stopped = strategy.assignments()[0]
+    assert stopped.state['liquidation_origin_fill_role'] == 'protective_stop'
+    assert stopped.state['last_exit_reason'] == 'protective_stop'
+    assert stopped.status == S.AssignmentStatus.EXIT_PENDING
 
 
 def test_trade_at_close_cannot_erase_completed_break_witness():

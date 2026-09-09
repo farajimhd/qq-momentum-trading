@@ -22,6 +22,7 @@ settings. Omitting it preserves the earlier episode policy.
 | `entry_range_seconds` | 0 | Additionally clear the highest completed candle high in this observation window. Persists across MACD resets and is bounded to one hour. Close-only entry excludes the candle being evaluated; intrabar entry includes all completed candles. |
 | `profit_trail_atr_multiple` | 0 | Optional completed-close peak minus current completed ATR stop. Zero disables this research departure from structural-only ratcheting. It never lowers existing protection. |
 | `profit_trail_activation_atr` | 1 | Arm that trail after a held completed close exceeds actual average entry by this many ATR units frozen at entry approval. |
+| `entry_confirmation_window_ms` | 0 | With close-only confirmation, permit execution during this bounded window after the close, strictly less than one candle interval old. Both the confirming close and current price must clear its frozen threshold; current VWAP, MACD and execution checks still apply. Maximum 1000 ms. |
 
 The closing candle is compared with prior completed candles before being retained
 in the episode maximum for the next decision. MACD evaluation remains separately
@@ -32,6 +33,8 @@ Touching a resistance is not a completed break. A close above its upper bound
 clears the attempt. Rejection contacts and gap averages belong to the position
 lifecycle. Volatility-dependent entry fails closed if completed ATR is unavailable.
 Existing protective stops remain active when new evidence is unavailable.
+Planned partial targets do not latch the lifecycle's liquidation cause. A later
+stop or managed exit owns that cause and its applicable re-entry policy.
 
 ## Persistent acquisition reservation
 
