@@ -237,3 +237,29 @@ def test_historical_launch_requires_matching_certified_v6_book():
     with patch('src.backend.experimental_structure_book.resolve', return_value=dict(book, version='causal-swing-closing-book-5')):
         with pytest.raises(ValueError, match='swing book V6'):
             ReplayRunDefinition(**args)
+
+
+def test_179_admission_latches_but_current_execution_gates_remain_live():
+    _, _, o, _ = ready()
+    p = parameters()
+    p['liquidity_admission'] = dict(R.LIQUIDITY_181)
+    row = o.structural_detector_state['row']
+    state = {}
+    values = deepcopy(o.source_values)
+    values['market.trade_rate_10s']['value'] = 1.
+    values['market.trade_rate_60s']['value'] = .5
+    admitted = replace(o,source_values=values)
+    passed, evidence = R.tradability(admitted,p,row,state)
+    assert not passed and state['recovery_admission']
+    assert 'current_trade_rate_10s' in evidence['failed']
+    wider = replace(o,bid=o.price*.996,ask=o.price*1.004)
+    passed, evidence = R.tradability(wider,p,row,state)
+    assert passed  # 80 bps is valid only after the <=60 bps admission.
+    assert not R.tradability(wider,p,row,{})[0]
+    assert not R.tradability(replace(o,bid=o.price*.994,ask=o.price*1.006),p,row,state)[0]
+    assert not R.tradability(admitted,p,row,state)[0]
+    tomorrow = o.observed_at+timedelta(days=1)
+    fresh = {k:dict(v,observed_at=tomorrow.isoformat()) for k,v in o.source_values.items()}
+    assert not R.tradability(replace(wider,observed_at=tomorrow,source_values=fresh),p,
+        dict(row,effective_at=tomorrow.timestamp()),state)[0]
+    assert 'recovery_admission' not in state

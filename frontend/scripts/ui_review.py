@@ -2300,7 +2300,7 @@ def capture(args: argparse.Namespace) -> int:
                     )
                 page = context.new_page()
                 if args.backtest_presets:
-                    books=[dict(id='fixture_'+ticker,ticker=ticker,version='causal-swing-closing-book-5',start='2025-01-01',end='2026-09-04') for ticker in ('SUGP','JUNS')]
+                    books=[dict(id='fixture_'+ticker,ticker=ticker,version='causal-swing-closing-book-6',start='2025-01-01',end='2026-09-04') for ticker in ('SUGP','JUNS')]
                     page.route('**/api/trading/backtest/structure-books',fulfill_json(json.dumps(dict(items=books))))
                     page.route('**/api/trading/backtest/indicator-warmup',fulfill_json(json.dumps(dict(status='ready',items=[],ready_count=2,ticker_count=2,tickers=['SUGP','JUNS']))))
                     page.route('**/api/trading/historical-preflight',fulfill_json(json.dumps(dict(strategy_run_ready=False,checks=[],window=dict(sessions=['2026-08-21'])))))
@@ -3014,12 +3014,12 @@ def capture(args: argparse.Namespace) -> int:
                         if page.locator('input[type=date]').input_value()!='2026-08-21':raise RuntimeError('Wrong default date')
                         if page.get_by_label('Start time',exact=True).input_value()!='04:00:00':raise RuntimeError('Wrong SUGP start')
                         if page.get_by_label('End time',exact=True).input_value()!='04:30:00':raise RuntimeError('Wrong SUGP end')
-                        page.get_by_role('button',name='Level book',exact=True).filter(has_text='SUGP').wait_for(timeout=args.timeout_ms)
+                        page.get_by_role('button',name='Level book',exact=True).filter(has_text='Swing book v6 - daily survivors · SUGP').wait_for(timeout=args.timeout_ms)
                         page.get_by_role('button',name='Ticker preset',exact=True).click()
                         page.get_by_role('option',name='JUNS',exact=True).click()
                         page.wait_for_function("document.querySelector('input[aria-label=\"Start time\"]').value==='07:00:00'")
                         if page.get_by_label('End time',exact=True).input_value()!='07:30:00':raise RuntimeError('Wrong JUNS end')
-                        page.get_by_role('button',name='Level book',exact=True).filter(has_text='JUNS').wait_for(timeout=args.timeout_ms)
+                        page.get_by_role('button',name='Level book',exact=True).filter(has_text='Swing book v6 - daily survivors · JUNS').wait_for(timeout=args.timeout_ms)
                         page.get_by_role('button',name='Ticker preset',exact=True).click()
                         page.get_by_role('option',name='SUGP and JUNS',exact=True).click()
                         if not page.get_by_label('Start time',exact=True).is_disabled():raise RuntimeError('Batch must use per-ticker windows')
@@ -3028,6 +3028,15 @@ def capture(args: argparse.Namespace) -> int:
                         page.get_by_role('button',name='Run 2 Backtests',exact=True).wait_for(timeout=args.timeout_ms)
                         page.get_by_role('button',name='Ticker preset',exact=True).click()
                         page.get_by_role('option',name='SUGP',exact=True).click()
+                        page.get_by_role('button',name='Ticker preset',exact=True).click()
+                        page.get_by_role('option',name='Custom tickers',exact=True).click()
+                        page.get_by_label('Tickers',exact=True).fill('JUNS')
+                        page.get_by_role('button',name='Level book',exact=True).filter(has_text='Swing book v6 - daily survivors · JUNS').wait_for(timeout=args.timeout_ms)
+                        page.get_by_label('Tickers',exact=True).fill('UNKNOWN')
+                        page.wait_for_function("!document.querySelector('button[aria-label=\"Level book\"]').textContent.includes('JUNS')")
+                        page.get_by_role('button',name='Ticker preset',exact=True).click()
+                        page.get_by_role('option',name='SUGP',exact=True).click()
+                        page.get_by_role('button',name='Level book',exact=True).filter(has_text='Swing book v6 - daily survivors · SUGP').wait_for(timeout=args.timeout_ms)
                     if args.swing_book_selector and scenario['page']=='backtest-trading':
                         page.get_by_role('button',name='Level book',exact=True).click()
                         for ticker in ('JUNS','SUGP'):
@@ -3035,7 +3044,7 @@ def capture(args: argparse.Namespace) -> int:
                             if args.swing_book_version==5:label+=' · scored S/R'
                             if args.swing_book_version==6:label+=' - daily survivors'
                             prefix=re.escape(label+' · '+ticker+' · ').replace('/',r'\/')
-                            page.get_by_role('option',name=re.compile('^'+prefix)).wait_for(state='visible',timeout=args.timeout_ms)
+                            page.get_by_role('option',name=re.compile('^'+prefix)).first.wait_for(state='visible',timeout=args.timeout_ms)
                     page.screenshot(path=str(screenshot_path), full_page=True)
                     issues: list[str] = []
                     if hindsight_issue:

@@ -1,26 +1,28 @@
 """Build an independent historical candidate through configuration authority."""
 from copy import deepcopy
 
-from src.trading_runtime.structural_recovery import CONTRACT, DEFAULTS, LIQUIDITY
+from src.trading_runtime.structural_recovery import CONTRACT, DEFAULTS, LIQUIDITY, LIQUIDITY_181
 
 PROFILE_ID = 'v6-structural-support-recovery'
 LABEL = 'V6 structural support recovery'
 
 
-def build(base):
+def build(base, *, align_179=False):
+    liquidity = LIQUIDITY_181 if align_179 else LIQUIDITY
+    label = LABEL + (' - 179 gates' if align_179 else '')
     payload = deepcopy(base)
     canvas = payload.pop('canvas')
     # The balanced profile supplies configuration schema, not trading rules.
     template = next(p for p in payload['strategy']['profiles'] if p['profile_id']=='long-momentum-balanced')
     profile = deepcopy(template)
-    profile.update(profile_id=PROFILE_ID, name=LABEL, revision=1, derived_from_profile_id='',
+    profile.update(profile_id=PROFILE_ID, name=label, revision=1, derived_from_profile_id='',
         origin='user', editable=True, protected=False, publication_status='draft',
         description='Independent V6 support recovery. Completed 1s structural confirmation, mandatory fresh liquidity/spread/volume gates, structural stop and next-resistance full target. No MACD gate. Backtest only; select a certified V6 book.')
     profile['action_policy_ids'] = []
     from src.trading_runtime.strategy_engine import default_long_momentum_parameters
     parameters = default_long_momentum_parameters(revision=profile['definition_revision'])
     parameters.update(structural_recovery_contract=CONTRACT, structural_recovery=dict(DEFAULTS),
-        structural_detector_settings={}, liquidity_admission=dict(LIQUIDITY),
+        structural_detector_settings={}, liquidity_admission=dict(liquidity),
         require_open_macd_for_entry=False,require_positive_macd_signal_for_entry=False)
     parameters['sizing'].update(request_mode='risk_fraction',request_value=DEFAULTS['risk_fraction'])
     parameters['reentry'].update(enabled=True,cooldown_ms=0,unlimited_attempts=True,
@@ -60,18 +62,18 @@ def build(base):
     source = next(p for p in payload['run_plans']['plans'] if p['run_plan_id']=='balanced-replay')
     plan = deepcopy(source)
     plan_id = PROFILE_ID+'-backtest'
-    plan.update(run_plan_id=plan_id,profile_id=PROFILE_ID,name=LABEL,description=profile['description'],
+    plan.update(run_plan_id=plan_id,profile_id=PROFILE_ID,name=label,description=profile['description'],
         compiled=False,allowed_environments=['backtest'],signal_stream_ids=[],watchlist_ids=[])
     quality_id=PROFILE_ID+'-tradability'
     conditions=[]
     for index,(field,comparator,threshold) in enumerate([
-        ('market.last_price','greater_or_equal',LIQUIDITY['minimum_price']),
-        ('market.last_price','less_or_equal',LIQUIDITY['maximum_price']),
-        ('market.session_dollar_volume','greater_or_equal',LIQUIDITY['minimum_session_dollar_volume']),
-        ('market.volume','greater_or_equal',LIQUIDITY['minimum_session_share_volume']),
-        ('market.trade_rate_10s','greater_or_equal',LIQUIDITY['minimum_trade_rate_10s']),
-        ('market.trade_rate_60s','greater_or_equal',LIQUIDITY['minimum_trade_rate_60s']),
-        ('market.spread_bps','less_or_equal',LIQUIDITY['maximum_admission_spread_bps'])]):
+        ('market.last_price','greater_or_equal',liquidity['minimum_price']),
+        ('market.last_price','less_or_equal',liquidity['maximum_price']),
+        ('market.session_dollar_volume','greater_or_equal',liquidity['minimum_session_dollar_volume']),
+        ('market.volume','greater_or_equal',liquidity['minimum_session_share_volume']),
+        ('market.trade_rate_10s','greater_or_equal',liquidity['minimum_trade_rate_10s']),
+        ('market.trade_rate_60s','greater_or_equal',liquidity['minimum_trade_rate_60s']),
+        ('market.spread_bps','less_or_equal',liquidity['maximum_admission_spread_bps'])]):
         conditions.append(dict(condition_id=f'tradability-{index}',enabled=True,left_source_id=field,
             left_field_ref=f'data.{field}@1:value',right_source_id='',comparator=comparator,value=threshold))
     payload['market_discovery']['rule_sets'].append(dict(rule_set_id=quality_id,name='V6 tradability',
@@ -111,19 +113,22 @@ def build(base):
     return payload,canvas,plan_id
 
 
-def create(expected_revision=180):
+def create(expected_revision=181):
+    if expected_revision not in (180,181):
+        raise ValueError('Only the original 180 and revised 181 candidates are supported')
+    label = LABEL + (' - 179 gates' if expected_revision == 181 else '')
     from src.backend.trading_configuration_service import configuration_base, create_test_candidate
     from src.backend.trading_runtime_service import trading_journal
     existing=trading_journal().trading_configuration_candidate_summaries()
     match=next((c for c in existing if c['candidate_revision']==expected_revision),None)
     if match:
-        if match['label'] != LABEL:
+        if match['label'] != label:
             raise ValueError(f'Candidate {expected_revision} is already occupied; refusing overwrite')
         return match
     if (max((c['candidate_revision'] for c in existing),default=0)+1) != expected_revision:
         raise ValueError('Next candidate number differs; refusing to create a different revision')
-    payload,canvas,plan_id=build(configuration_base())
-    result=create_test_candidate(label=LABEL,canvas_revision=canvas['revision'],canvas_profile=canvas['profile'],
+    payload,canvas,plan_id=build(configuration_base(), align_179=expected_revision == 181)
+    result=create_test_candidate(label=label,canvas_revision=canvas['revision'],canvas_profile=canvas['profile'],
         configuration=payload,run_plan_id=plan_id,strategy_profile_id=PROFILE_ID)
     if result['candidate_revision'] != expected_revision:
         raise RuntimeError('Concurrent candidate creation changed the revision; inspect saved candidate')

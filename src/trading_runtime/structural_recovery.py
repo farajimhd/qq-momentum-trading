@@ -19,6 +19,9 @@ LIQUIDITY = dict(enabled=True, latched=False, minimum_price=2., maximum_price=50
     minimum_session_dollar_volume=1_000_000., minimum_session_share_volume=100_000.,
     minimum_trade_rate_10s=5., minimum_trade_rate_60s=5., maximum_admission_spread_bps=60.,
     maximum_current_spread_bps=60., maximum_spread_bps=60.)
+LIQUIDITY_181 = dict(LIQUIDITY, latched=True, minimum_trade_rate_10s=1.,
+    minimum_trade_rate_60s=.5, maximum_current_spread_bps=100., maximum_spread_bps=100.,
+    minimum_current_trade_rate_10s=5., minimum_current_trade_rate_60s=5.)
 
 
 def configure(p):
@@ -38,8 +41,12 @@ def configure(p):
     p['structural_detector_settings'] = dict(p.get('structural_detector_settings') or {})
     DetectorSettings(**p['structural_detector_settings'])
     liquidity = dict(LIQUIDITY, **p.get('liquidity_admission', {}))
-    if not liquidity['enabled'] or liquidity.get('latched'):
-        raise ValueError('Structural recovery requires unlatched tradability gates')
+    if not liquidity['enabled'] or type(liquidity.get('latched')) is not bool:
+        raise ValueError('Structural recovery requires enabled tradability gates and an explicit latch policy')
+    if liquidity['latched'] and any(type(liquidity.get(k)) not in (int,float)
+            or not isfinite(liquidity[k]) or liquidity[k] <= 0
+            for k in ('minimum_current_trade_rate_10s','minimum_current_trade_rate_60s')):
+        raise ValueError('Latched admission requires positive current trade-rate gates')
     for key in LIQUIDITY:
         if key not in ('enabled','latched') and (type(liquidity[key]) not in (int,float)
                 or not isfinite(liquidity[key]) or liquidity[key] <= 0):
@@ -84,8 +91,8 @@ def _source(o, key, age):
         return None
 
 
-def tradability(o, p, row):
-    from .strategy_engine import _liquidity_admission_result
+def tradability(o, p, row, state=None):
+    from .strategy_engine import _liquidity_admission_result, _current_execution_quality_result
     s = p['structural_recovery']
     admitted, evidence = _liquidity_admission_result(o, p['liquidity_admission'])
     checks = dict(evidence['checks'])
@@ -98,8 +105,26 @@ def tradability(o, p, row):
     volume = row.get('candle', {}).get('volume')
     checks['completed_candle_volume'] = volume is not None and isfinite(volume) and volume >= s['minimum_candle_volume']
     checks['detector_fresh'] = 0 <= o.observed_at.timestamp()-row.get('effective_at',0) <= s['maximum_source_age_ms']/1000
+    if p['liquidity_admission']['latched']:
+        if state is None:
+            raise ValueError('Latched admission requires assignment state')
+        session = o.observed_at.astimezone(NY).date().isoformat()
+        if state.get('recovery_admission_session') != session:
+            state.pop('recovery_admission',None)
+            state['recovery_admission_session'] = session
+        freshness = {k:v for k,v in checks.items() if k.endswith('_fresh')
+            or k in ('fresh_uncrossed_quote','completed_candle_volume')}
+        actual_admission_spread = checks['fresh_uncrossed_quote'] and (
+            (o.ask-o.bid)/((o.ask+o.bid)/2)*10000 <= p['liquidity_admission']['maximum_admission_spread_bps'])
+        if admitted and actual_admission_spread and all(freshness.values()) and not state.get('recovery_admission'):
+            state['recovery_admission'] = dict(observed_at=o.observed_at.isoformat(), **deepcopy(evidence))
+        _, current = _current_execution_quality_result(o,p['liquidity_admission'])
+        checks = dict(current['checks'], **freshness,
+            admission_latched=bool(state.get('recovery_admission')),
+            current_spread=checks['current_spread'] and current['checks']['current_spread'])
+        evidence['admission'] = deepcopy(state.get('recovery_admission'))
     return all(checks.values()), dict(facts=evidence['facts'], checks=checks,
-        failed=[k for k,v in checks.items() if not v])
+        admission=evidence.get('admission'), failed=[k for k,v in checks.items() if not v])
 
 
 def update_setup(o, state, row, settings):
@@ -150,7 +175,7 @@ def evaluate(host, assignment, o, p, state):
         state['recovery_book'] = deepcopy(book)
     if row.get('contract') == VERSION and row.get('effective_at',float('inf')) <= o.observed_at.timestamp():
         update_setup(o,state,row,s)
-    ready, quality = tradability(o,p,row)
+    ready, quality = tradability(o,p,row,state)
     evidence['tradability'] = quality
     setup = state.get('recovery_setup') or {}
     evidence['setup'] = deepcopy(setup)

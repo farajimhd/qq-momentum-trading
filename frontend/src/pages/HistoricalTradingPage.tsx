@@ -9,7 +9,7 @@ import { TradingLaunchEvidence, TradingModeLaunch, TradingModeSelectField } from
 import { usePollingTask } from "../app/hooks/usePollingTask";
 import type { CanvasReplayRun } from "../app/replayRun";
 import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
-import { DEFAULT_BACKTEST_DATE, presetTickers, tickerWindow, v5BookFor, type BacktestTickerPreset } from './backtestPresets';
+import { DEFAULT_BACKTEST_DATE, presetTickers, tickerWindow, v6BookFor, type BacktestTickerPreset } from './backtestPresets';
 
 type HistoricalCheck = {
   action?: { hash?: string; label?: string };
@@ -136,7 +136,6 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     if (tickerPreset === 'custom') return;
     const tickers = presetTickers(tickerPreset, sessionDate, structureBooks);
     setTickerInput(tickers.join(', '));
-    setStructureBook(tickers.length === 1 ? v5BookFor(tickers[0],sessionDate,structureBooks)?.id ?? '' : '');
   }, [tickerPreset, sessionDate, structureBooks]);
   function chooseTickerPreset(value: string) {
     setTickerPreset(value as BacktestTickerPreset);
@@ -171,6 +170,11 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [warmingIndicators, setWarmingIndicators] = useState(false);
   const parsedTickers = useMemo(() => parseBacktestTickers(tickerInput), [tickerInput]);
   const normalizedTickers = parsedTickers.tickers;
+  useEffect(() => {
+    const selected = parseBacktestTickers(tickerInput);
+    setStructureBook(selected.invalid.length === 0 && selected.tickers.length === 1
+      ? v6BookFor(selected.tickers[0], sessionDate, structureBooks)?.id ?? '' : '');
+  }, [tickerInput, sessionDate, structureBooks]);
   const tickerReady = normalizedTickers.length > 0 && normalizedTickers.length <= 100 && parsedTickers.invalid.length === 0;
   const periodReady = startTime >= "04:00:00" && endTime <= "20:00:00" && startTime < endTime;
   const anchorDate = nextIsoDate(sessionDate);
@@ -346,9 +350,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     setError("");
     try {
       const jobs = batchPreset ? normalizedTickers.map(ticker => ({tickers:[ticker],
-        book:v5BookFor(ticker,sessionDate,structureBooks)?.id ?? '', ...tickerWindow(ticker)}))
+        book:v6BookFor(ticker,sessionDate,structureBooks)?.id ?? '', ...tickerWindow(ticker)}))
         : [{tickers:normalizedTickers,book:structureBook,start:startTime,end:endTime}];
-      if (tickerPreset !== 'custom' && jobs.some(job => !job.book)) throw Error('A matching V5 book is required for every preset ticker.');
+      if (tickerPreset !== 'custom' && jobs.some(job => !job.book)) throw Error('A matching V6 book is required for every preset ticker.');
       const createdRuns: BacktestRun[] = [];
       for (const job of jobs) {
         const created = await api<BacktestRun>("/api/trading/backtest/runs", {
@@ -433,7 +437,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       canvasId="main"
       manager={false}
       modeControls={<div className="historical-canvas-run-state historical-backtest-progress">
-        {batchRuns.length > 1 ? <TradingModeSelectField label="Batch run" help="Each ticker has its own portfolio, time window and V5 book." value={run.run_id}
+        {batchRuns.length > 1 ? <TradingModeSelectField label="Batch run" help="Each ticker has its own portfolio, time window and V6 book." value={run.run_id}
           options={batchRuns.map(item => ({value:item.run_id,label:(item.tickers ?? []).join(', ')}))}
           onChange={id => { setRun(null); setSelectedRunId(id); persistSelectedRun(id); }} /> : null}
         <div className="historical-backtest-progress-actions"><button aria-label="Return to Backtest setup" className="button secondary compact" onClick={returnToSetup} type="button"><ArrowLeft size={14} /> Setup</button>{!terminal ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}</div>
@@ -476,15 +480,23 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     summary: loadingOptions ? "Loading saved candidates and compatible strategies." : optionsError || "Select a saved Test Candidate and strategy. Create a candidate in Test Candidates if none are available.",
     action: !configurationOptions?.candidates.length && !loadingOptions ? { hash: "#revision-configuration", label: "Test Candidates" } : undefined,
   };
-  const booksReady = tickerPreset === 'custom' || (normalizedTickers.length > 0 && normalizedTickers.every(ticker => Boolean(v5BookFor(ticker,sessionDate,structureBooks))));
-  const launchChecks = [configurationCheck, warmupCheck, {id:'preset_books',label:'V5 book coverage',required:true,
-    status:booksReady ? 'ready' as const : 'blocked' as const, summary:booksReady ? 'Matching books available.' : 'A published V5 book covering this date is required for each selected ticker.',evidence:normalizedTickers}, ...(currentPreflight ? preflight?.checks ?? [] : [])];
+  const requiresV6 = selectedPlan?.profile_id === 'v6-structural-support-recovery';
+  const selectedBook = structureBooks.find(book => book.id === structureBook);
+  const booksReady = batchPreset
+    ? normalizedTickers.length > 0 && normalizedTickers.every(ticker => Boolean(v6BookFor(ticker,sessionDate,structureBooks)))
+    : selectedBook
+      ? normalizedTickers.length === 1 && selectedBook.ticker === normalizedTickers[0]
+        && selectedBook.start <= sessionDate && sessionDate <= selectedBook.end
+        && (!requiresV6 || selectedBook.version === 'causal-swing-closing-book-6')
+      : tickerPreset === 'custom' && !requiresV6;
+  const launchChecks = [configurationCheck, warmupCheck, {id:'preset_books',label:'V6 book coverage',required:true,
+    status:booksReady ? 'ready' as const : 'blocked' as const, summary:booksReady ? 'Matching books available.' : 'A published V6 book covering this date is required for each selected ticker.',evidence:normalizedTickers}, ...(currentPreflight ? preflight?.checks ?? [] : [])];
   const launchReady = Boolean(booksReady && currentPreflight && selectedPlan && !loadingOptions && !optionsError && preflight?.strategy_run_ready && indicatorWarmup?.status === "ready" && tickerReady && periodReady && resolvedSessionMatches);
 
   return (
     <TradingModeLaunch
       actionLabel={batchPreset ? `Run ${normalizedTickers.length} Backtests` : 'Run Backtest'}
-      actionSummary={batchPreset ? `Creates one separate portfolio run per ticker on ${sessionDate}, each with its V5 book. SUGP: 04:00–04:30 ET; JUNS: 07:00–07:30 ET; other covered tickers: 04:00–04:30 ET.` : launchReady ? <><strong>{normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and strategy revision <strong>{selectedPlan?.strategy_revision}</strong> (candidate {preflight?.configuration_revision}).</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : warmingIndicators ? "Preparing persisted 1-second indicator warm-ups." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
+      actionSummary={batchPreset ? `Creates one separate portfolio run per ticker on ${sessionDate}, each with its V6 book. SUGP: 04:00–04:30 ET; JUNS: 07:00–07:30 ET; other covered tickers: 04:00–04:30 ET.` : launchReady ? <><strong>{normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and strategy revision <strong>{selectedPlan?.strategy_revision}</strong> (candidate {preflight?.configuration_revision}).</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : warmingIndicators ? "Preparing persisted 1-second indicator warm-ups." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
       busy={creating}
       checking={checking || warmingIndicators || loadingOptions}
       checkingLabel={loadingOptions ? "Loading strategy settings…" : warmingIndicators ? "Preparing indicators…" : "Checking strategy and services…"}
@@ -515,19 +527,19 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               />
               <TradingModeSelectField label="Ticker preset" searchable value={tickerPreset} onChange={chooseTickerPreset}
                 options={[{value:'SUGP',label:'SUGP'},{value:'JUNS',label:'JUNS'},
-                  {value:'both',label:'SUGP and JUNS'},{value:'all',label:'All tickers',description:'All tickers with a published V5 book for this date'},
-                  {value:'custom',label:'Custom tickers'}]} help={batchPreset ? 'Separate runs use the individual ticker windows and books listed below.' : 'Select a ticker to fill its time window and V5 book automatically.'} />
-              {tickerPreset === 'custom' ? <label className="configuration-field"><span>Tickers</span><textarea value={tickerInput} onChange={event => setTickerInput(event.target.value.toUpperCase())} /><small>Up to 100 symbols, separated by commas or spaces.</small></label> : null}
-              {batchPreset ? <div className="configuration-help">{normalizedTickers.map(ticker => <p key={ticker}>{ticker} · {tickerWindow(ticker).start.slice(0,5)}–{tickerWindow(ticker).end.slice(0,5)} ET · {v5BookFor(ticker,sessionDate,structureBooks) ? 'V5 book selected' : 'V5 book unavailable'}</p>)}</div> : null}
+                  {value:'both',label:'SUGP and JUNS'},{value:'all',label:'All tickers',description:'All tickers with a published V6 book for this date'},
+                  {value:'custom',label:'Custom tickers'}]} help={batchPreset ? 'Separate runs use the individual ticker windows and books listed below.' : 'Select a ticker to fill its time window and V6 book automatically.'} />
+              {tickerPreset === 'custom' ? <label className="configuration-field"><span>Tickers</span><textarea aria-label="Tickers" value={tickerInput} onChange={event => setTickerInput(event.target.value.toUpperCase())} /><small>Up to 100 symbols, separated by commas or spaces.</small></label> : null}
+              {batchPreset ? <div className="configuration-help">{normalizedTickers.map(ticker => <p key={ticker}>{ticker} · {tickerWindow(ticker).start.slice(0,5)}–{tickerWindow(ticker).end.slice(0,5)} ET · {v6BookFor(ticker,sessionDate,structureBooks) ? 'V6 book selected' : 'V6 book unavailable'}</p>)}</div> : null}
               {batchRuns.length ? <div className="configuration-help">Created runs: {batchRuns.map(item => <button type="button" className="button secondary compact" key={item.run_id} onClick={() => {setSelectedRunId(item.run_id);persistSelectedRun(item.run_id);}}>{item.tickers?.join(', ')} · {item.run_id.slice(0,8)}</button>)}</div> : null}
               <label className="configuration-field"><span>Trading date</span><input onChange={(event) => setSessionDate(event.target.value)} type="date" value={sessionDate} /><small>Must be an exchange trading session; weekends and holidays fail closed.</small></label>
               <TradingModeSelectField disabled={batchPreset} help="Presets bound the decision window while retaining causal warm-up evidence." label="Time period" onChange={(value) => applyPeriodPreset(value as BacktestPeriodPreset, setPeriodPreset, setStartTime, setEndTime)} options={[{ label: "Premarket · 04:00–09:30 ET", value: "premarket" }, { label: "Regular session · 09:30–16:00 ET", value: "regular" }, { label: "Whole extended session · 04:00–20:00 ET", value: "extended" }, { label: "Custom period", value: "custom" }]} value={periodPreset} />
               <label className="configuration-field"><span>Start time · ET</span><input disabled={batchPreset} aria-label="Start time" max="19:59:59" min="04:00:00" onChange={(event) => { setPeriodPreset("custom"); setStartTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={startTime} /><small>No new strategy actions are admitted before this time.</small></label>
               <label className="configuration-field"><span>End time · ET</span><input disabled={batchPreset} aria-label="End time" max="20:00:00" min="04:00:01" onChange={(event) => { setPeriodPreset("custom"); setEndTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={endTime} /><small>The run stops at this exact New York boundary.</small></label>
               <label className="configuration-field"><span>Initial cash</span><input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} /><small>Applied to the isolated simulated account for the full run.</small></label>
-              <TradingModeSelectField disabled={batchPreset} label="Level book" help={batchPreset ? "Each run loads its ticker’s date-covered V5 book and advances it causally." : structureBook ? "Loads the preceding closing book and advances it causally during the session. V5/V6 grade both support and resistance areas; V6 carries only selected daily survivors. Chart filters are independent of strategy rules." : "Uses the current v18 structural level contract. Select a validation book to review the new swing levels."}
+              <TradingModeSelectField disabled={batchPreset} label="Level book" help={batchPreset ? "Each run loads its ticker’s date-covered V6 book and advances it causally." : structureBook ? "Loads the preceding closing book and advances it causally during the session. V5/V6 grade both support and resistance areas; V6 carries only selected daily survivors. Chart filters are independent of strategy rules." : "Uses the current v18 structural level contract. Select a validation book to review the new swing levels."}
                 value={structureBook} onChange={(value) => { setTickerPreset('custom'); setStructureBook(value); const book = structureBooks.find((row) => row.id === value); if (book) setTickerInput(book.ticker); }}
-                options={[{ label: batchPreset ? "Automatic V5 book per ticker" : "Current v18", value: "" }, ...structureBooks.map((row) => ({ label: `${row.version === "causal-swing-closing-book-6" ? "Swing book v6 - daily survivors" : row.version === "causal-swing-closing-book-5" ? (row.selection_contract === "symmetric-level-evidence-selection-2" ? "Swing book v5 · scored S/R" : "Swing book v5 · legacy") : row.version === "causal-swing-closing-book-4" ? "Swing book v4" : row.version === "causal-swing-closing-book-3" ? "Swing book v3" : row.version === "causal-swing-closing-book-2" ? "Swing book v2" : row.version === "causal-swing-closing-book-1" ? "Swing book" : "Experimental ClickHouse"} · ${row.ticker} · ${row.start}–${row.end}`, value: row.id }))]} />
+                options={[{ label: batchPreset ? "Automatic V6 book per ticker" : "Current v18", value: "" }, ...structureBooks.map((row) => ({ label: `${row.version === "causal-swing-closing-book-6" ? "Swing book v6 - daily survivors" : row.version === "causal-swing-closing-book-5" ? (row.selection_contract === "symmetric-level-evidence-selection-2" ? "Swing book v5 · scored S/R" : "Swing book v5 · legacy") : row.version === "causal-swing-closing-book-4" ? "Swing book v4" : row.version === "causal-swing-closing-book-3" ? "Swing book v3" : row.version === "causal-swing-closing-book-2" ? "Swing book v2" : row.version === "causal-swing-closing-book-1" ? "Swing book" : "Experimental ClickHouse"} · ${row.ticker} · ${row.start}–${row.end}`, value: row.id }))]} />
               {['causal-swing-closing-book-5','causal-swing-closing-book-6'].includes(structureBooks.find((row) => row.id === structureBook)?.version ?? '')
                 ? <p className="configuration-help">V6 and new V5 books select support and resistance areas with evidence score ≥30/100; legacy books retain unscored supports. It does not use p_norm or a prior-close price cutoff. Display score and opacity are configurable in the chart indicator.</p>
                 : structureBook ? <label className="configuration-field"><span>Strategy minimum p_norm</span><input aria-label="Strategy minimum p_norm" type="range" min={0} max={1} step={0.01} value={minimumPNorm} onChange={(event) => setMinimumPNorm(Number(event.target.value))} /><output>{minimumPNorm.toFixed(2)}</output><small>Applies to entry, structural stops and resistance targets. Frozen prior-session normalization; default price range is 0 to twice the prior close.</small></label> : null}

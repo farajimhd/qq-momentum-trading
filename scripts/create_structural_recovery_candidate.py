@@ -1,4 +1,4 @@
-"""Create Candidate 180 through the normal configuration authority."""
+"""Create Candidate 181 (or verify original 180) through the normal configuration authority."""
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 import sys
@@ -9,10 +9,13 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 
 def main():
     from src.backend.structural_recovery_candidate import create
-    candidate=create()
+    import argparse
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--revision',type=int,choices=(180,181),default=181)
+    candidate=create(parser.parse_args().revision)
     print(f"Candidate {candidate['candidate_revision']} ready: {candidate['label']}")
     print(f"ID: {candidate['candidate_id']}")
-    print('Backtest: select Candidate 180 and a certified V6 book for the test ticker.')
+    print(f"Backtest: select Candidate {candidate['candidate_revision']} and a certified V6 book for the test ticker.")
 
 
 if __name__=='__main__':

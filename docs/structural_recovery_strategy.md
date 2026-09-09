@@ -9,7 +9,7 @@ use Candidate 179, MACD episodes, VWAP clearance or episode-high entry gates.
 Select Candidate **180 — V6 structural support recovery**, its matching Run Plan,
 one ticker, and that ticker's certified **V6** experimental swing book. Missing V6,
 wrong book version, mismatched ticker or uncovered dates fail preflight. Candidate
-creation uses `scripts/create_structural_recovery_candidate.py`; it refuses to
+creation uses `scripts/create_structural_recovery_candidate.py --revision 180`; it refuses to
 overwrite an occupied candidate number. No live or paper deployment is created.
 
 ## Rules
@@ -56,3 +56,26 @@ This first policy uses a fixed structural stop and next-resistance target. Volum
 divergence and progression remain visible evidence; they do not automatically
 extend targets, tighten stops or imply reversal probabilities. HOD is not an entry
 requirement. Profitability and parameter robustness require the user's backtests.
+
+## Candidate 181: admission and execution gates aligned with 179
+
+Candidate 181 retains the independent structural entry/exit policy above. It
+changes only tradability to a two-stage policy based on saved Candidate 179:
+
+- Admission: $2–$50, $1M session dollar volume, 100,000 session shares,
+  at least 1 trade/second over 10s and 0.5 over 60s, spread at most 60 bps.
+- Admission is remembered for the current exchange session. It does not authorize
+  an entry by itself: every acquisition still requires current trade rates of at
+  least 5/second over both 10s and 60s, and spread at most 100 bps.
+  The user chose to retain this stricter 100-bps limit after comparison with
+  Candidate 179's selected strategy, which allows 200 bps for current execution.
+- The structural strategy retains its quote/activity freshness checks, positive
+  signal-candle volume, structural confirmation expiry, buy ceiling and protected
+  execution. No MACD/VWAP entry condition is imported from 179.
+
+Create or verify 181 with `scripts/create_structural_recovery_candidate.py`.
+Original Candidate 180 remains unchanged for reproducible comparisons.
+Backtest automatically selects the date-covered V6 book for the chosen ticker,
+including custom ticker input and each ticker in batch presets. A ticker/date
+change clears a stale book selection; the structural strategy cannot launch
+without a matching V6 book.
