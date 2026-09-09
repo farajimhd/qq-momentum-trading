@@ -25,6 +25,25 @@ def readonly(path):
     return sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)
 
 
+def check_completed_range(gate, frames, session_start, requested):
+    """Recompute the recorded entry range from independent prepared candles."""
+    context = gate.get('entry_range_context')
+    if not context:
+        return dict(status='not_recorded')
+    at = (gate.get('entry_confirmation') or {}).get('at')
+    if at is None or context.get('as_of') != at or at > requested:
+        return dict(status='failed', reason='range_confirmation_time_mismatch')
+    start = max(session_start, at-context['seconds'])
+    prior = [bar for bar, _ in frames if start <= timestamp(bar['bar_end']) < at]
+    high = max((bar['high'] for bar in prior), default=None)
+    matches = (context.get('ready') is True and context.get('coverage_start') == session_start
+        and context.get('window_start') == start and context.get('high') == high
+        and context.get('samples') == len(prior) and gate.get('entry_range_high') == high
+        and gate.get('entry_range_samples') == len(prior))
+    return dict(status='passed' if matches else 'failed', expected_high=high,
+        expected_samples=len(prior), expected_window_start=start, confirming_candle_excluded=True)
+
+
 def audit(results, runtime_root):
     from src.backend.replay_run_service import _prepared_frame_cache_path, _STRATEGY_INDICATOR_FIELDS
     from src.trading_runtime.journal_evidence import decode_evidence
@@ -94,6 +113,9 @@ def audit(results, runtime_root):
             entry_gate_passed=metadata.get('reference_price',0) > gate.get('entry_high_threshold',float('inf')),
             initial_selection=selection)
         flags = []
+        row['completed_range_audit'] = check_completed_range(gate, frames, timestamp(run['session_start']), requested)
+        if row['completed_range_audit']['status'] == 'failed':
+            flags.append('canonical_completed_range_mismatch')
         if float(row['net_pnl'] or 0) < 0 and end-start < 2:
             flags.append('loss_within_two_seconds')
         if float(row['gross_pnl'] or 0) >= 0 and float(row['net_pnl'] or 0) < 0:
@@ -124,6 +146,8 @@ def audit(results, runtime_root):
         under_two_seconds=sum(r['duration_seconds']<2 for r in rows),
         closed_equity_drawdown=drawdown, funding_defers=funding_defers,
         entry_gate_failures=sum(not r['entry_gate_passed'] for r in rows),
+        completed_range_checks=sum(r['completed_range_audit']['status'] != 'not_recorded' for r in rows),
+        completed_range_failures=sum(r['completed_range_audit']['status'] == 'failed' for r in rows),
         approval_links_missing=sum(r['portfolio_approval'] is None for r in rows),
         approved_quantity_exceeded=sum(r['approved_quantity_exceeded'] is True for r in rows),
         full_acquisitions=sum(r['acquired_fraction_of_approved'] is not None
