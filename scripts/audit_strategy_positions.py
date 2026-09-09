@@ -26,6 +26,15 @@ def readonly(path):
     return sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)
 
 
+def linked_entry(position, entries):
+    """Resolve the entry through the lifecycle's original protection intent."""
+    intent_ids = {event.get('source_intent_id') for event in position.get('protection_timeline', [])}
+    matches = [entry for entry in entries if entry['signal_id'] in intent_ids]
+    if len(matches) != 1:
+        raise ValueError('Position requires exactly one identity-linked entry decision')
+    return matches[0]
+
+
 def entry_fill_location(position, executions, threshold):
     """Describe actual acquisition prices without redefining signal validity."""
     linked = [executions[key] for key in position['execution_ids']]
@@ -118,9 +127,9 @@ def audit(results, runtime_root):
         start = timestamp(position['opened_at'])
         end = timestamp(position['closed_at'] or run['session_end'])
         requested = timestamp(position.get('requested_at') or position['opened_at'])
-        entry = min(entries, key=lambda d: abs(timestamp(d['event_time']) - requested))
+        entry = linked_entry(position, entries)
         if abs(timestamp(entry['event_time']) - requested) > .01:
-            raise ValueError(f'Position {number} cannot be linked to its entry decision')
+            raise ValueError(f'Position {number} entry identity and request time disagree')
         matched_exits = [d for d in exits if requested <= timestamp(d['event_time']) <= end]
         inside = [b for b, _ in frames if timestamp(b['bar_start']) >= start and timestamp(b['bar_end']) <= end]
         prior = [(b, i) for b, i in frames if timestamp(b['bar_end']) <= requested]

@@ -16,6 +16,7 @@ settings. Omitting it preserves the earlier episode policy.
 | `rejection_from_below` | true | Arm a resistance attempt only when observed price approaches its frozen band from below. |
 | `rejection_closes` | 1 | Consecutive completed 1-second closes below the rejection boundary. |
 | `rejection_atr_multiple` | 0 | Subtract this multiple of the last completed ATR from the contacted lower band; freeze it at contact. |
+| `rejection_buffer_requires_armed_trail` | false | Permit the rejection ATR buffer only when profit protection was already armed on causal completed-close evidence at contact. Otherwise use the lower band itself. Requires a positive rejection buffer and profit trail. |
 | `stop_atr_multiple` | 0 | Keep a ratcheted stop at least this many completed-bar ATR units below a confirmed broken resistance's lower band. |
 | `take_profit_fraction` | 1 | Fraction attached to the structural target. The remainder keeps its stop and cannot inherit the target. Zero makes the entire position a protected runner without a fixed profit order; structural entry eligibility is unchanged. Requires an explicit protection profile. |
 | `entry_on_close` | false | Authorize entries only at a completed 1-second close, strictly above prior episode candle bodies plus the configured offset. |
@@ -51,6 +52,9 @@ Touching a resistance is not a completed break. A close above its upper bound
 clears the attempt. Rejection contacts and gap averages belong to the position
 lifecycle. Volatility-dependent entry fails closed if completed ATR is unavailable.
 Existing protective stops remain active when new evidence is unavailable.
+When earned rejection tolerance is enabled, the boundary and prior arming witness
+freeze at the start of each attempt. Later progress cannot widen that attempt's
+boundary. Arming means confirmed progress, not a guarantee of locked profit.
 Planned partial targets do not latch the lifecycle's liquidation cause. A later
 stop or managed exit owns that cause and its applicable re-entry policy.
 
@@ -72,6 +76,9 @@ the new fee field to zero and remain subject to normal reauthorization.
 Unchanged denied reprices use the existing bounded retry interval. Changed prices
 or remaining quantities can be reconsidered promptly. A capacity denial records
 the limiting portfolio constraints; it never silently increases risk limits.
+An entry-only gate expiring after approval does not cancel this persistent
+acquisition. Actual later fills can be below an earlier valid signal threshold;
+the audit reports that price relationship separately from entry validity.
 
 ## Reproducible workflow
 
@@ -92,7 +99,9 @@ the limiting portfolio constraints; it never silently increases risk limits.
   existing matching behavior. A delayed order fills only on a later eligible
   matching event or explicit current-quote match, never on a future quote.
 - `scripts/audit_strategy_positions.py` joins every canonical lifecycle to its
-  entry decision and Portfolio approval by identity, hydrates verified journal
+  entry decision through the protection timeline's original intent ID and then
+  to Portfolio approval by that identity. Missing or ambiguous links fail closed;
+  request timestamps are consistency checks, not the matching authority. It hydrates verified journal
   evidence, checks entry thresholds and approved quantities, and measures costs
   and closed-equity drawdown. Whole-candle excursions omit partial holding bars.
   It resolves the prepared candle window from the pinned strategy's actual
