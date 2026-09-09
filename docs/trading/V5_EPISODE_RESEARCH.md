@@ -98,6 +98,9 @@ the limiting portfolio constraints; it never silently increases risk limits.
   It resolves the prepared candle window from the pinned strategy's actual
   evaluation cutoff, which can precede the replay end. Hindsight MACD labels
   stop at this recorded candle-coverage boundary.
+- `scripts/recover_strategy_audit.py` recovers a failed reporting step from a
+  matching completed replay and manifest. It preserves the original failure,
+  records input/output hashes, and does not execute another replay.
 - `scripts/run_strategy_batch.py` executes a frozen JSON list of experiments
   sequentially, reusing preparation caches within one process. Each row contains
   a unique directory `name`, `candidate`, `plan`, `baseline_run` list, and optional
