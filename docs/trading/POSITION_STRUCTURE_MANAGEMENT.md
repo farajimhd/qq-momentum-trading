@@ -186,6 +186,13 @@ exit still requires a newer completed candle. Strategy stop validation uses
 the reference price, not the bid; OMS owns execution against the current book.
 Initial entries and earlier candidates retain their existing rules.
 
+OMS can reject an entry whose stop is already triggered by the executable bid.
+This pre-submission rejection is explicitly typed: the runtime releases the
+reservation, records the rejection, rearms the strategy, and continues. No
+broker order was submitted. Later qualifying quotes can retry; unexpected or
+uncertain submission errors still fail normally. The strategy's structural
+anchor is never shifted to bypass the OMS check.
+
 Focused tests cover causal pivot confirmation, ordinary pullbacks, strict
 breaks, failed support, missing candles, MACD reset continuity, restart state,
 full-target entry construction, partial acquisition and bracket activation,

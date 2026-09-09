@@ -17,7 +17,7 @@ from src.trading_runtime.execution_policies import (
     ExecutionMarketDataProvider,
     ExecutionMarketSnapshot,
 )
-from src.trading_runtime.order_management import OrderManagementEngine, OrderManagementState
+from src.trading_runtime.order_management import OrderManagementEngine, OrderManagementState, EntryExecutionRejected
 from src.trading_runtime.portfolio import ENTRY_ACTIONS, PortfolioManagementEngine
 from src.trading_runtime.portfolio_config import configured_portfolio_profiles_for_runtime
 from src.trading_runtime.risk import RiskAuthority
@@ -716,6 +716,18 @@ class TradingRuntime:
                                         payload={"action": str(approved_intent.action), "reason": str(exc)})
                     results.append({"decision": {"status": "protection_replacement_deferred", "reason": str(exc)},
                                     "order_group": None})
+                    continue
+                if isinstance(exc, EntryExecutionRejected) and snapshot is None:
+                    handler = getattr(self.strategy, 'on_intent_rejected', None)
+                    if handler is not None:
+                        await handler(approved_intent, reasons=('execution_stop_already_triggered',),
+                                      event_time=approved_intent.event_time)
+                    self.journal.append(run_id=self.run_id, category='strategy_decision',
+                        entity_type='intent_rejection', entity_id=approved_intent.intent_id,
+                        account_id=account_id, event_time=approved_intent.event_time,
+                        payload={'action':'wait', 'reason':'execution_stop_already_triggered',
+                                 'reason_detail':str(exc), 'ticker':approved_intent.ticker})
+                    results.append({'decision':{'status':'rejected','reason':str(exc)}, 'order_group':None})
                     continue
                 raise
         return results

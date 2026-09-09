@@ -35,6 +35,10 @@ from src.trading_runtime.signals import CapitalRequest, StrategyIntent
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
 
 
+class EntryExecutionRejected(ValueError):
+    """A pre-submit execution check failed; no broker order was sent."""
+
+
 class OrderManagementState(StrEnum):
     CREATED = "created"
     RISK_RESERVED = "risk_reserved"
@@ -863,7 +867,7 @@ class OrderManagementEngine:
             raise ValueError('Gap entry quote exceeds the approved reward-to-risk ceiling')
         if working_intent.metadata.get('gap_require_valid_stop_on_entry') and (
                 quote is None or quote.bid <= float(working_intent.invalidation_price or 0)):
-            raise ValueError('Gap entry protective stop is already triggered')
+            raise EntryExecutionRejected('Gap entry protective stop is already triggered')
         tactic = execution_tactic(
             working_intent,
             self.policy,

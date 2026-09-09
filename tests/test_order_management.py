@@ -504,6 +504,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 journal.close()
 
     async def test_gap_stop_guard_rejects_invalid_submission_and_cancels_remainder(self):
+        from src.trading_runtime.order_management import EntryExecutionRejected
         with tempfile.TemporaryDirectory() as directory:
             broker = SimulatedBrokerAdapter(['DU1'], mode=TradingMode.BACKTEST)
             manager, journal = await self._manager(directory, broker, policy=BrokerCommunicationPolicy(), causal_execution_clock=True)
@@ -511,7 +512,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 base = intent(side_quote=(10, 10.02))
                 request = replace(base, invalidation_price=10.,
                     metadata={**base.metadata, 'gap_require_valid_stop_on_entry': True})
-                with self.assertRaisesRegex(ValueError, 'stop is already triggered'):
+                with self.assertRaisesRegex(EntryExecutionRejected, 'stop is already triggered'):
                     await manager.submit_intent(portfolio_approved(journal, request), account_id='DU1', event=None)
                 request = replace(request, invalidation_price=9.8, execution_policy=ExecutionPolicy(
                     policy_id='stop-guard', name=ExecutionPolicyName.ADAPTIVE_URGENT,
