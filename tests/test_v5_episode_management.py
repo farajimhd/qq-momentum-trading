@@ -235,3 +235,24 @@ def test_confirmation_window_cannot_authorize_an_unconfirmed_intrabar_break():
         source_timeframe='',evaluation_events=('market_data_update',))
     M.observe(spike,p,state)
     assert M.select(spike,p,state)['reason'] == 'v5_breakout_close_not_confirmed'
+
+
+def test_macd_extension_ceiling_freezes_the_completed_normalization_price():
+    p, state, o = rejection_setup()
+    p['macd_evaluation_mode'] = 'completed_1s'
+    p['episode_management'] = dict(maximum_macd_line_bps=300.)
+    p = S.resolve_long_momentum_parameters(p,revision=47)
+    closed = replace(o,price=100.,macd_line=4.,macd_signal=3.5,
+        observed_at=o.observed_at+timedelta(seconds=1),source_timeframe='1s',evaluation_events=('bar_close',))
+    M.observe(closed,p,state)
+    assert state['v5_breakout_state']['macd_line_bps'] == 400.
+    assert M.select(closed,p,state)['reason'] == 'v5_macd_trend_extended'
+    intrabar = replace(closed,price=200.,macd_line=1.,macd_signal=.5,
+        observed_at=closed.observed_at+timedelta(milliseconds=500),
+        source_timeframe='',evaluation_events=('market_data_update',))
+    M.observe(intrabar,p,state)
+    assert state['v5_breakout_state']['macd_line_bps'] == 400.
+    assert M.select(intrabar,p,state)['reason'] == 'v5_macd_trend_extended'
+    next_close = replace(closed,macd_line=1.,macd_signal=.5,observed_at=closed.observed_at+timedelta(seconds=1))
+    M.observe(next_close,p,state)
+    assert state['v5_breakout_state']['macd_line_bps'] == 100.

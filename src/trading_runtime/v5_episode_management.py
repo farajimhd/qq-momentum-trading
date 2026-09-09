@@ -6,7 +6,7 @@ DEFAULTS = dict(rejection_from_below=True, rejection_closes=1,
                 rejection_atr_multiple=0., stop_atr_multiple=0., take_profit_fraction=1.,
                 entry_on_close=False, entry_range_seconds=0.,
                 profit_trail_atr_multiple=0., profit_trail_activation_atr=1.,
-                entry_confirmation_window_ms=0.)
+                entry_confirmation_window_ms=0., maximum_macd_line_bps=0.)
 
 
 def configure(parameters):
@@ -21,7 +21,8 @@ def configure(parameters):
     if type(policy['rejection_closes']) is not int or not 1 <= policy['rejection_closes'] <= 60:
         raise ValueError('Rejection confirmation must be one to sixty completed candles')
     for key in ('rejection_atr_multiple', 'stop_atr_multiple', 'entry_range_seconds',
-                'profit_trail_atr_multiple', 'profit_trail_activation_atr', 'entry_confirmation_window_ms'):
+                'profit_trail_atr_multiple', 'profit_trail_activation_atr', 'entry_confirmation_window_ms',
+                'maximum_macd_line_bps'):
         if type(policy[key]) not in (int, float) or not isfinite(policy[key]) or policy[key] < 0:
             raise ValueError('ATR multiples must be finite and nonnegative')
     if policy['entry_range_seconds'] > 3600:

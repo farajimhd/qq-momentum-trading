@@ -62,6 +62,9 @@ def observe(o, p, state):
         return
     gap = (state.get('confirmed_episode_macd', {}).get('gap_bps')
            if p.get('macd_evaluation_mode') == 'completed_1s' else gap_bps(o))
+    normalizer = (state.get('confirmed_episode_macd', {}).get('close')
+                  if p.get('macd_evaluation_mode') == 'completed_1s' else o.price)
+    line_bps = o.macd_line / normalizer * 10000 if o.macd_line is not None and normalizer and normalizer > 0 else None
     opened = gap is not None and gap >= p['v5_breakout']['minimum_macd_gap_bps'] - 1e-9
     if gap is not None and not opened:
         if d.get('period_max', 0) > 0:
@@ -72,7 +75,7 @@ def observe(o, p, state):
         d['period_max'] = 0.0
     prior = d.get('levels', [])
     current_levels = v5.rows(o, p)
-    d.update(observed_at=now, macd_open=opened, macd_gap_bps=gap,
+    d.update(observed_at=now, macd_open=opened, macd_gap_bps=gap, macd_line_bps=line_bps,
              prior_max=d.get('period_max', 0.0), decision_levels=prior, crossed=[])
     closed = o.source_timeframe == '1s' and 'bar_close' in o.evaluation_events
     window = (p.get('episode_management') or {}).get('entry_confirmation_window_ms', 0.)
@@ -178,6 +181,9 @@ def select(o, p, state):
             return {'reason': 'v5_waiting_for_entry_close'}
     if not d.get('macd_open'):
         return {'reason': 'v5_macd_gap_below_minimum'}
+    if policy.get('maximum_macd_line_bps') and (d.get('macd_line_bps') is None
+            or d['macd_line_bps'] > policy['maximum_macd_line_bps']):
+        return {'reason': 'v5_macd_trend_extended'}
     if ((policy.get('stop_atr_multiple', 0) or policy.get('rejection_atr_multiple', 0)
          or policy.get('profit_trail_atr_multiple', 0))
             and d.get('closed_atr', 0) <= 0):

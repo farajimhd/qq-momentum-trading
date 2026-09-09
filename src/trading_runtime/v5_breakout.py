@@ -210,6 +210,7 @@ def evidence(observation, state):
     if data.get('contract') in (MACD_GAP_CONTRACT, MACD_EPISODE_CONTRACT, MACD_REJECTION_CONTRACT):
         return dict(observed_at=observation.observed_at.isoformat(), price=observation.price,
             contract=data['contract'], macd_open=data.get('macd_open'), macd_gap_bps=data.get('macd_gap_bps'),
+            macd_line_bps=data.get('macd_line_bps'),
             reentry_restricted=data.get('exited'), prior_period_body_high=data.get('prior_max'),
             entry_high_threshold=data.get('entry_high_threshold'),
             entry_range_high=data.get('entry_range_high'), entry_range_samples=data.get('entry_range_samples'),
