@@ -3980,6 +3980,10 @@ class LongMomentumStrategyEngine:
                 "mechanism": "protective_stop",
                 "position_fraction": 1.0,
             }
+        elif state.get('v5_breakout_state', {}).get('position_structure_failure'):
+            evidence = state['v5_breakout_state']['position_structure_failure']
+            exit_route = dict(route_id='v5-position-structure-failure', name='Position structure failed',
+                             mechanism=evidence['reason'], position_fraction=1.0, evidence=evidence)
         elif (parameters.get('v5_breakout_contract') == v5_breakout.MACD_REJECTION_CONTRACT
               and state.get('v5_breakout_state', {}).get('resistance_rejection')):
             exit_route = dict(route_id='v5-resistance-rejection', name='Confirmed resistance rejection',
@@ -4825,6 +4829,14 @@ class LongMomentumStrategyEngine:
         if parameters["protection"]["profit_ladder"].get("fixed_at_entry"):
             return None
         if v5_breakout.enabled(parameters):
+            filled_at = _optional_aware_datetime((state.get('last_profit_target_fill') or {}).get('filled_at'))
+            entry_at = _optional_aware_datetime(state.get('entry_at'))
+            if ((parameters.get('episode_management') or {}).get('position_structure_enabled')
+                    and filled_at is not None and entry_at is not None and entry_at <= filled_at <= observation.observed_at):
+                # Once execution starts, leave the remaining target allocation
+                # working instead of moving it away from an ongoing fill.
+                state.get('v5_breakout_state', {}).pop('pending_target', None)
+                return None
             selected = state.get('v5_breakout_state', {}).pop('pending_target', None)
             if not selected:
                 return None
@@ -5321,6 +5333,8 @@ class LongMomentumStrategyEngine:
             intents = tuple(replace(i, metadata={**i.metadata, 'entry_body_trigger': dict(state['entry_body_trigger'])}) for i in intents)
         if action == 'enter_long' and (swing_gap.runner_policy(assignment.parameters) or {}).get('complete_partial_target'):
             intents = tuple(replace(i, metadata={**i.metadata, 'complete_partial_target': True}) for i in intents)
+        if action == 'enter_long' and (assignment.parameters.get('episode_management') or {}).get('position_structure_enabled'):
+            intents = tuple(replace(i, metadata={**i.metadata, 'mandatory_broker_target': True}) for i in intents)
         payload = {
             "assignment_id": assignment.assignment_id,
             "strategy_id": assignment.strategy_id,
@@ -5533,6 +5547,9 @@ def _protection_profile_from_phase(
         dict(parameters.get("protection_profile_catalog") or {}).get(reference)
         or {}
     )
+    mandatory_target = (parameters.get('episode_management') or {}).get('position_structure_enabled', False)
+    if mandatory_target and action in {'enter_long', 'add_long'} and not configured:
+        raise ValueError('Position structure requires an explicit broker protection profile')
     if not configured:
         if (action in {'enter_long', 'add_long'}
                 and (parameters.get('episode_management') or {}).get('take_profit_fraction', 1.) < 1.):
@@ -5675,6 +5692,11 @@ def _protection_profile_from_phase(
                 inherit_profit_target=bool(raw.get('inherit_profit_target', True)),
             )
         )
+    if mandatory_target and action in {'enter_long', 'add_long'} and (
+            not slices or abs(sum(s.quantity_fraction for s in slices)-1.) > 1e-9
+            or any(s.profit_target_price is None or s.profit_target_price <= observation.price
+                   or s.stop.price is None or s.stop.price <= 0 for s in slices)):
+        raise ValueError('Position structure requires full-quantity stop and overhead profit target')
     return ProtectionProfile(
         profile_id=str(configured.get("profile_id") or reference),
         revision=int(configured.get("revision") or 1),

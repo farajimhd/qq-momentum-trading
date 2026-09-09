@@ -597,6 +597,13 @@ class OrderManagementEngine:
         )
 
     async def recover(self) -> list[OrderGroupSnapshot]:
+        # Reconciliation must not republish the last effective price merely
+        # because its in-memory change cache was lost at restart.
+        self._protection_versions = {}
+        for record in self.journal.protection_records(self.run_id):
+            p = record.payload
+            identity = (p['order_group_id'], p['client_order_id'], p['order_id'], p['kind'], p['phase'])
+            self._protection_versions[identity] = (float(p['price']), bool(p['active']))
         for row in self.journal.order_management_states():
             payload = row["state"]
             persisted_strategy = str(payload.get("strategy_id") or "")
@@ -1609,7 +1616,8 @@ class OrderManagementEngine:
         # Standalone repaired protection retains its parent entry identity.
         if request.parentId:
             roots.append(str(request.parentId))
-        identity = (group.group_id, request.cOID, str(broker_order_id), role, phase)
+        identity = (group.group_id, request.cOID, str(broker_order_id or request.cOID),
+                    'target' if role == 'profit_target' else 'stop', phase)
         value = (float(price), bool(active))
         cache = getattr(self, '_protection_versions', {})
         self._protection_versions = cache
@@ -1758,7 +1766,8 @@ class OrderManagementEngine:
                 candidates.append(
                     (group, str(broker_order_id), request_index, group.orders[request_index], live)
                 )
-        capacity = sum(float(live.remainingQuantity) for *_, live in candidates)
+        capacity = sum(float(live.remainingQuantity) for group, _, _, _, live in candidates
+                       if not group.intent.metadata.get('mandatory_broker_target') or live.order_status != OrderStatus.INACTIVE)
         if not candidates or capacity + 1e-9 < float(intent.quantity):
             raise ValueError(
                 "Cannot replace profit target: live target protection does not cover "
@@ -2842,6 +2851,7 @@ class OrderManagementEngine:
         )
         position_quantity = float(position.position) if position is not None else 0.0
         initial_entry_group = str(group.intent.action) in {"enter_long", "enter_short"}
+        mandatory_target = bool(group.intent.metadata.get('mandatory_broker_target'))
         group_exit_quantity = sum(
             quantity
             for order_id, quantity in group.filled_by_broker_order.items()
@@ -2880,7 +2890,7 @@ class OrderManagementEngine:
             and order.ticker.upper() == group.intent.ticker.upper()
             and order.order_status in OPEN_ORDER_STATUSES
             and (
-                initial_entry_group
+                initial_entry_group and not mandatory_target
                 or order.order_status != OrderStatus.INACTIVE
             )
             and order.orderType.upper() in {"STP", "STOP_LIMIT", "TRAIL", "TRAILLMT"}
@@ -2919,6 +2929,18 @@ class OrderManagementEngine:
                 effective_remaining,
             )
         coverage = sum(by_protection_group.values())
+        if mandatory_target:
+            # Repairs protect partial acquisitions while attached children are
+            # inactive. Once the parent completes, retire/resize the complete
+            # excess OCA pair, not only its stop.
+            for order in live_orders:
+                if (str(order.orderId) in owned_broker_order_ids
+                        and group.broker_order_roles.get(str(order.orderId)) == 'profit_target'
+                        and order.order_status in OPEN_ORDER_STATUSES
+                        and order.order_status != OrderStatus.INACTIVE):
+                    key = _protection_group_key(order)
+                    if key in protection_groups:
+                        protection_groups[key].append(order)
         tolerance = 1e-9
         actions: list[dict[str, Any]] = []
         if initial_entry_group and required > coverage + tolerance:
@@ -3037,6 +3059,21 @@ class OrderManagementEngine:
                 # Resizing a paired repair stop alone changes its allocation.
                 existing_repair = None
             if existing_repair is not None:
+                if mandatory_target:
+                    # Increase the paired target with each new acquired share.
+                    # Keep the old stop working throughout both amendments.
+                    for sibling in protection_groups[_protection_group_key(existing_repair)]:
+                        sibling_id = str(sibling.orderId)
+                        if group.broker_order_roles.get(sibling_id) != 'profit_target':
+                            continue
+                        sibling_index = group.broker_order_request_indexes[sibling_id]
+                        sibling_request = replace(group.orders[sibling_index],
+                            quantity=float(sibling.filledQuantity)+float(existing_repair.remainingQuantity)+missing)
+                        async with self._command_lane(group.account_id):
+                            response = await self.broker.modify_order(group.account_id, sibling_id, sibling_request)
+                        _require_modify_acknowledgement(response)
+                        group.orders[sibling_index] = sibling_request
+                        self._transition(group, group.state, {'event': 'partial_acquisition_target_resized'})
                 order_id = str(existing_repair.orderId)
                 request_index = group.broker_order_request_indexes[order_id]
                 request = group.orders[request_index]
@@ -3055,6 +3092,7 @@ class OrderManagementEngine:
                         order_id,
                         replacement,
                     )
+                _require_modify_acknowledgement(response)
                 group.orders[request_index] = replacement
                 actions.append({
                     "action": "resize_missing_backstop",
@@ -3121,6 +3159,7 @@ class OrderManagementEngine:
                     for orphan in live_orders:
                         if (transfer <= tolerance or str(orphan.orderId) not in owned_broker_order_ids
                                 or group.broker_order_roles.get(str(orphan.orderId)) != "profit_target"
+                                or (mandatory_target and orphan.order_status == OrderStatus.INACTIVE)
                                 or orphan.order_status not in OPEN_ORDER_STATUSES):
                             continue
                         amount = min(transfer, float(orphan.remainingQuantity))
@@ -3143,6 +3182,7 @@ class OrderManagementEngine:
                         if (str(orphan.orderId) in owned_broker_order_ids
                                 and group.broker_order_roles.get(str(orphan.orderId)) == "profit_target"
                                 and refreshed is not None and refreshed.order_status in OPEN_ORDER_STATUSES
+                                and not (mandatory_target and refreshed.order_status == OrderStatus.INACTIVE)
                                 and float(refreshed.remainingQuantity) > max(0.0, required - missing) + tolerance):
                             return {"required": required, "coverage": coverage, "status": "target_transfer_pending"}
                     positions_now = await self.broker.positions(group.account_id)
@@ -3264,6 +3304,11 @@ class OrderManagementEngine:
         }
         group.protection_required_quantity = required
         group.protection_coverage_quantity = required if actions else coverage
+        if actions:
+            # Persist the newly registered broker identities before returning.
+            # A restart must recognize repaired orders rather than submit a
+            # second bracket against the same held shares.
+            self._transition(group, group.state, {"event": "protection_repair_registered"})
         self._record(
             "order_management",
             "protection_reconciliation",

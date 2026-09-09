@@ -661,6 +661,18 @@ class OmsContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(row.quantity == 100 and row.isSingleGroup for row in changed))
         self.assertEqual(group.intent.resolved_protection_profile().slices[0].stop.price, 10.2)
         self.assertEqual(group.intent.resolved_protection_profile().slices[0].profit_target_price, 11.2)
+        # A rejected amendment must retain the working bracket and repair
+        # profile. The desired price is not an effective broker price.
+        failed_target = replace(target, intent_id='rejected-target', profit_target_price=12.)
+        before = [(o.orderId, o.price, o.auxPrice, o.filledQuantity, o.remainingQuantity) for o in await self.broker.live_orders()]
+        with patch.object(self.broker, 'modify_order', AsyncMock(return_value=[{'error': 'rejected'}])):
+            with self.assertRaises(ValueError):
+                await self.manager.submit_intent(oms_helpers.portfolio_approved(self.journal, failed_target),
+                                                 account_id='DU1', event=None)
+        self.assertEqual(before, [(o.orderId, o.price, o.auxPrice, o.filledQuantity, o.remainingQuantity) for o in await self.broker.live_orders()])
+        self.assertEqual(group.intent.resolved_protection_profile().slices[0].profit_target_price, 11.2)
+        self.assertFalse(any(r.payload['phase'] == 'effective' and r.payload['price'] == 12.
+                             for r in self.journal.protection_records('contract')))
         # A lost acknowledgement leaves the local repair profile stale while
         # the broker already holds the higher stop. Retrying must recover it.
         group.intent = replace(group.intent, invalidation_price=9.8, protection_profile=profile)
@@ -678,6 +690,54 @@ class OmsContractTests(unittest.IsolatedAsyncioTestCase):
                     and row.order_status in {"Submitted", "PreSubmitted"}]
         self.assertTrue(repaired)
         self.assertTrue(all(row.auxPrice == 10.2 for row in repaired))
+
+    async def test_recovery_does_not_duplicate_effective_protection(self):
+        await self.test_stop_and_target_amendments_preserve_oca_and_repair_contract()
+        from src.trading_runtime.order_management import OrderManagementEngine
+        before = len(self.journal.protection_records('contract'))
+        recovered = OrderManagementEngine(broker=self.broker, planner=self.manager.planner,
+            risk=self.manager.risk, journal=self.journal, run_id='contract', strategy_id='long',
+            strategy_revision=37, causal_execution_clock=True)
+        self.addAsyncCleanup(recovered.close)
+        await recovered.recover()
+        await recovered.reconcile()
+        added = self.journal.protection_records('contract')[before:]
+        # The fixture cancels the old bracket directly at the broker; those
+        # terminal acknowledgements are new evidence. Working repairs are not.
+        self.assertTrue(all(r.payload['active'] is False for r in added), added)
+        after = len(self.journal.protection_records('contract'))
+        await recovered.reconcile()
+        self.assertEqual(len(self.journal.protection_records('contract')), after)
+
+    async def test_mandatory_target_covers_each_partial_fill_and_full_parent_transition(self):
+        from src.market_engine.events import QuoteEvent
+        from src.trading_runtime.domain import InstrumentContract
+        from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner
+        from src.trading_runtime.execution_policies import ProtectionProfile, ProtectionSlice, StopRule, StopRuleType
+        planner = IbkrStrategyOrderPlanner()
+        self.manager.planner = lambda request, account, event: planner.plan(
+            account_id=account, instrument=InstrumentContract('TEST', 123, 'TEST', 'STK', 'USD'),
+            intent=request, strategy_id='long', strategy_revision=37)
+        profile = ProtectionProfile('structure', 1, (ProtectionSlice('position', 1.,
+            StopRule(StopRuleType.FIXED_PRICE, price=9.8), profit_target_price=11.),))
+        request = replace(oms_helpers.intent(), event_time=NOW, protection_profile=profile,
+            profit_target_price=11., metadata={**oms_helpers.intent().metadata,
+                'quote_observed_at': NOW.isoformat(), 'mandatory_broker_target': True})
+        submitted = await self.manager.submit_intent(oms_helpers.portfolio_approved(self.journal, request), account_id='DU1', event=None)
+        group = self.manager._groups[submitted.group_id]
+        for index, size in enumerate((80, 80, 4000), 1):
+            at = NOW+timedelta(milliseconds=100*index)
+            await self.broker.on_market_event(QuoteEvent(1, 9.99, size, 1, 9.98, size,
+                (), (), at, raw={'conid': 123}, sequence=index, ticker='TEST', ts=at))
+            await self.manager.reconcile()
+            working = [o for o in await self.broker.live_orders() if o.side == 'SELL'
+                       and o.order_status in {'Submitted', 'PreSubmitted'}]
+            for order_type in ('LMT', 'STP'):
+                self.assertEqual(sum(o.remainingQuantity for o in working if o.orderType == order_type), group.filled_quantity,
+                                 [(o.orderType, o.order_status, o.remainingQuantity, o.parentId) for o in await self.broker.live_orders()])
+            self.assertTrue(all(o.price == 11. for o in working if o.orderType == 'LMT'))
+            self.assertTrue(all(o.auxPrice == 9.8 for o in working if o.orderType == 'STP'))
+        self.assertEqual(group.filled_quantity, 100.)
 
 
 class RuntimeExitContractTests(unittest.IsolatedAsyncioTestCase):

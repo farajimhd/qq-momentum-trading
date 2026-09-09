@@ -8,7 +8,9 @@ DEFAULTS = dict(rejection_from_below=True, rejection_closes=1,
                 profit_trail_atr_multiple=0., profit_trail_activation_atr=1.,
                 entry_confirmation_window_ms=0., maximum_macd_line_bps=0.,
                 entry_minimum_close_location=0., require_range_context=False,
-                rejection_buffer_requires_armed_trail=False)
+                rejection_buffer_requires_armed_trail=False,
+                position_structure_enabled=False, swing_left_bars=2, swing_right_bars=2,
+                swing_buffer_bps=5., swing_buffer_atr_multiple=.25)
 
 
 def configure(parameters):
@@ -19,13 +21,14 @@ def configure(parameters):
         raise ValueError('Unknown episode management setting')
     policy = dict(DEFAULTS, **raw)
     if any(type(policy[key]) is not bool for key in ('rejection_from_below','entry_on_close','require_range_context',
-                                                   'rejection_buffer_requires_armed_trail')):
+                                                   'rejection_buffer_requires_armed_trail', 'position_structure_enabled')):
         raise ValueError('Episode policy flags must be boolean')
     if type(policy['rejection_closes']) is not int or not 1 <= policy['rejection_closes'] <= 60:
         raise ValueError('Rejection confirmation must be one to sixty completed candles')
     for key in ('rejection_atr_multiple', 'stop_atr_multiple', 'entry_range_seconds',
                 'profit_trail_atr_multiple', 'profit_trail_activation_atr', 'entry_confirmation_window_ms',
-                'maximum_macd_line_bps', 'entry_minimum_close_location'):
+                'maximum_macd_line_bps', 'entry_minimum_close_location',
+                'swing_buffer_bps', 'swing_buffer_atr_multiple'):
         if type(policy[key]) not in (int, float) or not isfinite(policy[key]) or policy[key] < 0:
             raise ValueError('ATR multiples must be finite and nonnegative')
     if policy['entry_range_seconds'] > 3600:
@@ -46,6 +49,17 @@ def configure(parameters):
     fraction = policy['take_profit_fraction']
     if type(fraction) not in (int, float) or not isfinite(fraction) or not 0 <= fraction <= 1:
         raise ValueError('Target fraction must be between zero and one')
+    for key in ('swing_left_bars', 'swing_right_bars'):
+        if type(policy[key]) is not int or not 1 <= policy[key] <= 60:
+            raise ValueError('Swing confirmation must use one to sixty candles per side')
+    if policy['position_structure_enabled']:
+        from .v5_breakout import MACD_REJECTION_CONTRACT
+        if parameters.get('v5_breakout_contract') != MACD_REJECTION_CONTRACT:
+            raise ValueError('Position structure requires the V5 MACD episode rejection contract')
+        if policy['profit_trail_atr_multiple'] or policy['rejection_buffer_requires_armed_trail']:
+            raise ValueError('Position structure cannot use an independent ATR profit trail')
+        if fraction != 1. or parameters.get('broken_level_stop_only'):
+            raise ValueError('Position structure requires a full-position broker profit target')
     parameters['episode_management'] = policy
 
 

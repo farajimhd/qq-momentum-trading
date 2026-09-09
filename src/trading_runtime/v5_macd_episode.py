@@ -88,7 +88,10 @@ def observe(o, p, state):
         from .v5_episode_management import observe_entry
         observe_entry(o, d, closed, p['episode_management'])
     if p['v5_breakout_contract'] == v5.MACD_REJECTION_CONTRACT:
-        if p.get('episode_management'):
+        if (p.get('episode_management') or {}).get('position_structure_enabled'):
+            from .position_structure import observe as observe_structure
+            observe_structure(o, d, closed, p['episode_management'], current_levels)
+        elif p.get('episode_management'):
             from .v5_episode_management import observe_rejection as observe_attempt
             observe_attempt(o, d, current_levels, closed, p['episode_management'])
         else:
