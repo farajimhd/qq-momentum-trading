@@ -58,9 +58,16 @@ Configuration used for the first opt-in candidate:
 These are configurable engineering defaults, not fitted ticker/date rules.
 An additional opt-in setting, `same_episode_reentry_stop`, replaces the initial
 stop on a subsequent acquisition in the same MACD episode. Its anchor is the
-prior maximum of completed candle opens/closes. At a candle-close decision the
-current candle is excluded; at a later intrabar execution it is already complete
-and is included. `reentry_stop_offset_bps` defaults to 5; the stop is at least one tick
+maximum of the prior observed episode prices and completed candle opens/closes.
+The current decision price is excluded from the observed-price anchor. MACD
+continues to use completed one-second samples; price tracking runs independently.
+At a candle-close decision the current candle body is excluded; at a later
+intrabar execution it is already complete and is included.
+After a target fill, a completed one-second candle strictly newer than that fill
+is required before re-entry, including a new confirmation when confirmation
+windows are enabled. This gate uses persisted fill evidence, survives recovery,
+and also applies if MACD resets before the next entry.
+`reentry_stop_offset_bps` defaults to 5; the stop is at least one tick
 below that anchor and rounds downward to a valid tick. The entry's separate
 15-bps clearance requirement is unchanged. Only an actual entry fill marks an
 episode as acquired; unfilled or rejected requests do not. Holding a position

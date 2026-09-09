@@ -5,6 +5,7 @@ single acquired position. Only past, causally available levels are used.
 """
 from math import floor, isfinite, isclose
 from dataclasses import replace
+from datetime import datetime
 
 from . import v5_breakout as v5, swing_gap
 from .v5_hod_ladder import target
@@ -74,12 +75,22 @@ def observe(o, p, state):
             d['episode_reset_at'] = o.observed_at.isoformat()
             d['episode_reset_gap_bps'] = gap
         d['period_max'] = 0.0
+        for key in ('observed_episode_high', 'prior_observed_episode_high', 'high_observation'):
+            d.pop(key, None)
     if opened and d.get('episode_started_at') is None:
         d['episode_started_at'] = now
     if opened and o.position_quantity > 0:
         # A position can span several qualifying episodes. Exiting and then
         # entering again in an episode it already occupied is still re-entry.
         state['last_held_macd_episode'] = d['episode_started_at']
+    if opened and (p.get('episode_management') or {}).get('same_episode_reentry_stop'):
+        # Snapshot before consuming this price: a breakout must not compare
+        # against itself. Repeated evaluation of the same frame is idempotent.
+        witness = [now, o.price]
+        if d.get('high_observation') != witness:
+            d['prior_observed_episode_high'] = d.get('observed_episode_high', 0.)
+            d['observed_episode_high'] = max(d.get('observed_episode_high', 0.), o.price)
+            d['high_observation'] = witness
     prior = d.get('levels', [])
     current_levels = v5.rows(o, p)
     d.update(observed_at=now, macd_open=opened, macd_gap_bps=gap, macd_line_bps=line_bps,
@@ -187,6 +198,15 @@ def select(o, p, state):
     policy = p.get('episode_management') or {}
     at_close = o.source_timeframe == '1s' and 'bar_close' in o.evaluation_events
     confirmation = d.get('entry_confirmation') or {}
+    if policy.get('same_episode_reentry_stop'):
+        filled_at = (state.get('last_profit_target_fill') or {}).get('filled_at')
+        if filled_at:
+            fill_time = datetime.fromisoformat(filled_at).timestamp()
+            # A cached pre-fill close cannot authorize another acquisition.
+            if d.get('closed_at', 0.) <= fill_time:
+                return {'reason': 'v5_waiting_for_post_target_close'}
+            if policy.get('entry_confirmation_window_ms') and confirmation.get('at', 0.) <= fill_time:
+                return {'reason': 'v5_waiting_for_post_target_close'}
     if policy.get('entry_on_close') and not at_close:
         age_ms = (o.observed_at.timestamp()-confirmation.get('at', 0))*1000
         if not (policy.get('entry_confirmation_window_ms', 0) and
@@ -215,6 +235,7 @@ def select(o, p, state):
     # the confirming candle is already complete and belongs to the past too.
     reentry_high = (d.get('prior_max', 0.) if at_close else
                     max(d.get('prior_max', 0.), d.get('period_max', 0.)))
+    reentry_high = max(reentry_high, d.get('prior_observed_episode_high', 0.))
     threshold = d.get('prior_max', 0.0) * (1 + p['v5_breakout']['episode_high_offset_bps'] / 10_000)
     if same_episode_reentry:
         threshold = max(threshold, reentry_high*(1+p['v5_breakout']['episode_high_offset_bps']/10000))

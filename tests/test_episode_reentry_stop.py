@@ -114,3 +114,48 @@ def test_flat_new_episode_is_still_first_entry():
     M.observe(replace(o, observed_at=o.observed_at+timedelta(seconds=2)), p, state)
     assert 'last_held_macd_episode' not in state
     assert M.select(o, p, state)['stop_selection']['source'] != 'macd_episode_high'
+
+
+def test_intrabar_reentry_uses_prior_observed_high_for_gate_and_stop():
+    p, state, o = setup()
+    state['last_acquired_macd_episode'] = state['v5_breakout_state']['episode_started_at']
+    earlier = replace(o, observed_at=o.observed_at+timedelta(seconds=1), price=103.7,
+                      source_timeframe='', evaluation_events=('market_data_update',))
+    M.observe(earlier, p, state)
+    current = replace(earlier, observed_at=earlier.observed_at+timedelta(milliseconds=100),
+                      price=103.95, bid=103.94, ask=103.96)
+    M.observe(current, p, state)
+    M.observe(current, p, state)  # duplicate frame cannot consume its own anchor
+    state = json.loads(json.dumps(state))
+    selected = M.select(current, p, state)
+    assert selected['reason'] == ''
+    assert selected['stop_selection']['high'] == 103.7
+    assert selected['stop'] == 103.64
+    assert M.select(replace(current, price=103.7*1.0015), p, state)['reason'] == 'v5_period_high_not_reclaimed'
+
+
+def test_target_fill_requires_new_close_and_rechecks_latest_high():
+    p, state, o = setup()
+    p['episode_management'].update(entry_on_close=True, entry_confirmation_window_ms=1000.)
+    state['last_acquired_macd_episode'] = state['v5_breakout_state']['episode_started_at']
+    close = replace(o, observed_at=o.observed_at+timedelta(seconds=1), price=103.5,
+                    bar_open=103., source_timeframe='1s', evaluation_events=('bar_close',))
+    M.observe(close, p, state)
+    fill_time = close.observed_at+timedelta(milliseconds=500)
+    state['last_profit_target_fill'] = {'filled_at': fill_time.isoformat()}
+    frame = replace(close, observed_at=fill_time, price=103.7, bid=103.69, ask=103.71,
+                    source_timeframe='', evaluation_events=('market_data_update',))
+    M.observe(frame, p, state)
+    engine = S.LongMomentumStrategyEngine(revision=47)
+    result = engine.evaluate(assignment(strategy_revision=47, parameters=p, state=state), frame)
+    assert not any(i.action in ('enter_long', 'add_long') for i in result.evaluation.intents)
+    assert M.select(frame, p, state)['reason'] == 'v5_waiting_for_post_target_close'
+    next_close = replace(close, observed_at=close.observed_at+timedelta(seconds=1),
+                         price=103.95, bid=103.94, ask=103.96, bar_open=103.5)
+    M.observe(next_close, p, state)
+    selected = M.select(next_close, p, state)
+    assert selected['reason'] == ''
+    assert selected['stop_selection']['high'] == 103.7
+    result = engine.evaluate(assignment(strategy_revision=47, parameters=p, state=state), next_close)
+    entry = next(i for i in result.evaluation.intents if i.action == 'enter_long')
+    assert entry.invalidation_price == selected['stop']
