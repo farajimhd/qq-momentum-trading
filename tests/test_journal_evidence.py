@@ -4,6 +4,18 @@ from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.journal_evidence import REFERENCE
 
 
+def test_compact_projection_retains_frozen_entry_chart_references():
+    from src.trading_runtime.journal_evidence import activity_payload
+    level = {'unified_level_id': 'r1', 'price': 12, 'entry_boundary': 12.1,
+             'evidence': {'large_book': [1] * 1000}}
+    snapshot = {'session_high': 13, 'selected_at': '2026-09-08T08:00:00Z',
+                'frozen_at_entry': True, 'interval_based': True, 'levels': [level]}
+    projected = activity_payload({'unified_structural_trigger': {'current_snapshot': snapshot}})
+    current = projected['unified_structural_trigger']['current_snapshot']
+    assert current['session_high'] == 13 and current['frozen_at_entry']
+    assert current['levels'] == [{'unified_level_id': 'r1', 'price': 12, 'entry_boundary': 12.1}]
+
+
 def test_evidence_roundtrip_compact_read_reopen_and_integrity(tmp_path):
     path = tmp_path / 'journal.sqlite3'
     journal = TradingJournal(path)

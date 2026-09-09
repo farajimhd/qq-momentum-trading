@@ -3,6 +3,9 @@ from hashlib import sha256
 import json
 
 REFERENCE = '$journal_evidence_sha256'
+CHART_LEVEL_FIELDS = frozenset({'unified_level_id', 'side', 'price', 'lower', 'upper',
+    'entry_boundary', 'combined_entry_boundary', 'unified_break_boundary',
+    'threshold_price', 'target_price'})
 EVIDENCE_KEYS = frozenset({
     'unified_structural_trigger', 'profit_target_selection', 'protective_stop_selection',
     'v5_entry_selection', 'gap_selection', 'target_resistance_snapshot',
@@ -62,6 +65,21 @@ def activity_payload(value):
                     for selected in ('selected_target_prices', 'profit_targets'):
                         if selected in item:
                             result[key][selected] = item[selected]
+                    for selected in ('prior_snapshot_levels', 'qualified_levels'):
+                        if isinstance(item.get(selected), (list, tuple)):
+                            result[key][selected] = [
+                                {k: v for k, v in row.items() if k in CHART_LEVEL_FIELDS}
+                                for row in item[selected] if isinstance(row, dict)]
+                    if isinstance(item.get('level'), dict):
+                        result[key]['level'] = {k: v for k, v in item['level'].items() if k in CHART_LEVEL_FIELDS}
+                    snapshot = item.get('current_snapshot')
+                    if isinstance(snapshot, dict):
+                        result[key]['current_snapshot'] = {
+                            k: v for k, v in snapshot.items()
+                            if v is None or isinstance(v, (str, int, float, bool))}
+                        result[key]['current_snapshot']['levels'] = [
+                            {k: v for k, v in row.items() if k in CHART_LEVEL_FIELDS}
+                            for row in snapshot.get('levels', []) if isinstance(row, dict)]
                 continue
             if key == 'entry_rules' and isinstance(item, dict):
                 result[key] = {phase: {k: v for k, v in stage.items()
