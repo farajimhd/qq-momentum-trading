@@ -3,6 +3,7 @@ import { macdBpsPoints } from "./macdBps";
 import { HindsightPrimitive, useHindsightPositions } from "./HindsightPositions";
 import { SwingStructurePrimitive, useSwingStructure } from "./SwingStructure";
 import { StructureGapPrimitive, useStructureGaps } from "./StructureGaps";
+import { StructuralDetectorPrimitive, useStructuralDetector } from "./StructuralDetector";
 import { structureTimeCoordinate } from "./structureTimeCoordinate";
 import { STRATEGY_ENTRY_REFERENCE_BACKING, STRATEGY_ENTRY_REFERENCE_COLOR } from "../theme";
 import {
@@ -59,7 +60,7 @@ import { LoadingState } from "./LoadingState";
 import { Modal } from "./Modal";
 import { TickerChangeBadge, TickerIdentity, TickerLogo } from "./TickerIdentity";
 
-type Candle = { time: number; open: number; high: number; low: number; close: number; color?: string; borderColor?: string; wickColor?: string };
+type Candle = { time: number; endTime?: number; open: number; high: number; low: number; close: number; color?: string; borderColor?: string; wickColor?: string };
 type ChartSeries = {
   autoscaleMax?: number;
   autoscaleMin?: number;
@@ -678,6 +679,8 @@ type ChartPanelProps = {
   featureOptions: string[];
   fillHeight?: boolean;
   indicatorOptions: string[];
+  indicatorAsOf?: string;
+  indicatorSplitAdjusted?: boolean;
   initialFitMode?: "default" | "last_market_day" | "live_first_10" | "recent";
   labelOptions?: ChartLabelOption[];
   canLoadEarlier?: boolean;
@@ -859,6 +862,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   featureOptions,
   fillHeight = false,
   indicatorOptions,
+  indicatorAsOf,
+  indicatorSplitAdjusted = false,
   initialFitMode = "default",
   labelOptions = [],
   canLoadEarlier = false,
@@ -972,6 +977,12 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const structureGapsRef = useRef(structureGaps);
   structureGapsRef.current = structureGaps;
   const structureGapPrimitiveRef = useRef<StructureGapPrimitive | null>(null);
+  const structuralDetector = useStructuralDetector(ticker, timeframe, payload?.candles ?? [], indicatorAsOf,
+    settingsStorageKey || 'chart.structural-detector', indicatorSplitAdjusted);
+  const structuralDetectorRef = useRef(structuralDetector);
+  structuralDetectorRef.current = structuralDetector;
+  const structuralDetectorPrimitiveRef = useRef<StructuralDetectorPrimitive | null>(null);
+  useEffect(() => { drawCurrentRegions(); }, [structuralDetector.rows]);
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null);
   const strategyLifecycles = useMemo(() => [...(payload?.trade_annotations ?? [])]
     .sort((a, b) => a.entryTime - b.entryTime || a.id.localeCompare(b.id)), [payload?.trade_annotations]);
@@ -1379,6 +1390,12 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const gapPrimitive = new StructureGapPrimitive();
     candleSeries.attachPrimitive(gapPrimitive);
     structureGapPrimitiveRef.current = gapPrimitive;
+    const detectorPrimitive = new StructuralDetectorPrimitive();
+    candleSeries.attachPrimitive(detectorPrimitive);
+    structuralDetectorPrimitiveRef.current = detectorPrimitive;
+    priceChart.subscribeCrosshairMove(event => {
+      if (typeof event.time === 'number' && structuralDetectorRef.current.enabled) structuralDetectorRef.current.inspect(event.time);
+    });
     const volume = priceChart.addSeries(HistogramSeries, {
       base: 0,
       lastValueVisible: false,
@@ -1813,6 +1830,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       time => xForAnnotationTime(chart, Math.max(timeline[0]?.time ?? 0, Math.min(time, timeline.at(-1)?.time ?? 0)), timeline),
       currentPayload.candles.at(-1)?.time ?? 0, timeline[0]?.time ?? 0);
     const swingDuration = estimateCandleDuration(timeline);
+    structuralDetectorPrimitiveRef.current?.setState(structuralDetectorRef.current.rows,
+      time => xForAnnotationTime(chart, time, timeline, swingDuration));
     swingStructurePrimitiveRef.current?.setState(swing.segments,
       (time) => xForAnnotationTime(chart, Math.max(timeline[0]?.time ?? 0,
         Math.min(time, timeline.at(-1)?.time ?? 0)), timeline, swingDuration),
@@ -1924,6 +1943,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     hindsightPrimitiveRef.current = null;
     if (swingStructurePrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(swingStructurePrimitiveRef.current);
     swingStructurePrimitiveRef.current = null;
+    if (structuralDetectorPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(structuralDetectorPrimitiveRef.current);
+    structuralDetectorPrimitiveRef.current = null;
     if (structureGapPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(structureGapPrimitiveRef.current);
     structureGapPrimitiveRef.current = null;
     if (livePositionPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(livePositionPrimitiveRef.current);
@@ -2083,6 +2104,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             <span className="toolbar-divider" />
             {showIndicatorControls ? (
               <IndicatorFeatureSelect
+                additionalIndicators={structuralDetector.checkbox}
+                additionalSelectedCount={Number(structuralDetector.enabled)}
                 catalogColumns={catalogColumns}
                 displayItemOptions={displayItemOptions}
                 featureOptions={featureOptions}
@@ -2153,6 +2176,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         {hindsight.controls}
         {swingStructure.controls}
         {structureGaps.controls}
+        {structuralDetector.controls}
         <button
           className="toolbar-button"
           data-chart-settings-trigger="true"
@@ -3255,6 +3279,8 @@ function ChartColumnMenuPortal({
 }
 
 function IndicatorFeatureSelect({
+  additionalIndicators,
+  additionalSelectedCount = 0,
   catalogColumns,
   displayItemOptions,
   featureOptions,
@@ -3264,6 +3290,8 @@ function IndicatorFeatureSelect({
   open,
   values
 }: {
+  additionalIndicators?: ReactNode;
+  additionalSelectedCount?: number;
   catalogColumns: ChartCatalogItem[];
   displayItemOptions: ChartDisplayItem[];
   featureOptions: string[];
@@ -3284,7 +3312,7 @@ function IndicatorFeatureSelect({
   const groupedIndicatorOptions = groupColumnOptions(indicatorOptions, catalogByColumn, "Indicators");
   const groupedFeatureOptions = groupColumnOptions(visibleFeatures, catalogByColumn, "Features");
   const selected = new Set(values);
-  const selectedCount = usesDisplayItems ? standardDisplayItems.filter((option) => selected.has(option.id)).length : visibleOptions.filter((option) => selected.has(option)).length;
+  const selectedCount = additionalSelectedCount + (usesDisplayItems ? standardDisplayItems.filter((option) => selected.has(option.id)).length : visibleOptions.filter((option) => selected.has(option)).length);
   const labelForOption = (option: string) => catalogByColumn.get(option)?.title ?? displayName(option);
   const [helpKey, setHelpKey] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -3332,6 +3360,7 @@ function IndicatorFeatureSelect({
       </button>
       {open ? (
         <ChartColumnMenuPortal anchor={triggerRef.current}>
+          {additionalIndicators}
           {usesDisplayItems ? (
             <div className="chart-column-menu-grid">
               {groupedDisplayItems.map((section) => (

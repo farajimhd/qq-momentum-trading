@@ -1,0 +1,6 @@
+.structural-detector-option { padding: .65rem; gap: 1rem; }
+.toolbar-button.structural-detector-toolbar { width: auto; flex: 0 0 auto; padding-inline: .5rem; white-space: nowrap; }
+.structural-detector-option small { display: block; color: var(--text-muted); }
+.structural-detector-evidence { padding: .5rem; border: 1px solid var(--border); border-radius: .4rem; }
+.structural-detector-evidence p { margin: .35rem 0; }
+.structural-detector-evidence pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12rem; overflow: auto; }
