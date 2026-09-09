@@ -104,6 +104,8 @@ the audit reports that price relationship separately from entry validity.
   request timestamps are consistency checks, not the matching authority. It hydrates verified journal
   evidence, checks entry thresholds and approved quantities, and measures costs
   and closed-equity drawdown. Whole-candle excursions omit partial holding bars.
+  Post-exit upside uses wholly subsequent candles within sixty seconds and the
+  actual average exit price; entry-to-future appreciation is not missed exit upside.
   It resolves the prepared candle window from the pinned strategy's actual
   evaluation cutoff, which can precede the replay end. Hindsight MACD labels
   stop at this recorded candle-coverage boundary.

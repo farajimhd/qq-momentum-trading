@@ -1,6 +1,23 @@
 import pytest
 
-from scripts.audit_strategy_positions import entry_fill_location, linked_entry
+from scripts.audit_strategy_positions import entry_fill_location, linked_entry, post_exit_high_bps
+
+
+def test_post_exit_upside_uses_exit_not_entry_and_strict_threshold():
+    position = dict(closed_at='2026-01-01T00:00:01+00:00', entry_price='3.65', exit_price='4.20')
+    assert post_exit_high_bps(position, 4.34) == pytest.approx(333.3333333333333)
+    assert post_exit_high_bps(position, 4.41) == 500
+    position.update(entry_price='10', exit_price='9')
+    assert post_exit_high_bps(position, 9.6) > 500
+
+
+def test_post_exit_upside_requires_closed_position_and_available_valid_prices():
+    assert post_exit_high_bps(dict(closed_at=None, exit_price='9'), 10) is None
+    assert post_exit_high_bps(dict(closed_at='closed', exit_price=None), 10) is None
+    assert post_exit_high_bps(dict(closed_at='closed', exit_price='9'), None) is None
+    for price in ('0', '-1', 'NaN', 'Infinity'):
+        with pytest.raises(ValueError, match='finite positive'):
+            post_exit_high_bps(dict(closed_at='closed', exit_price=price), 10)
 
 
 def test_entry_link_uses_intent_identity_even_when_decision_times_match():

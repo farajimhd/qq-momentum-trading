@@ -26,6 +26,16 @@ def readonly(path):
     return sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)
 
 
+def post_exit_high_bps(position, high):
+    """Hindsight upside from the actual average exit, never from entry."""
+    if not position.get('closed_at') or high is None or position.get('exit_price') is None:
+        return None
+    exit_price, high = Decimal(str(position['exit_price'])), Decimal(str(high))
+    if not exit_price.is_finite() or not high.is_finite() or exit_price <= 0 or high <= 0:
+        raise ValueError('Post-exit diagnostic requires finite positive prices')
+    return float((high / exit_price - 1) * 10000)
+
+
 def linked_entry(position, entries):
     """Resolve the entry through the lifecycle's original protection intent."""
     intent_ids = {event.get('source_intent_id') for event in position.get('protection_timeline', [])}
@@ -133,7 +143,8 @@ def audit(results, runtime_root):
         matched_exits = [d for d in exits if requested <= timestamp(d['event_time']) <= end]
         inside = [b for b, _ in frames if timestamp(b['bar_start']) >= start and timestamp(b['bar_end']) <= end]
         prior = [(b, i) for b, i in frames if timestamp(b['bar_end']) <= requested]
-        future = [b for b, _ in frames if end <= timestamp(b['bar_start']) < end + 60]
+        future = [b for b, _ in frames if position['closed_at']
+                  and end <= timestamp(b['bar_start']) and timestamp(b['bar_end']) <= end + 60]
         price = float(position['entry_price'])
         metadata = entry['metadata']
         gate = metadata.get('v5_gate_evidence', {})
@@ -159,7 +170,8 @@ def audit(results, runtime_root):
             flags.append('loss_within_two_seconds')
         if float(row['gross_pnl'] or 0) >= 0 and float(row['net_pnl'] or 0) < 0:
             flags.append('costs_turn_gross_gain_into_loss')
-        if row['next_minute_high'] and row['next_minute_high'] > price*1.05:
+        row['post_exit_high_bps'] = post_exit_high_bps(position, row['next_minute_high'])
+        if row['post_exit_high_bps'] is not None and row['post_exit_high_bps'] > 500:
             flags.append('hindsight_continuation_after_exit_over_five_percent')
         if not row['entry_gate_passed']:
             flags.append('entry_threshold_violation')
@@ -199,7 +211,7 @@ def audit(results, runtime_root):
         data_authority=run['data_authority'], summary=summary, positions=rows,
         limitations=['Excursions omit partial entry and exit candles.',
                       'Closed-equity drawdown excludes unrealized intratrade drawdown.',
-                      'Next-minute high is hindsight only; it is not an executable exit.'])
+                      'Next-minute high uses wholly subsequent candles within 60 seconds of closure; its bps reference is actual average exit, not entry. It is hindsight only, not an executable exit.'])
 
 
 def main():
