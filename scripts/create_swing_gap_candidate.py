@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import argparse
 from copy import deepcopy
 import json
+import math
 
 
 def main():
@@ -19,7 +20,12 @@ def main():
     parser.add_argument('--description', help='Describe the isolated strategy contract')
     parser.add_argument('--preserve-parameters', action='store_true')
     parser.add_argument('--parameters-json', type=Path, help='Explicit incremental parameter patch; preserve the source parameters first')
+    parser.add_argument('--mandate-risk-fraction', type=float,
+        help='Lower the cloned mandates maximum planned risk fraction; never increases the source limit')
     args = parser.parse_args()
+    if args.mandate_risk_fraction is not None and (
+            not math.isfinite(args.mandate_risk_fraction) or not 0 < args.mandate_risk_fraction <= 1):
+        parser.error('--mandate-risk-fraction must be finite and in (0, 1]')
     from src.backend.trading_configuration_service import configuration_candidate, create_test_candidate, configuration_base
     from src.trading_runtime.swing_gap import CONTRACT, DEFAULTS
     base = configuration_candidate(args.base_candidate, required=True)
@@ -45,9 +51,16 @@ def main():
             mandate['mandate_id'] = source['mandate_id'].replace(plan['run_plan_id'], plan_id)
             mandate['principal_id'] = source['principal_id'].replace(plan['run_plan_id'], plan_id)
             mandate['run_plan_id'] = plan_id
+            if args.mandate_risk_fraction is not None:
+                previous = mandate.get('maximum_planned_risk_fraction')
+                if previous is None or args.mandate_risk_fraction > float(previous):
+                    parser.error('--mandate-risk-fraction requires an explicit source limit at least as large')
+                mandate['maximum_planned_risk_fraction'] = args.mandate_risk_fraction
             mandate_ids.append(mandate['mandate_id'])
             payload['portfolio']['mandates'] = [m for m in payload['portfolio']['mandates'] if m['mandate_id'] != mandate['mandate_id']] + [mandate]
     plan['mandate_ids'] = mandate_ids
+    if args.mandate_risk_fraction is not None and not mandate_ids:
+        parser.error('The source plan has no mandates to constrain')
     universe = deepcopy(next(u for u in base['payload']['run_plans']['universes'] if u['universe_id'] == plan['universe_id']))
     universe['universe_id'] = 'run-plan-' + plan_id + '-candidates'
     payload['run_plans']['universes'] = [u for u in payload['run_plans']['universes'] if u['universe_id'] != universe['universe_id']] + [universe]

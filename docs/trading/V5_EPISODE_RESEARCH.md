@@ -60,7 +60,9 @@ the limiting portfolio constraints; it never silently increases risk limits.
 ## Reproducible workflow
 
 - `scripts/create_swing_gap_candidate.py` creates a new candidate through the
-  normal configuration authority from an explicit parameter patch.
+  normal configuration authority from an explicit parameter patch. Its optional
+  `--mandate-risk-fraction` lowers the cloned mandates' planned risk limit without
+  changing the account policy or allowing an increase over the source mandate.
 - `scripts/run_strategy_experiment.py` runs that candidate through the real
   `ReplayRunController`, preserving baseline definitions unless explicit date,
   time or simulation overrides are supplied. It records source hashes and a
