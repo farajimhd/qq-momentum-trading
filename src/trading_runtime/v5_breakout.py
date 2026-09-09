@@ -214,6 +214,7 @@ def evidence(observation, state):
             reentry_restricted=data.get('exited'), prior_period_body_high=data.get('prior_max'),
             entry_high_threshold=data.get('entry_high_threshold'),
             entry_range_high=data.get('entry_range_high'), entry_range_samples=data.get('entry_range_samples'),
+            entry_range_context=data.get('entry_range_context'),
             episode_reset_at=data.get('episode_reset_at'),
             episode_reset_gap_bps=data.get('episode_reset_gap_bps'),
             previous_episode_body_high=data.get('previous_episode_body_high'),

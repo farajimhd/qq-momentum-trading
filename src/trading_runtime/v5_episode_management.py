@@ -7,7 +7,7 @@ DEFAULTS = dict(rejection_from_below=True, rejection_closes=1,
                 entry_on_close=False, entry_range_seconds=0.,
                 profit_trail_atr_multiple=0., profit_trail_activation_atr=1.,
                 entry_confirmation_window_ms=0., maximum_macd_line_bps=0.,
-                entry_minimum_close_location=0.)
+                entry_minimum_close_location=0., require_range_context=False)
 
 
 def configure(parameters):
@@ -17,7 +17,7 @@ def configure(parameters):
     if not isinstance(raw, dict) or set(raw) - set(DEFAULTS):
         raise ValueError('Unknown episode management setting')
     policy = dict(DEFAULTS, **raw)
-    if any(type(policy[key]) is not bool for key in ('rejection_from_below','entry_on_close')):
+    if any(type(policy[key]) is not bool for key in ('rejection_from_below','entry_on_close','require_range_context')):
         raise ValueError('Episode policy flags must be boolean')
     if type(policy['rejection_closes']) is not int or not 1 <= policy['rejection_closes'] <= 60:
         raise ValueError('Rejection confirmation must be one to sixty completed candles')
@@ -36,6 +36,8 @@ def configure(parameters):
         raise ValueError('Close location must be between zero and one')
     if policy['entry_minimum_close_location'] and not policy['entry_on_close']:
         raise ValueError('Close location requires completed-candle entry confirmation')
+    if policy['require_range_context'] and not (policy['entry_on_close'] and policy['entry_range_seconds']):
+        raise ValueError('Required range context needs a positive range and completed-candle entry')
     fraction = policy['take_profit_fraction']
     if type(fraction) not in (int, float) or not isfinite(fraction) or not 0 <= fraction <= 1:
         raise ValueError('Target fraction must be between zero and one')
@@ -71,6 +73,21 @@ def observe_entry(o, d, closed, policy):
     seconds = policy['entry_range_seconds']
     now = o.observed_at.timestamp()
     if not seconds or not closed or now <= d.get('closed_at', 0):
+        return
+    context = o.completed_range_context
+    from .completed_candle_range import CONTRACT
+    valid = (policy.get('entry_on_close') and context.get('contract') == CONTRACT and context.get('ready') is True
+             and context.get('as_of') == now and context.get('seconds') == seconds)
+    d['entry_range_context_valid'] = valid
+    if valid:
+        d['entry_range_high'] = context['high']
+        d['entry_range_samples'] = context['samples']
+        d['entry_range_context'] = dict(context)
+        d.pop('entry_range_history', None)
+        return
+    if policy.get('require_range_context'):
+        d['entry_range_high'] = None
+        d['entry_range_samples'] = 0
         return
     history = [row for row in d.get('entry_range_history', []) if row[0] >= now-seconds]
     history.append([now, max(o.price, o.bar_high or o.price)])

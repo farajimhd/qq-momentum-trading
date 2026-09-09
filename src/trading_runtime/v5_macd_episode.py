@@ -184,6 +184,8 @@ def select(o, p, state):
             return {'reason': 'v5_waiting_for_entry_close'}
     if not d.get('macd_open'):
         return {'reason': 'v5_macd_gap_below_minimum'}
+    if policy.get('require_range_context') and not d.get('entry_range_context_valid'):
+        return {'reason': 'v5_canonical_range_history_unavailable'}
     if policy.get('maximum_macd_line_bps') and (d.get('macd_line_bps') is None
             or d['macd_line_bps'] > policy['maximum_macd_line_bps']):
         return {'reason': 'v5_macd_trend_extended'}

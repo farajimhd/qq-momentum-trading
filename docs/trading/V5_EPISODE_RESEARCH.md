@@ -25,11 +25,20 @@ settings. Omitting it preserves the earlier episode policy.
 | `entry_confirmation_window_ms` | 0 | With close-only confirmation, permit execution during this bounded window after the close, strictly less than one candle interval old. Both the confirming close and current price must clear its frozen threshold; current VWAP, MACD and execution checks still apply. Maximum 1000 ms. |
 | `maximum_macd_line_bps` | 0 | Optional ceiling on positive fast/slow MACD separation divided by its normalization close. Zero disables it. With completed MACD evaluation, both operands remain frozen at that close. |
 | `entry_minimum_close_location` | 0 | Optional minimum `(close-low)/(high-low)` of the confirming candle. Requires close confirmation; flat or invalid candles fail closed. Zero disables it. |
+| `require_range_context` | false | Require the shared completed-candle range context, including candles before entry eligibility. Missing, mismatched or future context blocks entry. Requires a positive range and completed-close entry. Research candidates should enable this; an execution adapter must supply the same causal contract before using them. |
 
 The closing candle is compared with prior completed candles before being retained
 in the episode maximum for the next decision. MACD evaluation remains separately
 controlled by `macd_evaluation_mode`. Research using completed candles must select
 `completed_1s`; a missing MACD value cannot manufacture an episode reset.
+
+Historical Replay tracks configured completed-candle range highs before signal
+activation, without evaluating entry or exit rules. Close-confirmed range selection
+uses that context when supplied, excluding the confirming candle. It is checkpointed
+independently of assignment state. A required-context candidate cannot resume an
+older checkpoint that lacks this history. Legacy adapters without this context
+retain their observed-history behavior only when the requirement is disabled;
+research-only candidates with the requirement enabled fail closed there.
 
 Touching a resistance is not a completed break. A close above its upper bound
 clears the attempt. Rejection contacts and gap averages belong to the position

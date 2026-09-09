@@ -1787,6 +1787,8 @@ class ReplayRunController:
                 "frame_cursor": deepcopy(self._frame_cursor),
                 "processed_frames": self._processed_frames,
                 "experimental_session_highs": deepcopy(getattr(self, "_experimental_session_highs", {})),
+                "completed_range_windows": {ticker: window.checkpoint() for ticker, window
+                    in getattr(self, "_completed_range_windows", {}).items()},
                 "level_load_contract": LEVEL_LOAD_CONTRACT,
                 "previous_vwap": [
                     {
@@ -2312,8 +2314,8 @@ class ReplayRunController:
                                 external_index += 1
                             self._apply_historical_watchlist_membership(frame.as_of)
                             # Before the first source-native activation the
-                            # strategy cannot act. Preserve only causal VWAP
-                            # memory; full evaluation starts at the activation
+                            # strategy cannot act. Preserve causal candle
+                            # history; full evaluation starts at the activation
                             # boundary instead of scanning every assignment for
                             # every pre-signal frame.
                             self._remember_strategy_frame(frame)
@@ -2783,6 +2785,11 @@ class ReplayRunController:
         self._frame_cursor = dict(controller.get("frame_cursor") or {})
         self._processed_frames = int(controller.get("processed_frames") or 0)
         self._experimental_session_highs = deepcopy(controller.get("experimental_session_highs") or {})
+        from src.trading_runtime.completed_candle_range import CompletedCandleRange
+        if self._entry_range_policy().get('require_range_context') and 'completed_range_windows' not in controller:
+            raise ValueError('Restart checkpoint lacks required completed range history; start a new run')
+        self._completed_range_windows = {ticker: CompletedCandleRange.restore(value)
+            for ticker, value in controller.get('completed_range_windows', {}).items()}
         checkpoint_interval = self._restart_checkpoint_interval_events()
         self._last_restart_checkpoint_event_bucket = (
             self.processed_events // checkpoint_interval
@@ -3120,6 +3127,7 @@ class ReplayRunController:
             if isinstance(row, Mapping)
         )
         base = StrategyObservation(
+            completed_range_context=self._completed_range_context(frame),
             ticker=frame.ticker,
             observed_at=frame.as_of,
             market_pressure=self._pressure_trackers.get(frame.ticker, PressureTracker()).snapshot(frame.as_of),
@@ -4306,6 +4314,28 @@ class ReplayRunController:
         # Execution VWAP is carried directly on each causal indicator frame.
         if frame.timeframe == "1s":
             self._experimental_session_high(frame.ticker, frame.as_of, frame.bar.get("high"))
+            seconds = self._entry_range_policy().get('entry_range_seconds', 0)
+            if seconds:
+                from src.trading_runtime.completed_candle_range import CompletedCandleRange
+                windows = getattr(self, '_completed_range_windows', None)
+                if windows is None:
+                    windows = self._completed_range_windows = {}
+                window = windows.get(frame.ticker)
+                if window is None:
+                    window = windows[frame.ticker] = CompletedCandleRange(
+                        seconds, self.definition.session_start.timestamp())
+                window.observe(frame.as_of.timestamp(), float(frame.bar['high']))
+
+    def _entry_range_policy(self):
+        definition = getattr(self, 'definition', None)
+        configuration = getattr(definition, 'configuration_revision', {})
+        return configuration.get('payload', {}).get('strategy', {}).get('parameters', {}).get('episode_management', {})
+
+    def _completed_range_context(self, frame):
+        if frame.timeframe != '1s':
+            return {}
+        window = getattr(self, '_completed_range_windows', {}).get(frame.ticker)
+        return window.context(frame.as_of.timestamp()) if window else {}
 
     def _experimental_session_high(self, ticker: str, at: datetime, price=None):
         """Track HOD independently of v18 from the already ordered canonical stream."""

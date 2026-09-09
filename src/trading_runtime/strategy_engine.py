@@ -360,6 +360,7 @@ class StrategyObservation:
     source_timeframe: str = ""
     market_pressure: dict[str, Any] = field(default_factory=dict)
     source_values: dict[str, Any] = field(default_factory=dict)
+    completed_range_context: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.observed_at.tzinfo is None:
