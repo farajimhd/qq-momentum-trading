@@ -218,6 +218,7 @@ type PriceZone = {
   prominence?: number;
   p_norm?: number | null;
   loadContract?: string;
+  evidenceGraded?: boolean;
   levelPrice?: number;
   tickerRelativeQualityDistributionHash?: string;
   tickerRelativeQualityPopulationSize?: number;
@@ -2949,14 +2950,14 @@ function LegendEditor({
         </fieldset>
       ) : item.itemKind === "zone" && item.supportsProminenceFilter ? (
         <fieldset className="legend-unified-filters">
-          <legend>{item.settingsId?.endsWith('.v5') ? 'Resistance evidence score' : 'Prominence'}</legend>
+          <legend>{item.settingsId?.endsWith('.v5') ? 'Level evidence score' : 'Prominence'}</legend>
           <label className="legend-filter-control">
             <span className="legend-filter-control-copy">
-              <span>{item.settingsId?.endsWith('.v5') ? 'Minimum resistance score' : 'Minimum prominence'}</span>
-              <small>{item.settingsId?.endsWith('.v5') ? 'Evidence grade, not probability. Supports are unchanged. V5 selects resistance at 30/100; this slider can further filter the display.' : `Show levels with P at or above this value. Range: 0 to ${Math.max(item.maximumProminence ?? 1, item.minimumProminence ?? 4).toFixed(1)}. Zero shows all scores. Display only.`}</small>
+              <span>{item.settingsId?.endsWith('.v5') ? 'Minimum evidence score' : 'Minimum prominence'}</span>
+              <small>{item.settingsId?.endsWith('.v5') ? 'Evidence grade, not probability. Filters scored support and resistance areas. Legacy unscored supports remain unchanged. Display only; V5 selects at 30/100.' : `Show levels with P at or above this value. Range: 0 to ${Math.max(item.maximumProminence ?? 1, item.minimumProminence ?? 4).toFixed(1)}. Zero shows all scores. Display only.`}</small>
             </span>
             <span className="legend-range-control">
-              <input aria-label={item.settingsId?.endsWith('.v5') ? 'Minimum resistance score' : 'Minimum prominence'} type="range" min={item.settingsId?.endsWith('.v5') ? 30 : 0} step={0.1}
+              <input aria-label={item.settingsId?.endsWith('.v5') ? 'Minimum evidence score' : 'Minimum prominence'} type="range" min={item.settingsId?.endsWith('.v5') ? 30 : 0} step={0.1}
                 max={item.settingsId?.endsWith('.v5') ? 100 : Math.max(item.maximumProminence ?? 1, item.minimumProminence ?? 4)}
                 value={item.minimumProminence ?? 4}
                 onChange={(event) => onUpdate({ minimumProminence: clampNumber(Number(event.target.value), 0, Number.MAX_VALUE, 0) })} />
@@ -5335,7 +5336,7 @@ function priceZoneMeetsUnifiedFilters(zone: PriceZone, settings: ResolvedPriceZo
   const stateVisible = zone.latest ? settings.showUnifiedActive : settings.showUnifiedBroken;
   const flipVisible = !(Number(zone.roleFlipCount) > 0) || settings.showUnifiedRoleFlipped;
   if (zone.settingsId?.endsWith('.v5')) return roleVisible && stateVisible && flipVisible
-    && (zone.tone === 'buy' || Number(zone.prominence) >= settings.minimumProminence);
+    && (zone.tone === 'buy' && !zone.evidenceGraded || Number(zone.prominence) >= settings.minimumProminence);
   if (zone.loadContract) return roleVisible && stateVisible && flipVisible
     && (settings.minimumPNorm <= 0 || (Number.isFinite(zone.p_norm) && Number(zone.p_norm) >= settings.minimumPNorm));
   if (Number.isFinite(zone.prominence)) return roleVisible && stateVisible && flipVisible

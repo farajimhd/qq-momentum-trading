@@ -1,11 +1,11 @@
 export type BacktestTickerPreset = 'SUGP' | 'JUNS' | 'both' | 'all' | 'custom';
-export type ValidationBook = { id: string; ticker: string; start: string; end: string; version: string };
+export type ValidationBook = { id: string; ticker: string; start: string; end: string; version: string; selection_contract?: string };
 export const DEFAULT_BACKTEST_DATE = '2026-08-21';
 
 export function v5BookFor(ticker: string, date: string, books: ValidationBook[]) {
   return books.filter(book => book.ticker === ticker && book.version === 'causal-swing-closing-book-5'
     && book.start <= date && date <= book.end)
-    .sort((a,b) => b.end.localeCompare(a.end) || a.start.localeCompare(b.start) || a.id.localeCompare(b.id))[0];
+    .sort((a,b) => b.end.localeCompare(a.end) || Number(b.selection_contract==='symmetric-level-evidence-selection-2')-Number(a.selection_contract==='symmetric-level-evidence-selection-2') || a.start.localeCompare(b.start) || a.id.localeCompare(b.id))[0];
 }
 
 export function presetTickers(preset: BacktestTickerPreset, date: string, books: ValidationBook[]) {

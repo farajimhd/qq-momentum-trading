@@ -5,7 +5,7 @@ import json
 import re
 
 from research.mlops.clickhouse import ClickHouseHttpClient,default_clickhouse_url,default_clickhouse_user,default_clickhouse_password
-from src.market_engine.swing_book_v5 import StreamingSwingBookV5
+from src.market_engine.swing_book_v5 import StreamingSwingBookV5, CONTRACT, LEGACY_CONTRACT
 
 
 def encode(value):
@@ -13,9 +13,11 @@ def encode(value):
 
 
 class ClosingStore:
-    def __init__(self, database):
+    def __init__(self, database, *, contract=CONTRACT):
         if not re.fullmatch(r'structure_book_[a-f0-9]{12}',database):raise ValueError('Invalid v5 database')
         self.database=database
+        if contract not in (CONTRACT,LEGACY_CONTRACT):raise ValueError('Unsupported V5 selection contract')
+        self.contract=contract
         self.client=ClickHouseHttpClient(default_clickhouse_url(),default_clickhouse_user(),default_clickhouse_password(),
             timeout_seconds=30,default_query_params={'max_threads':2,'max_memory_usage':536870912})
 
@@ -47,10 +49,11 @@ class ClosingStore:
         db=self.database;stamp=int(seed['closed_at']*1e6)
         current=self.latest()
         if current and current['closed_at']>seed['closed_at']:raise ValueError('Cannot overwrite newer closing state')
-        visible=StreamingSwingBookV5(seed,seed['closed_at']).snapshot()['unified_levels']
+        contract=getattr(self,'contract',LEGACY_CONTRACT)
+        visible=StreamingSwingBookV5(seed,seed['closed_at'],contract=contract).snapshot()['unified_levels']
         next_rows={}
         for r in visible:
-            key=r['unified_level_id'] if r['side']==-1 else 's:'+r['unified_level_id']
+            key=r['unified_level_id'] if r['side']==-1 or contract==CONTRACT else 's:'+r['unified_level_id']
             # Stable member ids are present in the resistance area identifier;
             # retain them explicitly for SQL/streaming verification.
             members=r.get('selection_members',[r['unified_level_id']])

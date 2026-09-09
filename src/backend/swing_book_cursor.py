@@ -69,7 +69,7 @@ class SwingBookCursor:
                 opening, _ = session_bounds(session)
                 if self.build['version']=='causal-swing-closing-book-5':
                     from src.market_engine.swing_book_v5 import StreamingSwingBookV5
-                    self.engine = StreamingSwingBookV5(seed,opening.timestamp(),self.factor)
+                    self.engine = StreamingSwingBookV5(seed,opening.timestamp(),self.factor,contract=self.build.get('selection_contract','resistance-evidence-selection-1'))
                 else:
                     self.engine = SwingBook(seed,opening.timestamp(),self.factor,version=self.build['version'])
                 self.index, self.session = 0, session

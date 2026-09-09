@@ -17,12 +17,16 @@ def qualifies(row, observed_at=None, *, include_retained=False):
     try:
         score, price = float(row['prominence']), float(row['price'])
         if row.get('book_version')=='causal-swing-closing-book-5':
+            symmetric=row.get('load_contract')=='symmetric-level-evidence-selection-2'
             retained = (include_retained and row.get('retained_qualified_resistance') is True
                         and row.get('side')==-1 and row.get('lifecycle') in ('awaiting_retest','retest_contact'))
+            # Broken supports are retained in raw structural evidence, but are
+            # never eligible as active protection in the strategy projection.
             if row.get('lifecycle')!='active' and not retained:return False
-            if row.get('side')==-1:
+            if row.get('side')==-1 or symmetric:
                 grade=float(row['selection_score'])
-                if not isfinite(grade) or not 30<=grade<=100:return False
+                threshold=float(row.get('selection_minimum_score',30)) if symmetric else 30.
+                if not isfinite(threshold) or not 0<=threshold<=100 or not isfinite(grade) or not threshold<=grade<=100:return False
         elif row.get('load_contract') in {'merged-point-minmax-v1', 'merged-point-minmax-v2', 'merged-point-minmax-v3', CONTRACT}:
             score = float(row['p_norm'])
             threshold = float(row.get('minimum_p_norm', DEFAULT_THRESHOLD))

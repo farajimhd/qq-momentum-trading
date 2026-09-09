@@ -4,30 +4,38 @@ from .swing_book import SwingBook, INTRADAY_VERSION, project
 from .resistance_selection import select_areas
 
 VERSION = 'causal-swing-closing-book-5'
-CONTRACT = 'resistance-evidence-selection-1'
+LEGACY_CONTRACT = 'resistance-evidence-selection-1'
+CONTRACT = 'symmetric-level-evidence-selection-2'
 
 
-def projection(engine, now, minimum_score=30., maximum_width_bps=100.):
-    supports = [dict(project(r, VERSION), p_norm=None, selection_score=None, load_contract=CONTRACT)
-                for r in engine.active.values() if r['state']=='active' and r['scale']=='major' and r['side']=='support']
+def projection(engine, now, minimum_score=30., maximum_width_bps=100., contract=CONTRACT):
+    supports = [dict(project(r, VERSION), p_norm=None, selection_score=None, load_contract=contract)
+                for r in engine.active.values() if r['state']=='active' and r['scale']=='major' and r['side']=='support'] if contract==LEGACY_CONTRACT else []
     by_id = {str(r['level_id']): r for r in engine.active.values()}
     result = supports
-    for area in select_areas(engine.active.values(), now, minimum_score=minimum_score, maximum_width_bps=maximum_width_bps):
-        if not area['selected']:
-            continue
-        members = [by_id[k] for k in area['members']]
-        result.append(dict(unified_level_id='r:'+area['id'], price=area['price'], lower=area['lower'], upper=area['upper'],
-            side=-1, prominence=area['score'], selection_score=area['score'], p_norm=None,
-            created_at_ms=int(max(r['pivot_at'] for r in members)*1000),
-            confirmed_at_ms=int(max(r['confirmed_at'] for r in members)*1000), lifecycle='active',
-            book_version=VERSION, load_contract=CONTRACT, scale='major', timeframes=['1s'],
-            member_count=len(members), selection_members=area['members'], sources=[], selection_reasons=area['reasons']))
-    return dict(unified_levels=result, load_contract=CONTRACT)
+    for side in (('resistance',) if contract==LEGACY_CONTRACT else ('support','resistance')):
+        for area in select_areas(engine.active.values(), now, minimum_score=minimum_score, maximum_width_bps=maximum_width_bps,side=side,role_safe=contract==CONTRACT):
+            if not area['selected']:
+                continue
+            members = [by_id[k] for k in area['members']]
+            result.append(dict(unified_level_id=('r:' if side=='resistance' else 's:')+area['id'], price=area['price'], lower=area['lower'], upper=area['upper'],
+                side=-1 if side=='resistance' else 1, prominence=area['score'], selection_score=area['score'], p_norm=None,
+                created_at_ms=int(max(r['pivot_at'] for r in members)*1000),
+                confirmed_at_ms=int(max(r['confirmed_at'] for r in members)*1000), lifecycle='active',
+                book_version=VERSION, load_contract=contract, scale='major', timeframes=['1s'],
+                member_count=len(members), selection_members=area['members'], sources=[], selection_reasons=area['reasons']))
+            if contract==CONTRACT: result[-1]['selection_minimum_score']=minimum_score
+    return dict(unified_levels=result, load_contract=contract)
 
 
 class StreamingSwingBookV5(SwingBook):
     """Completed canonical seconds only. Seed is a compact v4 candidate checkpoint."""
-    def __init__(self, seed=None, opening=None, split_factor=1., *, minimum_score=30., maximum_width_bps=100.):
+    def __init__(self, seed=None, opening=None, split_factor=1., *, minimum_score=30., maximum_width_bps=100., contract=CONTRACT):
+        if contract not in (CONTRACT,LEGACY_CONTRACT): raise ValueError('Unsupported V5 selection contract')
+        select_areas([],0,minimum_score=minimum_score,maximum_width_bps=maximum_width_bps)
+        self.selection_contract=contract
+        self._selection_signatures={}
+        self.selection_rebuilds=0
         self.selection_dirty = True
         self.minimum_score, self.maximum_width_bps = minimum_score, maximum_width_bps
         self._selection = None
@@ -37,35 +45,49 @@ class StreamingSwingBookV5(SwingBook):
             self.last_time = opening
 
     def _level_updated(self, level):
-        self.selection_dirty = True
         super()._level_updated(level)
-        if hasattr(self, 'revision'):
-            self.revision += 1
+        if self.selection_contract==LEGACY_CONTRACT:
+            self.selection_dirty=True
+            self.revision+=1
+        elif level['scale']=='major':
+            threshold=level.get('history_threshold',0)
+            departure=min(1.,level.get('best_departure',0)/threshold) if threshold>0 and level.get('last_role_change_at') is None else 0.
+            signature=tuple(level.get(k) for k in ('side','state','lower','upper','price','pivot_at','confirmed_at','formed_at','last_role_change_at','independent_retests','role_retests','accepted_crossings'))+(departure,)
+            key=level['level_id']
+            if self._selection_signatures.get(key)!=signature:
+                self._selection_signatures[key]=signature
+                self.selection_dirty=True
+                self.revision+=1
 
     def _level_removed(self, key):
-        self.selection_dirty = True
+        if self._selection_signatures.pop(key,None) is not None or self.selection_contract==LEGACY_CONTRACT:
+            self.selection_dirty = True
         super()._level_removed(key)
 
     def _publish(self, level, t, reason):
-        self.selection_dirty = True
+        if self.selection_contract==LEGACY_CONTRACT: self.selection_dirty = True
         super()._publish(level,t,reason)
 
     def _refresh_selection(self):
         if self.selection_dirty or self._selection is None:
-            self._selection = projection(self, self.last_time, self.minimum_score, self.maximum_width_bps)
+            self.selection_rebuilds+=1
+            self._selection = projection(self, self.last_time, self.minimum_score, self.maximum_width_bps,self.selection_contract)
             current = self._selection['unified_levels']
             active_members = {k for row in current for k in row.get('selection_members', [])}
             by_id = {str(r['level_id']): r for r in self.active.values()}
             for key, row in self._qualified_references.items():
                 members = [by_id.get(k) for k in row['selection_members']]
-                if (members and all(r and r['side']=='resistance' and
+                side='resistance' if row['side']==-1 else 'support'
+                if (members and all(r and r['side']==side and
                         r['state'] in ('active','awaiting_retest','retest_contact') for r in members)
                         and not active_members.intersection(row['selection_members'])
                         and any(r['state']!='active' for r in members)):
                     lifecycle = ('retest_contact' if any(r['state']=='retest_contact' for r in members)
                                  else 'awaiting_retest')
-                    current.append(dict(row, lifecycle=lifecycle, retained_qualified_resistance=True))
-            self._qualified_references = {r['unified_level_id']:dict(r) for r in current if r['side']==-1}
+                    retained=dict(row,lifecycle=lifecycle)
+                    retained['retained_qualified_'+side]=True
+                    current.append(retained)
+            self._qualified_references = {r['unified_level_id']:dict(r) for r in current if 'selection_members' in r}
             self.selection_dirty = False
 
     def snapshot(self):

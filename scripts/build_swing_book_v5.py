@@ -17,7 +17,7 @@ import prototype_structure_book_clickhouse as P
 from build_swing_structure_book import policy
 from src.backend.experimental_structure_book import builds
 from src.market_engine.resistance_selection_sql import selection_sql
-from src.market_engine.swing_book_v5 import VERSION
+from src.market_engine.swing_book_v5 import VERSION, CONTRACT
 from src.market_engine.resistance_selection import select_areas
 
 
@@ -30,7 +30,9 @@ def run(ticker,args):
     missing=client.query(f"SELECT count() n FROM market_sip_compact.events_ordinal_continuity FINAL WHERE ticker={P.literal(ticker)} AND source_date BETWEEN '{args.start}' AND '{args.end}' AND source_date<today() AND source_date NOT IN (SELECT session_date FROM {source['id']}.sessions FINAL)",'coverage')
     if int(missing[0]['n']):raise ValueError(f'{ticker}: {missing[0]["n"]} certified days missing from candidate source; extend v4 first')
     if source['end']>args.end:raise ValueError('Requested end precedes source end; select a matching candidate build')
-    fingerprint=P.digest([VERSION,source['fingerprint'],selection_sql(source['id']),args.start,args.end,sha256(Path(__file__).read_bytes()).hexdigest()])
+    queries={side:selection_sql(source['id'],side=side,role_safe=True) for side in ('support','resistance')}
+    selector_hash=sha256((Path(__file__).resolve().parents[1]/'src/market_engine/resistance_selection.py').read_bytes()).hexdigest()
+    fingerprint=P.digest([VERSION,CONTRACT,source['fingerprint'],queries,selector_hash,args.start,args.end,sha256(Path(__file__).read_bytes()).hexdigest()])
     db='structure_book_'+fingerprint[:12]
     policy(client,db)
     client.query(f'CREATE DATABASE IF NOT EXISTS {db}','database',False)
@@ -39,8 +41,8 @@ def run(ticker,args):
     client.query(f"CREATE TABLE IF NOT EXISTS {db}.closing ({schema}) ENGINE=ReplacingMergeTree(revision) PARTITION BY cityHash64(ticker)%32 ORDER BY (ticker,valid_from_us,level_id) SETTINGS storage_policy='live_market_ssd'",'schema',False)
     policy(client,db)
     print(f'{ticker}: active=1 queued=0 completed=0 failed=0 | selecting in ClickHouse',flush=True)
-    client.query(f"INSERT INTO {db}.closing SELECT *,toInt8(-1),toUInt64(1) FROM ({selection_sql(source['id'])})",'select_resistances',False)
-    client.query(f"INSERT INTO {db}.closing SELECT ticker,valid_from_us,concat('s:',toString(level_id)),lower,upper,price,toFloat64(0),[toString(level_id)],toInt8(1),toUInt64(1) FROM {source['id']}.book FINAL WHERE scale='major' AND JSONExtractString(state_json,'state')='active' AND side=1",'supports',False)
+    for side,sign in [('support',1),('resistance',-1)]:
+        client.query(f"INSERT INTO {db}.closing SELECT *,toInt8({sign}),toUInt64(1) FROM ({queries[side]})",f'select_{side}',False)
     # Close at the immediate next source checkpoint even when an area disappears.
     # This compact public table references the immutable v4 candidate authority.
     client.query(f"CREATE TABLE IF NOT EXISTS {db}.book (ticker LowCardinality(String),level_id String,valid_from_us UInt64,valid_to_us Nullable(UInt64),lower Float64,upper Float64,price Float64,selection_score Float64,side Int8,members Array(String)) ENGINE=ReplacingMergeTree ORDER BY (ticker,level_id,valid_from_us) PARTITION BY cityHash64(ticker)%32 SETTINGS storage_policy='live_market_ssd'",'book_schema',False)
@@ -60,11 +62,12 @@ SELECT ticker,level_id,min(valid_from_us),if(countIf(until IS NULL)>0,NULL,max(u
     chosen=sorted({int(stamps[i]['valid_from_us']) for i in (0,len(stamps)//4,len(stamps)//2,3*len(stamps)//4,len(stamps)-1)}) if stamps else []
     for stamp in chosen:
         raw=client.query(f"SELECT state_json FROM {source['id']}.book FINAL WHERE valid_from_us={stamp}",'parity_input')
-        expected={a['id']:a for a in select_areas([json.loads(r['state_json']) for r in raw],stamp/1e6) if a['selected']}
-        actual=client.query(f"SELECT * FROM {db}.closing FINAL WHERE valid_from_us={stamp} AND side=-1",'parity_output')
-        if set(expected)!={r['level_id'][2:] for r in actual}:raise ValueError('SQL/streaming membership mismatch')
+        expected={prefix+a['id']:a for side,prefix in [('support','s:'),('resistance','r:')]
+                  for a in select_areas([json.loads(r['state_json']) for r in raw],stamp/1e6,side=side,role_safe=True) if a['selected']}
+        actual=client.query(f"SELECT * FROM {db}.closing FINAL WHERE valid_from_us={stamp}",'parity_output')
+        if set(expected)!={r['level_id'] for r in actual}:raise ValueError('SQL/streaming membership mismatch')
         for row in actual:
-            target=expected[row['level_id'][2:]]
+            target=expected[row['level_id']]
             if any(abs(row[k]-target[k])>1e-8 for k in ('lower','upper','price')) or abs(row['selection_score']-target['score'])>1e-8:raise ValueError('SQL/streaming geometry/score mismatch')
     client.query(f"CREATE TABLE IF NOT EXISTS {db}.latest_state (ticker LowCardinality(String),source_book String,closed_at Float64,state_hash String,states Array(String),sequence UInt64) ENGINE=ReplacingMergeTree ORDER BY ticker SETTINGS storage_policy='live_market_ssd'",'state_schema',False)
     policy(client,db)
@@ -73,7 +76,7 @@ SELECT ticker,level_id,min(valid_from_us),if(countIf(until IS NULL)>0,NULL,max(u
     client.query(f'DROP TABLE {db}.closing','drop_staging',False)
     policy(client,db)
     report=dict(version=VERSION,database=db,ticker=ticker,requested_start=args.start,requested_end=args.end,actual_end=source['end'],
-        fingerprint=fingerprint,status='built_pending_quality_acceptance',source_book=source['id'],source_fingerprint=source['fingerprint'],
+        fingerprint=fingerprint,selection_contract=CONTRACT,selector_hash=selector_hash,status='built_pending_quality_acceptance',source_book=source['id'],source_fingerprint=source['fingerprint'],
         source_policy=source['source_policy'],runtime=str(folder),elapsed_seconds=perf_counter()-start,counts=counts,
         storage=client.query(f"SELECT sum(bytes_on_disk) bytes FROM system.parts WHERE active AND database='{db}'",'storage'))
     P.save(folder/'report.json',report)

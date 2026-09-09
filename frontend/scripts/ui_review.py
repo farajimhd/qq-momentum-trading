@@ -2555,6 +2555,28 @@ def capture(args: argparse.Namespace) -> int:
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__detector-details.png')),full_page=True)
                         if page.get_by_text('Chart renderer stopped', exact=True).count():
                             raise RuntimeError('Independent structural chart failed')
+                    if args.symmetric_swing_fixture:
+                        evidence=json.loads(Path(args.symmetric_swing_fixture).read_text())
+                        page.evaluate("""async evidence => {
+                            const {historicalMarketLevelZones}=await import('/src/features/canvas/chartPresentation.tsx');
+                            const {ChartPanel}=await import('/src/app/components/ChartPanel.tsx');
+                            const {default:React}=await import('/node_modules/.vite/deps/react.js');
+                            const {default:ReactDOM}=await import('/node_modules/.vite/deps/react-dom_client.js');
+                            const {createRoot}=ReactDOM;
+                            const zones=historicalMarketLevelZones(evidence.indicators,evidence.bars,[],[],['indicator.qmd_unified_structure'],'1s');
+                            for(const tone of ['buy','sell']) {
+                                if(!zones.some(z=>z.tone===tone && z.evidenceGraded && z.latest))throw Error('Missing scored '+tone+' zones');
+                            }
+                            const host=document.createElement('div');host.id='symmetric-swing-fixture';host.className='app-shell';
+                            host.style.cssText='position:fixed;inset:0;z-index:100;background:var(--surface);height:var(--app-zoomed-viewport-height);';document.body.append(host);
+                            const candles=evidence.bars.map(b=>({time:Date.parse(b.bar_start)/1000,open:b.open,high:b.high,low:b.low,close:b.close}));
+                            const payload={candles,price_zones:zones,markers:[],overlay_series:[],oscillator_series:[],regions:[],volume:[]};
+                            createRoot(host).render(React.createElement(ChartPanel,{payload,ticker:evidence.ticker,timeframe:'1s',timeframes:['1s'],
+                              indicatorOptions:[],featureOptions:[],visibleColumns:['indicator.qmd_unified_structure'],fillHeight:true,enableFullscreen:false,
+                              onTickerChange:()=>{},onTimeframeChange:()=>{},onVisibleColumnsChange:()=>{}}));
+                        }""",evidence)
+                        page.locator('#symmetric-swing-fixture canvas').first.wait_for(state='visible',timeout=args.timeout_ms)
+                        page.wait_for_timeout(300)
                     if args.staged_strategy_fixture:
                         page.evaluate("""async () => {
                             const {ChartPreview,positionLifecycleAnnotations,historicalMarketLevelZones}=await import('/src/features/canvas/chartPresentation.tsx');
@@ -2803,9 +2825,12 @@ def capture(args: argparse.Namespace) -> int:
                         }""", timeout=180000)
                         if page.get_by_role('button',name='Selected resistance',exact=True).count():
                             raise RuntimeError('Retired selected-resistance toolbar remains')
-                        page.get_by_role('button',name='Expand legend',exact=True).first.click()
-                        page.get_by_role('button',name='Configure Swing level book v5',exact=True).click(timeout=180000)
-                        slider=page.get_by_role('slider',name='Minimum resistance score',exact=True)
+                        v5_panel=page.locator('#symmetric-swing-fixture') if args.symmetric_swing_fixture else page
+                        expand=v5_panel.get_by_role('button',name='Expand legend',exact=True)
+                        if expand.count():
+                            expand.first.click()
+                        v5_panel.get_by_role('button',name='Configure Swing level book v5',exact=True).click(timeout=180000)
+                        slider=page.get_by_role('slider',name='Minimum evidence score',exact=True)
                         slider.wait_for()
                         if slider.input_value()!='30' or slider.get_attribute('max')!='100':
                             raise RuntimeError('V5 evidence score defaults incorrect')
@@ -3007,7 +3032,9 @@ def capture(args: argparse.Namespace) -> int:
                         page.get_by_role('button',name='Level book',exact=True).click()
                         for ticker in ('JUNS','SUGP'):
                             label = f'Swing book v{args.swing_book_version}' if args.swing_book_version>=2 else 'Swing book'
-                            page.get_by_role('option',name=re.compile(r'^'+label+r' · '+ticker+r' · ')).wait_for(state='visible',timeout=args.timeout_ms)
+                            if args.swing_book_version==5:label+=' · scored S/R'
+                            prefix=re.escape(label+' · '+ticker+' · ').replace('/',r'\/')
+                            page.get_by_role('option',name=re.compile('^'+prefix)).wait_for(state='visible',timeout=args.timeout_ms)
                     page.screenshot(path=str(screenshot_path), full_page=True)
                     issues: list[str] = []
                     if hindsight_issue:
@@ -3068,7 +3095,7 @@ def capture(args: argparse.Namespace) -> int:
                         and scenario["scale"] == 1.0
                         and scenario["viewport_name"] == "normal"
                     ) else screenshot_path.with_name(f"{screenshot_path.stem}__chart-interaction.png") if scenario["page"] == "canvas-focus" else None
-                    if not args.hindsight_positions and not args.swing_structure_fixture and not args.structure_gaps_fixture and not args.structure_gaps and not args.resistance_selection_fixture and not args.resistance_selection and not args.swing_book_v5 and not args.staged_strategy_fixture and not args.structural_detector_fixture:
+                    if not args.hindsight_positions and not args.swing_structure_fixture and not args.structure_gaps_fixture and not args.structure_gaps and not args.resistance_selection_fixture and not args.resistance_selection and not args.swing_book_v5 and not args.staged_strategy_fixture and not args.structural_detector_fixture and not args.symmetric_swing_fixture:
                         issues.extend(validate_canvas_interactions(
                             page, scenario, interaction_screenshot,
                             args.canvas_chart_timeframe, args.chart_stress_cycles,
@@ -3147,6 +3174,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument('--resistance-selection-fixture', action='store_true', help='validate selection overlay, cutoff, sliders and reversible chart painting with a fixture')
     result.add_argument('--resistance-selection', action='store_true', help='calculate and inspect resistance selection on a real historical chart')
     result.add_argument('--swing-book-v5', action='store_true', help='validate integrated v5 evidence-score controls on a real replay chart')
+    result.add_argument('--symmetric-swing-fixture', help='canonical bars and V5 snapshots for support/resistance projection validation; no strategy run')
     result.add_argument('--staged-strategy-fixture', action='store_true', help='validate frozen R1-R4 and stop/target paths using synthetic journal evidence; no backtest')
     result.add_argument('--structural-detector-fixture', help='backend detector result JSON for independent candle-label rendering and indicator-form validation')
     result.add_argument('--backtest-presets', action='store_true', help='verify ticker defaults and V5 selection with stubbed books and warmup; never launch a run')
@@ -3154,7 +3182,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument('--structure-gaps', action='store_true', help='calculate and inspect the real v4 gap preview on a historical chart')
     result.add_argument('--structure-time-placement', action='store_true', help='verify exact confirmation placement across missing and coarse candles')
     result.add_argument('--swing-book-selector',action='store_true',help='verify published JUNS/SUGP swing books in the Backtest selector; never launch a run')
-    result.add_argument('--swing-book-version',type=int,choices=(1,2,3,4),default=1,help='book version expected by the selector check')
+    result.add_argument('--swing-book-version',type=int,choices=(1,2,3,4,5),default=1,help='book version expected by the selector check')
     result.add_argument("--canvas-charts-quotes", action="store_true", help="seed the Charts & Quotes container in Canvas focus review")
     result.add_argument("--canvas-position-manager", action="store_true", help="seed the Position Manager container in Canvas focus review")
     result.add_argument("--stub-split-events", action="store_true", help="use a deterministic stock-split event for daily chart QA")

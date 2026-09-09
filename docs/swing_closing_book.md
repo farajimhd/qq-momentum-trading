@@ -1,5 +1,44 @@
 # Swing closing-book validation
 
+## V5 symmetric streaming selection
+
+New V5 builds use `symmetric-level-evidence-selection-2`. Both supports and
+resistances use bounded area grouping and the strongest member's evidence;
+correlated candidates never have their scores summed. The default grade cutoff
+is 30/100, with a 100-bps maximum area width. An individual oversized band is
+rejected as well. Grades are evidence measures, not profit probabilities.
+
+For an unchanged role, departure contributes up to 40 points, independent
+retests up to 40, and current-role retests up to 20. Each accepted crossing
+deducts 20. After a role reversal, the V4 lifetime departure maximum and old
+independent retests cannot certify the new role: only current-role retests
+contribute. This rule is identical for support and resistance.
+
+During a session, qualified bands remain in raw streaming evidence while awaiting a retest,
+with their original identity and qualification timestamps. They disappear on
+removal, replacement by an overlapping qualified area, or a role change.
+Broken supports are excluded from the strategy's active protection projection.
+The role change must qualify anew. Completed seconds are applied once; polling
+frequency cannot decide whether qualification was witnessed.
+
+Selection invalidation uses major-level geometry, lifecycle and score operands.
+Local-only changes, observation timestamps and already-saturated departure
+measurements do not trigger another sort/group pass. Market I/O remains outside
+the calculation. Live catch-up validates and deduplicates a full batch before
+mutation, rejects conflicting completed candles, and recovers a lost recent-bar
+buffer from paged canonical QMD bars. Session finalization uses the same gate,
+excluding forming bars. History paging stops at the consumed cutoff.
+
+Build reports pin the selection contract and selector hash. Existing V5 reports
+without that field use `resistance-evidence-selection-1` and retain the original
+unscored supports. New output gets a new isolated database; existing books and
+saved run IDs are not rewritten. The builder validates SQL/Python parity for
+both roles and verifies `live_market_ssd` policy and part placement.
+
+The Backtest selector labels new builds **Swing book v5 · scored S/R**. Automatic
+selection prefers them over legacy builds with the same coverage. Charts accept
+role-prefixed hashed IDs and display evidence scores for both roles.
+
 `causal-swing-closing-book-3` reuses the accepted `causal-session-swing-v4`
 detector. It is an opt-in Backtest book, not a Live promotion or a replacement
 for retained v18/legacy ClickHouse builds.

@@ -42,7 +42,8 @@ def builds():
             'version': report['version'], 'start': report['requested_start'],
             'end': report['actual_end'], 'fingerprint': report['fingerprint'],
             'source_policy': report.get('source_policy', 'canonical-causal-ohlc-1'),
-            'runtime': str(path.parent), 'source_book': report.get('source_book'), 'source_fingerprint': report.get('source_fingerprint')})
+            'runtime': str(path.parent), 'source_book': report.get('source_book'), 'source_fingerprint': report.get('source_fingerprint'),
+            'selection_contract': report.get('selection_contract','resistance-evidence-selection-1')})
     return result
 
 

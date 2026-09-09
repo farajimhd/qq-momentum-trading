@@ -5,6 +5,7 @@ seconds after the last consumed cutoff; no SIP history or strategy I/O per trade
 """
 from datetime import datetime, time, timedelta, timezone
 from hashlib import sha256
+from math import isfinite
 import json
 from src.backend.experimental_structure_book import resolve, rows
 from src.backend.swing_book_source import NY
@@ -23,7 +24,8 @@ class LiveSwingBookV5:
         source=build['source_book']
         if resolve(source)['fingerprint']!=build['source_fingerprint']:raise ValueError('Live v5 source fingerprint changed')
         self.source=source
-        self.store=ClosingStore(book_id)
+        contract=build.get('selection_contract','resistance-evidence-selection-1')
+        self.store=ClosingStore(book_id,contract=contract)
         marker=rows(f"SELECT * FROM {source}.sessions FINAL WHERE session_date<'{self.day}' ORDER BY session_date DESC LIMIT 1")
         if not marker:raise ValueError('Live v5 requires a certified prior closing state')
         m=marker[0]
@@ -43,7 +45,7 @@ class LiveSwingBookV5:
         if len(ratios)>1:raise ValueError('Conflicting live split ratios')
         factor=next((a/b for a,b in ratios if a>0 and b>0),1.)
         if ratios and any(a<=0 or b<=0 for a,b in ratios):raise ValueError('Invalid split ratio')
-        self.engine=StreamingSwingBookV5(seed,self.cutoff.timestamp(),factor)
+        self.engine=StreamingSwingBookV5(seed,self.cutoff.timestamp(),factor,contract=contract)
         self.bootstrapped=False
         self.saved=False
 
@@ -53,10 +55,7 @@ class LiveSwingBookV5:
         if self.saved or now<close:return
         # Catch up any remaining completed bars before committing one closing
         # state. Never persist transient intraday level versions.
-        for bar in sorted(self._history(close),key=lambda b:b['bar_end']):
-            at=datetime.fromisoformat(str(bar['bar_end']).replace('Z','+00:00'))
-            if self.cutoff<at<=close:
-                self.engine.observe(at.timestamp(),float(bar['high']),float(bar['low']),float(bar['close']))
+        self._consume(self._history(close),close)
         self.cutoff=close
         self.store.save(self.ticker,self.source,self.engine.closing_state(close.timestamp()))
         self.saved=True
@@ -73,8 +72,28 @@ class LiveSwingBookV5:
             if not page.get('has_more'):return result
             following=page.get('next_before_event_timestamp_us')
             if not isinstance(following,int) or following>=before:raise ValueError('Invalid live history cursor')
+            if hasattr(self,'cutoff') and following<=int(self.cutoff.timestamp()*1e6):return result
             before=following
         raise ValueError('Live history exceeds one-session budget')
+
+    def _consume(self, candidates, end):
+        """Validate a complete batch before mutation; duplicate closes must agree."""
+        by_time={}
+        for bar in candidates:
+            if bar.get('is_closed') is False:continue
+            if bar.get('sym',self.ticker)!=self.ticker or bar.get('timeframe','1s')!='1s':
+                raise ValueError('Live bar identity mismatch')
+            stamp=datetime.fromisoformat(str(bar['bar_end']).replace('Z','+00:00'))
+            if stamp.tzinfo is None:raise ValueError('Live bar requires timezone')
+            if self.cutoff<stamp<=end:
+                values=tuple(float(bar[k]) for k in ('high','low','close'))
+                high,low,close=values
+                if not all(map(isfinite,values)) or not 0<low<=close<=high:
+                    raise ValueError('Invalid completed live OHLC')
+                if stamp in by_time and by_time[stamp]!=values:
+                    raise ValueError('Conflicting completed live candle; reload required')
+                by_time[stamp]=values
+        for stamp,values in sorted(by_time.items()):self.engine.observe(stamp.timestamp(),*values)
 
     def snapshot(self, as_of):
         if as_of.tzinfo is None:raise ValueError('Live v5 requires an aware timestamp')
@@ -84,23 +103,14 @@ class LiveSwingBookV5:
         recent=qmd_bars(self.ticker,timeframe='1s',row_limit=500)
         if recent.get('ticker')!=self.ticker or recent.get('timeframe')!='1s':raise ValueError('Live bar identity mismatch')
         history=recent.get('history',[])
-        candidates=self._history(end) if not self.bootstrapped else []
-        candidates.extend(history)
-        # Never consume the forming bar, even when its projected OHLC is present.
-        by_time={}
-        for bar in candidates:
-            if bar.get('is_closed') is False:continue
-            stamp=datetime.fromisoformat(str(bar['bar_end']).replace('Z','+00:00'))
-            if stamp.tzinfo is None:raise ValueError('Live bar requires timezone')
-            if self.cutoff<stamp<=end:
-                by_time[stamp]=bar
+        recover=not self.bootstrapped
         # Steady-state must overlap the prior consumed prefix. An empty second
         # is legitimate; a missing retained prefix requires recovery instead.
         if self.bootstrapped and history:
             earliest=min(datetime.fromisoformat(str(b['bar_end']).replace('Z','+00:00')) for b in history)
-            if earliest>self.cutoff+timedelta(seconds=1):raise ValueError('Live bar buffer lost continuation; reload required')
-        for stamp,bar in sorted(by_time.items()):
-            self.engine.observe(stamp.timestamp(),float(bar['high']),float(bar['low']),float(bar['close']))
+            if earliest>self.cutoff+timedelta(seconds=1):recover=True
+        candidates=self._history(end) if recover else []
+        self._consume(candidates+history,end)
         self.cutoff=end
         self.bootstrapped=True
         return self.engine.snapshot()

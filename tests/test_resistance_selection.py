@@ -1,4 +1,5 @@
 from copy import deepcopy
+import pytest
 from src.market_engine.resistance_selection import select_areas
 
 
@@ -31,6 +32,21 @@ def test_new_role_cannot_inherit_support_confidence():
     assert not select_areas([row], 10)[0]['selected']
     row['role_retests'] = 1
     assert select_areas([row], 10)[0]['selected']
+
+
+@pytest.mark.parametrize('side',['support','resistance'])
+def test_current_role_evidence_is_required_even_after_first_role_retest(side):
+    row=dict(level(last_role_change_at=9),side=side,role_retests=1)
+    result=select_areas([row],10,side=side,role_safe=True)[0]
+    assert result['score']==23.3 and not result['selected']
+    row['role_retests']=2
+    assert select_areas([row],10,side=side,role_safe=True)[0]['selected']
+
+
+def test_oversize_individual_band_is_rejected_in_symmetric_contract():
+    row=dict(level(),lower=7.,upper=7.5)
+    assert not select_areas([row],10,role_safe=True)[0]['selected']
+    assert select_areas([row],10)[0]['selected']  # Legacy reproduction.
 
 
 def test_crossings_reduce_grade_and_high_prices_not_filtered():
