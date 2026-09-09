@@ -19,7 +19,7 @@ settings. Omitting it preserves the earlier episode policy.
 | `stop_atr_multiple` | 0 | Keep a ratcheted stop at least this many completed-bar ATR units below a confirmed broken resistance's lower band. |
 | `take_profit_fraction` | 1 | Fraction attached to the structural target. The remainder keeps its stop and cannot inherit the target. Requires an explicit protection profile. |
 | `entry_on_close` | false | Authorize entries only at a completed 1-second close, strictly above prior episode candle bodies plus the configured offset. |
-| `entry_range_seconds` | 0 | Additionally clear the highest prior completed candle high in this observation window. Persists across MACD resets; requires close-only entry and is bounded to one hour. |
+| `entry_range_seconds` | 0 | Additionally clear the highest completed candle high in this observation window. Persists across MACD resets and is bounded to one hour. Close-only entry excludes the candle being evaluated; intrabar entry includes all completed candles. |
 | `profit_trail_atr_multiple` | 0 | Optional completed-close peak minus current completed ATR stop. Zero disables this research departure from structural-only ratcheting. It never lowers existing protection. |
 | `profit_trail_activation_atr` | 1 | Arm that trail after a held completed close exceeds actual average entry by this many ATR units frozen at entry approval. |
 
@@ -71,6 +71,8 @@ the limiting portfolio constraints; it never silently increases risk limits.
   bypass liquidity, spread or execution constraints in strategy evaluation.
 - `scripts/render_strategy_audit.py` renders actual fills and effective protection
   paths against the eligible-price stream, including an offline large-move inset.
+- `scripts/summarize_strategy_research.py` consolidates every experiment and
+  audited position without selecting a winner or treating active cases as zero returns.
 
 Use each script's `--help` for required inputs. All generated evidence belongs
 under the designated machine runtime root, never the source repository. Keep

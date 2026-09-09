@@ -23,8 +23,6 @@ def configure(parameters):
                 'profit_trail_atr_multiple', 'profit_trail_activation_atr'):
         if type(policy[key]) not in (int, float) or not isfinite(policy[key]) or policy[key] < 0:
             raise ValueError('ATR multiples must be finite and nonnegative')
-    if policy['entry_range_seconds'] and not policy['entry_on_close']:
-        raise ValueError('Recent-range confirmation requires completed-candle entry')
     if policy['entry_range_seconds'] > 3600:
         raise ValueError('Recent-range history is bounded to one hour')
     fraction = policy['take_profit_fraction']
@@ -64,9 +62,10 @@ def observe_entry(o, d, closed, policy):
     if not seconds or not closed or now <= d.get('closed_at', 0):
         return
     history = [row for row in d.get('entry_range_history', []) if row[0] >= now-seconds]
-    d['entry_range_high'] = max((row[1] for row in history), default=None)
-    d['entry_range_samples'] = len(history)
     history.append([now, max(o.price, o.bar_high or o.price)])
+    reference = history[:-1] if policy['entry_on_close'] else history
+    d['entry_range_high'] = max((row[1] for row in reference), default=None)
+    d['entry_range_samples'] = len(reference)
     d['entry_range_history'] = history
 
 

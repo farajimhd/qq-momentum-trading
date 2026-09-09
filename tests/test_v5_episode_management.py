@@ -177,3 +177,23 @@ def test_profit_trail_does_not_use_missing_entry_atr_and_clears_when_flat():
     state['v5_breakout_state']['profit_trail'] = dict(peak_close=200.)
     M.observe(replace(o,position_quantity=0,observed_at=o.observed_at+timedelta(seconds=1)),p,state)
     assert 'profit_trail' not in state['v5_breakout_state']
+
+
+def test_intrabar_range_includes_latest_completed_high_and_freezes_between_closes():
+    from src.trading_runtime.v5_episode_management import observe_entry
+    p, _, o = rejection_setup()
+    p['episode_management'] = dict(entry_on_close=False,entry_range_seconds=30.)
+    p = S.resolve_long_momentum_parameters(p,revision=47)
+    policy = p['episode_management']
+    d = {}
+    closed = replace(o,price=103.,bar_high=104.,source_timeframe='1s',evaluation_events=('bar_close',))
+    observe_entry(closed,d,True,policy)
+    assert d['entry_range_high'] == 104.
+    d['closed_at'] = closed.observed_at.timestamp()
+    spike = replace(closed,price=110.,bar_high=110.,observed_at=closed.observed_at+timedelta(seconds=.1))
+    observe_entry(spike,d,False,policy)
+    assert d['entry_range_high'] == 104.
+    expired = replace(closed,price=102.,bar_high=102.,observed_at=closed.observed_at+timedelta(seconds=31))
+    observe_entry(expired,d,True,policy)
+    assert d['entry_range_high'] == 102.
+    assert d['entry_range_samples'] == 1
