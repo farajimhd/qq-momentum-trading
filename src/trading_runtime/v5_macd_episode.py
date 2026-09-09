@@ -111,7 +111,7 @@ def observe(o, p, state):
         d['entry_high_threshold'] = max(d['entry_high_threshold'],
             d['entry_range_high'] * (1 + p['v5_breakout']['episode_high_offset_bps'] / 10_000))
     if o.position_quantity <= 0:
-        for key in ('position_gaps', 'pending_target', 'fill_stop_initialized'):
+        for key in ('position_gaps', 'pending_target', 'fill_stop_initialized', 'profit_trail'):
             d.pop(key, None)
     state['v5_breakout_state'] = d
 
@@ -168,7 +168,8 @@ def select(o, p, state):
         return {'reason': 'v5_waiting_for_entry_close'}
     if not d.get('macd_open'):
         return {'reason': 'v5_macd_gap_below_minimum'}
-    if ((policy.get('stop_atr_multiple', 0) or policy.get('rejection_atr_multiple', 0))
+    if ((policy.get('stop_atr_multiple', 0) or policy.get('rejection_atr_multiple', 0)
+         or policy.get('profit_trail_atr_multiple', 0))
             and d.get('closed_atr', 0) <= 0):
         return {'reason': 'v5_volatility_unavailable'}
     if not acquisition_valid(o, p, state):
@@ -192,7 +193,8 @@ def select(o, p, state):
     return dict(reason='', stop=stop, stop_selection=stop_selection,
                 target=selected['price'], target_selection=selected,
                 broken_at=o.observed_at.timestamp(), references=levels,
-                session_high=o.structural_session_high, interval_based=True)
+                session_high=o.structural_session_high, interval_based=True,
+                entry_atr=d.get('closed_atr', 0.))
 
 
 def sample_gaps(d, levels, anchor):
@@ -245,4 +247,7 @@ def manage(o, p, state):
                         (d.get('pending_target') or {}).get('price', 0)])
         if selected['price'] > existing:
             d['pending_target'] = selected
+    if p.get('episode_management'):
+        from .v5_episode_management import profit_trail
+        current = profit_trail(o, d, state, p['episode_management'], p['execution']['tick_size'], current)
     return current

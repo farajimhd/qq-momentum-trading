@@ -20,6 +20,8 @@ settings. Omitting it preserves the earlier episode policy.
 | `take_profit_fraction` | 1 | Fraction attached to the structural target. The remainder keeps its stop and cannot inherit the target. Requires an explicit protection profile. |
 | `entry_on_close` | false | Authorize entries only at a completed 1-second close, strictly above prior episode candle bodies plus the configured offset. |
 | `entry_range_seconds` | 0 | Additionally clear the highest prior completed candle high in this observation window. Persists across MACD resets; requires close-only entry and is bounded to one hour. |
+| `profit_trail_atr_multiple` | 0 | Optional completed-close peak minus current completed ATR stop. Zero disables this research departure from structural-only ratcheting. It never lowers existing protection. |
+| `profit_trail_activation_atr` | 1 | Arm that trail after a held completed close exceeds actual average entry by this many ATR units frozen at entry approval. |
 
 The closing candle is compared with prior completed candles before being retained
 in the episode maximum for the next decision. MACD evaluation remains separately

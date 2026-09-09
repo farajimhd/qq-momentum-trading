@@ -142,3 +142,38 @@ def test_recent_range_survives_macd_reset_and_excludes_current_bar():
     M.observe(breakout,p,state)
     assert state['v5_breakout_state']['entry_range_high'] == 103.7
     assert M.select(breakout,p,state)['reason'] == ''
+
+
+def test_profit_trail_uses_held_closes_and_ratchets_without_intrabar_peaks():
+    from src.trading_runtime.v5_episode_management import profit_trail
+    p, state, o = rejection_setup()
+    policy = dict(profit_trail_atr_multiple=2., profit_trail_activation_atr=1.)
+    state['v5_entry_selection'] = dict(entry_atr=.2)
+    d = dict(closed_atr=.2)
+    held = replace(o, position_quantity=100, average_price=100., price=100.2,
+        source_timeframe='1s', evaluation_events=('bar_close',))
+    assert profit_trail(held,d,state,policy,.01,98.) == 98.
+    spike = replace(held, price=110., observed_at=held.observed_at+timedelta(seconds=.1),
+        source_timeframe='',evaluation_events=('market_data_update',))
+    assert profit_trail(spike,d,state,policy,.01,98.) == 98.
+    closed = replace(held,price=101.,observed_at=held.observed_at+timedelta(seconds=1))
+    assert profit_trail(closed,d,state,policy,.01,98.) == pytest.approx(100.6)
+    assert d['profit_trail']['peak_close'] == 101.
+    d['closed_atr'] = 1.
+    pullback = replace(closed,price=100.8,observed_at=closed.observed_at+timedelta(seconds=1))
+    assert profit_trail(pullback,d,state,policy,.01,98.) == pytest.approx(100.6)
+    # A duplicate close cannot consume changed operands.
+    assert profit_trail(replace(pullback,price=105.),d,state,policy,.01,98.) == pytest.approx(100.6)
+
+
+def test_profit_trail_does_not_use_missing_entry_atr_and_clears_when_flat():
+    from src.trading_runtime.v5_episode_management import profit_trail
+    p, state, o = rejection_setup()
+    policy = dict(profit_trail_atr_multiple=2., profit_trail_activation_atr=1.)
+    d = dict(closed_atr=.2)
+    held = replace(o,position_quantity=100,average_price=100.,price=105.,
+        source_timeframe='1s',evaluation_events=('bar_close',))
+    assert profit_trail(held,d,state,policy,.01,98.) == 98.
+    state['v5_breakout_state']['profit_trail'] = dict(peak_close=200.)
+    M.observe(replace(o,position_quantity=0,observed_at=o.observed_at+timedelta(seconds=1)),p,state)
+    assert 'profit_trail' not in state['v5_breakout_state']

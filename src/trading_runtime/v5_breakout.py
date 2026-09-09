@@ -217,6 +217,7 @@ def evidence(observation, state):
             episode_reset_gap_bps=data.get('episode_reset_gap_bps'),
             previous_episode_body_high=data.get('previous_episode_body_high'),
             confirmed_macd=state.get('confirmed_episode_macd'),
+            profit_trail=data.get('profit_trail'),
             crossed_lower=[r['lower'] for r in data.get('crossed', [])],
             forming_resistance=data.get('forming'))
     breakout = data.get('breakout') or {}

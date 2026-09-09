@@ -4,7 +4,8 @@ from math import isfinite
 
 DEFAULTS = dict(rejection_from_below=True, rejection_closes=1,
                 rejection_atr_multiple=0., stop_atr_multiple=0., take_profit_fraction=1.,
-                entry_on_close=False, entry_range_seconds=0.)
+                entry_on_close=False, entry_range_seconds=0.,
+                profit_trail_atr_multiple=0., profit_trail_activation_atr=1.)
 
 
 def configure(parameters):
@@ -18,7 +19,8 @@ def configure(parameters):
         raise ValueError('Episode policy flags must be boolean')
     if type(policy['rejection_closes']) is not int or not 1 <= policy['rejection_closes'] <= 60:
         raise ValueError('Rejection confirmation must be one to sixty completed candles')
-    for key in ('rejection_atr_multiple', 'stop_atr_multiple', 'entry_range_seconds'):
+    for key in ('rejection_atr_multiple', 'stop_atr_multiple', 'entry_range_seconds',
+                'profit_trail_atr_multiple', 'profit_trail_activation_atr'):
         if type(policy[key]) not in (int, float) or not isfinite(policy[key]) or policy[key] < 0:
             raise ValueError('ATR multiples must be finite and nonnegative')
     if policy['entry_range_seconds'] and not policy['entry_on_close']:
@@ -29,6 +31,31 @@ def configure(parameters):
     if type(fraction) not in (int, float) or not isfinite(fraction) or not 0 < fraction <= 1:
         raise ValueError('Target fraction must be positive and at most one')
     parameters['episode_management'] = policy
+
+
+def profit_trail(o, d, state, policy, tick, current):
+    """Optional close-only profit protection, scoped to one acquired lifecycle."""
+    from math import floor
+    multiple = policy.get('profit_trail_atr_multiple', 0.)
+    if not multiple or o.position_quantity <= 0 or o.average_price <= 0:
+        return current
+    if not (o.source_timeframe == '1s' and 'bar_close' in o.evaluation_events):
+        return current
+    now = o.observed_at.timestamp()
+    trail = dict(d.get('profit_trail') or {})
+    if now <= trail.get('observed_at', 0):
+        return max(current, trail.get('stop', current))
+    atr = d.get('closed_atr', 0.)
+    entry_atr = state.get('v5_entry_selection', {}).get('entry_atr', 0.)
+    if atr <= 0 or entry_atr <= 0:
+        return current
+    peak = max(trail.get('peak_close', o.average_price), o.price)
+    armed = trail.get('armed', False) or peak > o.average_price + policy['profit_trail_activation_atr']*entry_atr
+    proposed = floor((peak-multiple*atr)/tick+1e-9)*tick if armed else current
+    current = max(current, proposed, trail.get('stop', current))
+    d['profit_trail'] = dict(observed_at=now, peak_close=peak, armed=armed,
+        entry_atr=entry_atr, current_atr=atr, stop=current, confirmed_at=o.observed_at.isoformat())
+    return current
 
 
 def observe_entry(o, d, closed, policy):
