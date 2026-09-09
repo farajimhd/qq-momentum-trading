@@ -32,7 +32,7 @@ def builds():
             continue
         report = json.loads(path.read_text())
         proof = json.loads(validation.read_text())
-        if report.get('version') not in (VERSION, 'causal-swing-closing-book-1', 'causal-swing-closing-book-2', 'causal-swing-closing-book-3', 'causal-swing-closing-book-4', 'causal-swing-closing-book-5') or proof.get('status') != 'passed':
+        if report.get('version') not in (VERSION, 'causal-swing-closing-book-1', 'causal-swing-closing-book-2', 'causal-swing-closing-book-3', 'causal-swing-closing-book-4', 'causal-swing-closing-book-5', 'causal-swing-closing-book-6') or proof.get('status') != 'passed':
             continue
         if report.get('status') != 'built_pending_quality_acceptance':
             continue
@@ -43,7 +43,7 @@ def builds():
             'end': report['actual_end'], 'fingerprint': report['fingerprint'],
             'source_policy': report.get('source_policy', 'canonical-causal-ohlc-1'),
             'runtime': str(path.parent), 'source_book': report.get('source_book'), 'source_fingerprint': report.get('source_fingerprint'),
-            'selection_contract': report.get('selection_contract','resistance-evidence-selection-1')})
+            'selection_contract': report.get('selection_contract','symmetric-level-evidence-selection-2' if report['version']=='causal-swing-closing-book-6' else 'resistance-evidence-selection-1')})
     return result
 
 
@@ -145,7 +145,7 @@ def transition(state, eligible, price, volatility, lower, upper, tick, known_us)
 
 class BookCursor:
     def __new__(cls, build_id, ticker, fingerprint=None):
-        if resolve(build_id).get('version', VERSION) in ('causal-swing-closing-book-1', 'causal-swing-closing-book-2', 'causal-swing-closing-book-3', 'causal-swing-closing-book-4', 'causal-swing-closing-book-5'):
+        if resolve(build_id).get('version', VERSION) in ('causal-swing-closing-book-1', 'causal-swing-closing-book-2', 'causal-swing-closing-book-3', 'causal-swing-closing-book-4', 'causal-swing-closing-book-5', 'causal-swing-closing-book-6'):
             from .swing_book_cursor import SwingBookCursor
             return SwingBookCursor(build_id,ticker,fingerprint,normalized=cls.__name__=='NormalizedBookCursor')
         return super().__new__(cls)

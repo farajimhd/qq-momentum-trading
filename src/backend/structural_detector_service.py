@@ -74,8 +74,8 @@ class GlobalContext:
         self.books = [resolve(book_id)] if book_id else sorted(
             [b for b in builds() if b['ticker']==ticker and b['version']=='causal-swing-closing-book-5'],
             key=lambda b:(b['end'], b.get('selection_contract')=='symmetric-level-evidence-selection-2', b['id']), reverse=True)
-        if any(b['ticker']!=ticker or b['version']!='causal-swing-closing-book-5' for b in self.books):
-            raise ValueError('Global context requires a matching certified V5 book')
+        if any(b['ticker']!=ticker or b['version'] not in ('causal-swing-closing-book-5','causal-swing-closing-book-6') for b in self.books):
+            raise ValueError('Global context requires a matching certified V5/V6 book')
         self.cursor = None
         self.book = None
         self.errors = {}

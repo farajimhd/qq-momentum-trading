@@ -47,7 +47,7 @@ export function useStructureGaps(ticker: string, sessionDate: string | undefined
     if (sessionDate) void api<{ items: Book[] }>('/api/trading/backtest/structure-books', { signal: abort.signal })
       .then(({ items }) => {
         if (abort.signal.aborted) return;
-        const matches = items.filter(b => b.ticker === ticker.toUpperCase() && ['causal-swing-closing-book-4','causal-swing-closing-book-5'].includes(b.version)
+        const matches = items.filter(b => b.ticker === ticker.toUpperCase() && ['causal-swing-closing-book-4','causal-swing-closing-book-5','causal-swing-closing-book-6'].includes(b.version)
           && b.start <= sessionDate && b.end >= sessionDate);
         setBooks(matches); if (matches.length === 1) setBookId(matches[0].id);
       }).catch((e: unknown) => { if (!abort.signal.aborted) setState({ identity, error: String(e) }); });
@@ -86,7 +86,7 @@ export function useStructureGaps(ticker: string, sessionDate: string | undefined
             <option value="">{books.length ? 'Choose book' : 'No matching certified swing book'}</option>
             {books.map(b => <option value={b.id} key={b.id}>{b.ticker} · v{b.version.split('-').at(-1)} · {b.start} – {b.end} · {b.id.slice(-6)}</option>)}
           </select></label>
-          {fields.filter(([key]) => key !== 'minimum_p_norm' || books.find(b => b.id===bookId)?.version !== 'causal-swing-closing-book-5').map(([key, label, min, max, step]) => <label className="chart-setting-row" key={key}>{label}<span className="chart-setting-inline"><input aria-label={label} type="range" min={min} max={max} step={step} value={settings[key]} onChange={e => setSettings(s => ({ ...s, [key]: e.target.valueAsNumber }))} /><b>{Number(settings[key].toFixed(2))}</b></span></label>)}
+          {fields.filter(([key]) => key !== 'minimum_p_norm' || !['causal-swing-closing-book-5','causal-swing-closing-book-6'].includes(books.find(b => b.id===bookId)?.version ?? '')).map(([key, label, min, max, step]) => <label className="chart-setting-row" key={key}>{label}<span className="chart-setting-inline"><input aria-label={label} type="range" min={min} max={max} step={step} value={settings[key]} onChange={e => setSettings(s => ({ ...s, [key]: e.target.valueAsNumber }))} /><b>{Number(settings[key].toFixed(2))}</b></span></label>)}
           <button className="toolbar-button hindsight-apply" type="submit" disabled={current.busy || !bookId}>Apply and preview</button>
         </form>
         {current.result ? <>

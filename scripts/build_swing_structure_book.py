@@ -56,6 +56,14 @@ def split_versions(previous_rows,factor,boundary):
 
 
 def run(ticker, args):
+    survivor_only=getattr(args,'survivor_only',False)
+    version=VERSION
+    engine_type=SwingBook
+    project_level=project
+    if survivor_only:
+        from src.market_engine.swing_book_v6 import VERSION as version, StreamingSwingBookV6, project_survivor
+        engine_type=StreamingSwingBookV6
+        project_level=project_survivor
     root = args.runtime.resolve()
     if not root.is_relative_to(Path(r'D:\TradingML\runtimes')):
         raise ValueError('Runtime must be under D:\\TradingML\\runtimes')
@@ -65,23 +73,24 @@ def run(ticker, args):
     folder.mkdir(parents=True, exist_ok=True)
     client = P.Client(args.env_file, args.threads)
     started = time.perf_counter()
-    code = P.digest({str(p.relative_to(Path(__file__).resolve().parents[1])):sha256(p.read_bytes()).hexdigest()
-        for p in [Path(__file__).resolve(), Path('src/market_engine/swing_structure.py').resolve(),
+    code_paths=[Path(__file__).resolve(), Path('src/market_engine/swing_structure.py').resolve(),
                   Path('src/market_engine/swing_level_index.py').resolve(),
-                  Path('src/market_engine/swing_book.py').resolve(), Path('src/backend/swing_book_source.py').resolve()]})
+                  Path('src/market_engine/swing_book.py').resolve(), Path('src/backend/swing_book_source.py').resolve()]
+    if survivor_only:code_paths.extend(Path(p).resolve() for p in ('src/market_engine/swing_book_v6.py','src/market_engine/swing_book_v5.py','src/market_engine/resistance_selection.py'))
+    code = P.digest({str(p.relative_to(Path(__file__).resolve().parents[1])):sha256(p.read_bytes()).hexdigest() for p in code_paths})
     days = client.query(f"SELECT source_date,event_count,next_ordinal,last_ordinal,first_sip_timestamp_us,last_sip_timestamp_us,build_step,updated_at FROM market_sip_compact.events_ordinal_continuity FINAL WHERE ticker={P.literal(ticker)} AND source_date BETWEEN '{args.start}' AND '{args.end}' ORDER BY source_date", 'source_days')
     if not days:
         raise ValueError(f'No certified days for {ticker}')
     splits = canonical_splits(client.query(f"SELECT execution_date,split_from,split_to,inserted_at FROM q_live.market_stock_split_v1 FINAL WHERE provider_ticker={P.literal(ticker)} AND execution_date BETWEEN '{args.start}' AND '{args.end}' ORDER BY execution_date", 'splits'))
     coverage = dict(source_policy=HISTORICAL_POLICY)
     rules = client.query("SELECT token_id,modifier_int,update_high_low,update_last,update_volume FROM market_sip_compact.event_condition_token_reference WHERE source_family='trade_conditions' AND is_join_canonical=1 ORDER BY token_id",'rules')
-    fingerprint = P.digest([VERSION,code,ticker,days,splits,coverage,rules])
+    fingerprint = P.digest([version,code,ticker,days,splits,coverage,rules])
     db = 'structure_book_'+fingerprint[:12]
     report_path = folder/'report.json'
     previous_report = json.loads(report_path.read_text()) if report_path.exists() else {}
     if previous_report and previous_report['fingerprint'] != fingerprint:
         raise ValueError('Source or code changed: use a new runtime directory')
-    report = dict(version=VERSION, database=db, ticker=ticker, fingerprint=fingerprint,
+    report = dict(version=version, database=db, ticker=ticker, fingerprint=fingerprint,
         requested_start=args.start, actual_end=days[-1]['source_date'], status='building',
         threads=args.threads, code_hash=code, runtime=str(folder), source_policy=HISTORICAL_POLICY,
         session_profiles=previous_report.get('session_profiles',[]))
@@ -105,12 +114,14 @@ def run(ticker, args):
     print(f'{ticker} | completed={len(done)} queued={len(pending)} active=0 failed=0 | {db}', flush=True)
     try:
         for index, day in enumerate(days):
+            if getattr(args,'stop_file',None) and args.stop_file.exists():
+                raise KeyboardInterrupt('Campaign stop requested at session boundary')
             session = day['source_date']
             opening, closing = session_bounds(session)
             if session in done:
                 marker = done[session]
                 previous_rows = client.query(f"SELECT * FROM {db}.book FINAL WHERE valid_from_us={int(marker['closed_at']*1000000)} ORDER BY level_id", 'resume_rows')
-                seed = dict(version=VERSION, closed_at=float(marker['closed_at']),sequence=int(marker['sequence']),levels=[json.loads(r['state_json']) for r in previous_rows])
+                seed = dict(version=version, closed_at=float(marker['closed_at']),sequence=int(marker['sequence']),levels=[json.loads(r['state_json']) for r in previous_rows])
                 if P.digest(seed) != marker['state_hash']:
                     raise ValueError('Persisted closing state hash mismatch')
                 continue
@@ -120,7 +131,7 @@ def run(ticker, args):
                 seed['closed_at'] < session_bounds(s['execution_date'])[0].timestamp() <= opening.timestamp())]
             for split in applicable:
                 factor *= float(split['split_from'])/float(split['split_to'])
-            engine = SwingBook(seed, opening.timestamp(), factor, version=VERSION)
+            engine = engine_type(seed, opening.timestamp(), factor) if survivor_only else engine_type(seed, opening.timestamp(), factor, version=version)
             for split in applicable:
                 boundary = int(session_bounds(split['execution_date'])[0].timestamp()*1000000)
                 ratio = float(split['split_from'])/float(split['split_to'])
@@ -146,9 +157,9 @@ def run(ticker, args):
             regular = [bar for bar in bars if close_time-6.5*3600 < bar[0] <= close_time]
             prior_close = regular[-1][3] if regular else 0.
             boundary = int(closing.timestamp()*1000000)
-            closing_rows = [dict(ticker=ticker,level_id=l['level_id'],scale=l['scale'],
-                price=l['price'],lower=l['lower'],upper=l['upper'],side=project(l)['side'],
-                prominence=project(l)['prominence'],valid_from_us=boundary,valid_to_us=None,
+            closing_rows = [dict(ticker=ticker,level_id=l['level_id'],scale=l.get('scale','major'),
+                price=l['price'],lower=l['lower'],upper=l['upper'],side=project_level(l)['side'],
+                prominence=project_level(l)['prominence'],valid_from_us=boundary,valid_to_us=None,
                 state_json=encode(l),revision=1) for l in state['levels']]
             insert(client,db,'book',[dict(r,valid_to_us=boundary,revision=2) for r in previous_rows])
             insert(client,db,'book',closing_rows)

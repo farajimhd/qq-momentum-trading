@@ -1,5 +1,46 @@
 # Swing closing-book validation
 
+## V6 daily survivors
+
+`causal-swing-closing-book-6` changes the daily carry, while retaining the V5
+symmetric importance score and bounded-area contract. Each day starts with only
+the previous close's selected support/resistance survivors. The V4 detector
+creates candidates in memory; the V5 selector grades them. At close, only active
+selected major areas survive. One strongest representative carries each area's
+union band. No old member list or discarded candidate is retained. Local swings,
+pending/broken areas, evidence histories and visual segments are not persisted.
+Pruning and bounded merging repeat until the survivor set is unchanged: removing
+an oversized or weak separator must not defer an additional merge until reload.
+Each pass only removes candidates or merges areas; it never invents evidence.
+
+The compact record contains geometry, identity, causal timestamps, thresholds
+and aggregate counters required by the existing continuation rules. Transient
+contact/confirmation state is reset at the next session, as with V4. Overnight
+time is paused and split adjustment follows the shared canonical contract.
+Discarded candidates cannot recover their old history; they must be detected
+anew. This intentionally changes later results relative to V4-backed V5.
+
+The builder stores only survivor rows, daily integrity/source markers and split
+metadata on `live_market_ssd`. Daily checkpoints remain addressable so historical
+replay can start at any session. No separate V4 candidate database is created.
+The same `StreamingSwingBookV6` implements construction and chart/replay
+continuation. Existing V4/V5 books and default V5 selection are preserved.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B scripts/build_swing_book_v6.py --tickers SUGP JUNS --start 2025-01-01 --end 2026-09-04 --workers 2 --threads 2 --runtime D:/TradingML/runtimes/structure-validation/swing-v6-survivors
+```
+
+The environment-file default is `D:/TradingML/secrets/.env`; override `--env-file`
+for another configured host. Workers run in separate processes, with sequential
+days per ticker and bounded ClickHouse query threads. The preceding completed
+day is hash-verified on restart. Source/code changes require a new runtime.
+Progress and `session_profiles` report each day's bars, survivors and time.
+Use `scripts/validate_swing_book_v6.py --books <book-ids> --sessions <dates>
+--output <runtime-json>` to verify every compact checkpoint and causal replay
+of the selected sessions. The Backtest selector calls these books
+**Swing book v6 - daily survivors**.
+
 ## V5 symmetric streaming selection
 
 New V5 builds use `symmetric-level-evidence-selection-2`. Both supports and

@@ -87,7 +87,7 @@ def configure(parameters):
 def rows(observation, parameters):
     return sorted((r for r in swing_gap.levels(observation, {'minimum_p_norm': 0,
                    'include_retained_resistances': parameters.get('v5_hod_vwap_fallback', False)}, side=-1)
-                   if r['book_version'] == 'causal-swing-closing-book-5' and r['side'] == -1
+                   if r['book_version'] in ('causal-swing-closing-book-5','causal-swing-closing-book-6') and r['side'] == -1
                    and r['selection_score'] >= parameters['v5_breakout']['minimum_selection_score']),
                   key=lambda r: (r['upper'], r['lower'], str(r['unified_level_id'])))
 

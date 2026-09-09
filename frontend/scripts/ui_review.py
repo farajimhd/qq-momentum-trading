@@ -2829,7 +2829,7 @@ def capture(args: argparse.Namespace) -> int:
                         expand=v5_panel.get_by_role('button',name='Expand legend',exact=True)
                         if expand.count():
                             expand.first.click()
-                        v5_panel.get_by_role('button',name='Configure Swing level book v5',exact=True).click(timeout=180000)
+                        v5_panel.get_by_role('button',name=f'Configure Swing level book v{6 if args.swing_book_version==6 else 5}',exact=True).click(timeout=180000)
                         slider=page.get_by_role('slider',name='Minimum evidence score',exact=True)
                         slider.wait_for()
                         if slider.input_value()!='30' or slider.get_attribute('max')!='100':
@@ -3033,6 +3033,7 @@ def capture(args: argparse.Namespace) -> int:
                         for ticker in ('JUNS','SUGP'):
                             label = f'Swing book v{args.swing_book_version}' if args.swing_book_version>=2 else 'Swing book'
                             if args.swing_book_version==5:label+=' · scored S/R'
+                            if args.swing_book_version==6:label+=' - daily survivors'
                             prefix=re.escape(label+' · '+ticker+' · ').replace('/',r'\/')
                             page.get_by_role('option',name=re.compile('^'+prefix)).wait_for(state='visible',timeout=args.timeout_ms)
                     page.screenshot(path=str(screenshot_path), full_page=True)
@@ -3182,7 +3183,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument('--structure-gaps', action='store_true', help='calculate and inspect the real v4 gap preview on a historical chart')
     result.add_argument('--structure-time-placement', action='store_true', help='verify exact confirmation placement across missing and coarse candles')
     result.add_argument('--swing-book-selector',action='store_true',help='verify published JUNS/SUGP swing books in the Backtest selector; never launch a run')
-    result.add_argument('--swing-book-version',type=int,choices=(1,2,3,4,5),default=1,help='book version expected by the selector check')
+    result.add_argument('--swing-book-version',type=int,choices=(1,2,3,4,5,6),default=1,help='book version expected by the selector check')
     result.add_argument("--canvas-charts-quotes", action="store_true", help="seed the Charts & Quotes container in Canvas focus review")
     result.add_argument("--canvas-position-manager", action="store_true", help="seed the Position Manager container in Canvas focus review")
     result.add_argument("--stub-split-events", action="store_true", help="use a deterministic stock-split event for daily chart QA")

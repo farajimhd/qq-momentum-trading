@@ -47,6 +47,7 @@ def select_areas(levels, now, *, maximum_width_bps=100., minimum_score=30., side
         ids = sorted(str(r['level_id']) for r in group['members'])
         width_ok = (group['upper']-group['lower'])/group['lower']*10000<=maximum_width_bps
         result.append(dict(id=sha256('|'.join(ids).encode()).hexdigest()[:16],
+            representative_id=representative['level_id'],
             price=representative['price'], lower=group['lower'], upper=group['upper'],
             score=round(score, 1), selected=score >= minimum_score and (width_ok or not role_safe), members=ids,
             reasons=[f'{len(ids)} candidates; strongest evidence used, not summed',

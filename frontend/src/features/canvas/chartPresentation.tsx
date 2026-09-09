@@ -922,16 +922,17 @@ function pushUnifiedStructureLevels(
   let latestRank = 0;
   segments.forEach(({ end, latest, level, start }) => {
     if (!Number.isFinite(start) || !(start > 0) || !(chartEnd > start)) return;
-    if (["clickhouse-closing-book-1", "causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4", "causal-swing-closing-book-5"].includes(String(level.book_version))) {
+    if (["clickhouse-closing-book-1", "causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4", "causal-swing-closing-book-5", "causal-swing-closing-book-6"].includes(String(level.book_version))) {
       const support = level.side > 0;
-      const v5 = level.book_version === 'causal-swing-closing-book-5';
+      const v5 = ['causal-swing-closing-book-5','causal-swing-closing-book-6'].includes(String(level.book_version));
+      const selectedBookLabel = level.book_version === 'causal-swing-closing-book-6' ? 'Swing level book v6' : 'Swing level book v5';
       const graded = v5 && (!support || level.load_contract === 'symmetric-level-evidence-selection-2');
-      const bookLabel = ["causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4", "causal-swing-closing-book-5"].includes(String(level.book_version)) ? "Swing level book" : "Experimental ClickHouse level book";
+      const bookLabel = ["causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4", "causal-swing-closing-book-5", "causal-swing-closing-book-6"].includes(String(level.book_version)) ? "Swing level book" : "Experimental ClickHouse level book";
       zones.push({ annotationKind: "unified-structure-level", axisLabelDefault: latest && latestRank++ < 4,
         color: support ? "var(--success)" : "var(--danger)",
         compactLabel: `${support ? "S" : "R"} · ${graded ? 'Score ' : 'P'}${Number(level.prominence ?? 0).toFixed(2)}`,
-        label: `${support ? "Support" : "Resistance"} · ${level.lifecycle.replaceAll("_", " ")} · ${graded ? 'evidence score' : 'prominence'} ${Number(level.prominence ?? 0).toFixed(2)} · ${v5 ? 'Swing level book v5' : bookLabel}`,
-        legendLabel: v5 ? 'Swing level book v5' : bookLabel, displayItemId: "indicator.qmd_unified_structure",
+        label: `${support ? "Support" : "Resistance"} · ${level.lifecycle.replaceAll("_", " ")} · ${graded ? 'evidence score' : 'prominence'} ${Number(level.prominence ?? 0).toFixed(2)} · ${v5 ? selectedBookLabel : bookLabel}`,
+        legendLabel: v5 ? selectedBookLabel : bookLabel, displayItemId: "indicator.qmd_unified_structure",
         settingsId: v5 ? 'indicator.qmd_unified_structure.v5' : level.load_contract ? "indicator.qmd_unified_structure.merged-pnorm-v1" : "indicator.qmd_unified_structure.clickhouse-v1", defaultVisible: true,
         prominence: level.prominence, p_norm: level.p_norm, loadContract: v5 ? undefined : level.load_contract, evidenceGraded: graded, levelPrice: level.price,
         start, end, latest, extendToRightEdge: latest, lower: level.lower, upper: level.upper,
@@ -1094,13 +1095,13 @@ function isQmdUnifiedStructureLevel(value: unknown): value is QmdUnifiedStructur
     && row.load_contract === "resistance-evidence-selection-1"
     && Number(row.side) === -1
     && /^r:[a-f0-9]{16}$/.test(String(row.unified_level_id));
-  const v5SymmetricId = row.book_version === 'causal-swing-closing-book-5' && row.load_contract === 'symmetric-level-evidence-selection-2'
+  const v5SymmetricId = ['causal-swing-closing-book-5','causal-swing-closing-book-6'].includes(String(row.book_version)) && row.load_contract === 'symmetric-level-evidence-selection-2'
     && new RegExp(`^${Number(row.side)===1 ? 's' : 'r'}:[a-f0-9]{16}$`).test(String(row.unified_level_id));
   return (v5ResistanceId || v5SymmetricId || Number.isFinite(Number(row.unified_level_id)) || (["merged-point-minmax-v1", "merged-point-minmax-v2", "merged-point-minmax-v3", "merged-point-minmax-v4"].includes(String(row.load_contract)) && /^merged:[a-f0-9]{24}$/.test(String(row.unified_level_id))))
     && (Number(row.side) === 1 || Number(row.side) === -1)
     && Number(row.lower) > 0
     && Number(row.upper) >= Number(row.lower)
-    && (["clickhouse-closing-book-1", "causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4", "causal-swing-closing-book-5"].includes(String(row.book_version)) ? Number.isFinite(row.prominence) : Number.isFinite(Number(row.hold_probability)))
+    && (["clickhouse-closing-book-1", "causal-swing-closing-book-1", "causal-swing-closing-book-2", "causal-swing-closing-book-3", "causal-swing-closing-book-4", "causal-swing-closing-book-5", "causal-swing-closing-book-6"].includes(String(row.book_version)) ? Number.isFinite(row.prominence) : Number.isFinite(Number(row.hold_probability)))
     && Array.isArray(row.timeframes)
     && Array.isArray(row.sources);
 }

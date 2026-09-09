@@ -8,7 +8,7 @@ MINIMUM_PROMINENCE = 4.0
 
 
 def is_point_level(row):
-    return row.get('book_version') in (BOOK_VERSION, 'causal-swing-closing-book-1', 'causal-swing-closing-book-2', 'causal-swing-closing-book-3', 'causal-swing-closing-book-4', 'causal-swing-closing-book-5')
+    return row.get('book_version') in (BOOK_VERSION, 'causal-swing-closing-book-1', 'causal-swing-closing-book-2', 'causal-swing-closing-book-3', 'causal-swing-closing-book-4', 'causal-swing-closing-book-5', 'causal-swing-closing-book-6')
 
 
 def qualifies(row, observed_at=None, *, include_retained=False):
@@ -16,7 +16,7 @@ def qualifies(row, observed_at=None, *, include_retained=False):
         return False
     try:
         score, price = float(row['prominence']), float(row['price'])
-        if row.get('book_version')=='causal-swing-closing-book-5':
+        if row.get('book_version') in ('causal-swing-closing-book-5','causal-swing-closing-book-6'):
             symmetric=row.get('load_contract')=='symmetric-level-evidence-selection-2'
             retained = (include_retained and row.get('retained_qualified_resistance') is True
                         and row.get('side')==-1 and row.get('lifecycle') in ('awaiting_retest','retest_contact'))

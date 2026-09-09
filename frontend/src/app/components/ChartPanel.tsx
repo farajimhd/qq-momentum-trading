@@ -2954,7 +2954,7 @@ function LegendEditor({
           <label className="legend-filter-control">
             <span className="legend-filter-control-copy">
               <span>{item.settingsId?.endsWith('.v5') ? 'Minimum evidence score' : 'Minimum prominence'}</span>
-              <small>{item.settingsId?.endsWith('.v5') ? 'Evidence grade, not probability. Filters scored support and resistance areas. Legacy unscored supports remain unchanged. Display only; V5 selects at 30/100.' : `Show levels with P at or above this value. Range: 0 to ${Math.max(item.maximumProminence ?? 1, item.minimumProminence ?? 4).toFixed(1)}. Zero shows all scores. Display only.`}</small>
+              <small>{item.settingsId?.endsWith('.v5') ? 'Evidence grade, not probability. Filters scored support and resistance areas. Legacy unscored supports remain unchanged. Display only; selection starts at 30/100.' : `Show levels with P at or above this value. Range: 0 to ${Math.max(item.maximumProminence ?? 1, item.minimumProminence ?? 4).toFixed(1)}. Zero shows all scores. Display only.`}</small>
             </span>
             <span className="legend-range-control">
               <input aria-label={item.settingsId?.endsWith('.v5') ? 'Minimum evidence score' : 'Minimum prominence'} type="range" min={item.settingsId?.endsWith('.v5') ? 30 : 0} step={0.1}
