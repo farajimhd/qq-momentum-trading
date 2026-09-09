@@ -40,6 +40,13 @@ older checkpoint that lacks this history. Legacy adapters without this context
 retain their observed-history behavior only when the requirement is disabled;
 research-only candidates with the requirement enabled fail closed there.
 
+Replay restart checkpoints also retain each ticker's latest causal strategy
+observation. Restoring orders and assignment state alone is insufficient: trades
+before the next completed candle must still evaluate resistance contacts and exit
+rules. Older active checkpoints lacking this observation map cannot resume;
+completed-run review remains available. Restored observation timestamps cannot
+exceed the checkpoint clock.
+
 Touching a resistance is not a completed break. A close above its upper bound
 clears the attempt. Rejection contacts and gap averages belong to the position
 lifecycle. Volatility-dependent entry fails closed if completed ATR is unavailable.

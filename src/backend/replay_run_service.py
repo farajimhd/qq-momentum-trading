@@ -1718,6 +1718,7 @@ class ReplayRunController:
             and isinstance(state.get("controller"), dict)
             and isinstance(state.get("identity"), dict)
             and isinstance(state.get("runtime"), dict)
+            and _checkpoint_has_strategy_observations(state)
         )
         projection = {
             "status": "available",
@@ -1802,6 +1803,8 @@ class ReplayRunController:
                     )
                 ],
                 "strategy_source_values": deepcopy(self._strategy_source_values),
+                "latest_strategy_observations": {ticker: _strategy_observation_checkpoint(observation)
+                    for ticker, observation in self._latest_strategy_observations.items()},
                 "pressure_trackers": {ticker: tracker.checkpoint() for ticker, tracker in self._pressure_trackers.items()},
                 "provisional_macd_states": {
                     ticker: state.checkpoint()
@@ -2773,12 +2776,17 @@ class ReplayRunController:
         runtime = state.get("runtime")
         if not isinstance(controller, dict) or not isinstance(runtime, dict):
             raise ValueError("Historical restart checkpoint omitted runtime state")
+        if not review_only and not _checkpoint_has_strategy_observations(state):
+            raise ValueError("Restart checkpoint lacks causal strategy observations; start a new run")
         self.level_load_contract = controller.get("level_load_contract", LEVEL_LOAD_CONTRACT)
         if self.definition.experimental_structure_book and self.level_load_contract != LEVEL_LOAD_CONTRACT and not review_only:
             raise ValueError("Experimental backtest checkpoint predates the merged p_norm/session-high contract; start a new run")
         current_time = _optional_checkpoint_time(controller.get("current_time"))
         last_event_time = _optional_checkpoint_time(runtime.get("last_event_time"))
         self.current_time = current_time
+        self._latest_strategy_observations = {
+            ticker: _strategy_observation_from_checkpoint(value, ticker=ticker, current_time=current_time)
+            for ticker, value in controller.get('latest_strategy_observations', {}).items()}
         self.processed_events = int(controller.get("processed_events") or 0)
         self.warmup_events = int(controller.get("warmup_events") or 0)
         self._source_cursor = dict(controller.get("source_cursor") or {})
@@ -6108,6 +6116,8 @@ class ReplayRunService:
             or not bool(state.get("complete"))
         ):
             raise ValueError("Historical run has no complete restart-safe checkpoint")
+        if not _checkpoint_has_strategy_observations(state):
+            raise ValueError("Restart checkpoint lacks causal strategy observations; start a new run")
         definition = _definition_from_manifest(manifest, run_dir=run_dir)
         identity = dict(state.get("identity") or {})
         expected_fixture_hash = (
@@ -6700,6 +6710,32 @@ def _checkpoint_time(value: Any) -> datetime:
 
 def _optional_checkpoint_time(value: Any) -> datetime | None:
     return _checkpoint_time(value) if value else None
+
+
+def _checkpoint_has_strategy_observations(state):
+    controller = state.get('controller') or {}
+    # A signal can engage a ticker before its first frame. An explicitly empty
+    # observation map is valid; an absent map in an older active checkpoint is not.
+    return (not controller.get('strategy_engaged_tickers')
+            or isinstance(controller.get('latest_strategy_observations'), dict))
+
+
+def _strategy_observation_checkpoint(observation):
+    value = observation.payload()
+    value['observed_at'] = observation.observed_at.isoformat()
+    return value
+
+
+def _strategy_observation_from_checkpoint(value, *, ticker, current_time):
+    value = dict(value)
+    value['observed_at'] = _checkpoint_time(value['observed_at'])
+    if value.get('ticker') != ticker or current_time is None or value['observed_at'] > current_time:
+        raise ValueError('Restart strategy observation has a mismatched ticker or future timestamp')
+    for key in ('structural_support_levels', 'structural_resistance_levels',
+                'evaluation_events', 'changed_source_ids', 'source_signal_ids'):
+        if key in value:
+            value[key] = tuple(value[key])
+    return StrategyObservation(**value)
 
 
 def _occurrence_source_values(occurrence: dict[str, Any]) -> dict[str, Any]:

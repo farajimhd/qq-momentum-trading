@@ -90,6 +90,8 @@ class CanvasReadTests(unittest.IsolatedAsyncioTestCase):
                 tickers=('SUGP',),configuration_revision=approved_configuration()),runtime_root=Path(directory))
             controller._runtime=runtime
             controller._journal=TradingJournal(Path(directory)/'journal.sqlite3')
+            runtime.journal=controller._journal
+            runtime.run_id=controller.run_id
             controller.status='running'
             controller.current_time=datetime(2026,8,21,8,tzinfo=timezone.utc)
             try:
