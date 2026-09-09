@@ -978,7 +978,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   structureGapsRef.current = structureGaps;
   const structureGapPrimitiveRef = useRef<StructureGapPrimitive | null>(null);
   const structuralDetector = useStructuralDetector(ticker, timeframe, payload?.candles ?? [], indicatorAsOf,
-    settingsStorageKey || 'chart.structural-detector', indicatorSplitAdjusted);
+    settingsStorageKey || 'chart.structural-detector', indicatorSplitAdjusted, payload?.volume);
   const structuralDetectorRef = useRef(structuralDetector);
   structuralDetectorRef.current = structuralDetector;
   const structuralDetectorPrimitiveRef = useRef<StructuralDetectorPrimitive | null>(null);

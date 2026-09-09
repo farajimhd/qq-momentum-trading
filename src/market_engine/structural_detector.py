@@ -11,8 +11,9 @@ from math import isfinite
 from .swing_structure import SwingSettings, SwingStructure
 from .structural_evidence import Interactions, morphology, swing_bias, interaction_focus
 from .structural_progression import Progression
+from .structural_volume import VolumeLevels
 
-VERSION = 'structural-candle-detector-3'
+VERSION = 'structural-candle-detector-4'
 
 
 @dataclass(frozen=True)
@@ -32,10 +33,21 @@ class DetectorSettings:
     deep_correction_multiple: float = 2
     evidence_memory_candles: int = 1800
     pressure_closes: int = 2
+    volume_half_life: float = 5
+    volume_change_fraction: float = .1
+    volume_warmup_candles: int = 5
+    session_level_count: int = 3
+    volume_expansion_multiple: float = 1.5
+    volume_divergence_min_score: float = 30
+    volume_setup_max_candles: int = 20
 
     def __post_init__(self):
         if any(not isfinite(v) or v <= 0 for v in asdict(self).values()):
             raise ValueError('Detector settings must be finite and positive')
+        if self.volume_change_fraction > 1 or self.volume_divergence_min_score > 100:
+            raise ValueError('Volume fraction or evidence score outside its range')
+        if any(not isinstance(v,int) for v in (self.volume_warmup_candles,self.session_level_count,self.volume_setup_max_candles)):
+            raise ValueError('Volume and session counts must be integers')
 
 
 def compact(level):
@@ -60,6 +72,7 @@ class StructuralDetector:
         self.extreme = None
         self.movement_anchor = None
         self.progression = Progression(settings)
+        self.volume_levels = VolumeLevels(settings)
         self.local_interactions = Interactions(settings.evidence_memory_candles)
         self.global_interactions = Interactions(settings.evidence_memory_candles)
         self.pivots = deque(maxlen=64)
@@ -84,6 +97,8 @@ class StructuralDetector:
             raise ValueError('Invalid completed OHLC candle')
         if self.last and (end <= self.last['end'] or start < self.last['end']):
             raise ValueError('Candles must be distinct, ordered, and non-overlapping')
+        if bar.get('volume') is not None and (not isfinite(bar['volume']) or bar['volume'] < 0):
+            raise ValueError('Volume must be finite and nonnegative, or unavailable')
         previous = self.last['close'] if self.last else None
         baseline = self.body or max(abs(bar['close']-bar['open']), bar['close']*self.settings.reversal_bps/10000)
         threshold = max(baseline*self.settings.movement_body_multiple,bar['close']*self.settings.movement_min_bps/10000)
@@ -176,6 +191,7 @@ class StructuralDetector:
         if self.movement_anchor is None or abs(delta)>threshold:
             self.movement_anchor = bar['close']
         progress = self.progression.observe(bar,previous,self.trend,baseline,threshold,local_events,global_events,local_bias,global_bias,movement_delta=delta)
+        volume, session_levels = self.volume_levels.observe(bar,new_local,threshold,baseline,state,local_events+global_events)
         shape = morphology(bar,self.last,baseline,self.settings)
         alpha = 1-2**(-1/self.settings.body_half_life)
         self.body = abs(bar['close']-bar['open']) if self.body is None else self.body+alpha*(abs(bar['close']-bar['open'])-self.body)
@@ -195,6 +211,7 @@ class StructuralDetector:
         result = dict(contract=VERSION, sequence=self.sequence, time=start, effective_at=end,
             state=state, reason=reason, direction=('bullish' if self.trend==1 else 'bearish' if self.trend==-1 else 'unknown'),
             local_bias=local_bias, global_bias=global_bias, candle_shape=shape, progression=progress,
+            volume_analysis=volume, session_levels=session_levels,
             movement_threshold=threshold, retained_context=dict(local=self.local_interactions.context(),global_context=self.global_interactions.context()),
             focus_interactions=dict(local=interaction_focus(local_events,bar['close']),global_context=interaction_focus(global_events,bar['close'])),
             expired_interactions=dict(local=local_expired,global_count=global_expired), local_events=local_events, global_events=global_events,

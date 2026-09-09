@@ -9,10 +9,14 @@ import { Button } from './Button';
 import './DataTable.css';
 import './structuralDetector.css';
 
-type Candle = { time: number; endTime?: number; open: number; high: number; low: number; close: number };
+type Candle = { time: number; endTime?: number; open: number; high: number; low: number; close: number; volume?: number | null };
 type Event = { state: string; level: Record<string, unknown>; band_id?: string; encounters?: number; rejection_closes?: number; source_ids?: string[] };
 type Cycle = { number: number; attempts: number; failed_attempts: number; depth: number; candles: number; recovery_progress: number };
 export type StructuralState = { time: number; effective_at: number; state: string; reason: string;
+  volume_analysis?: {status:string;volume:number|null;rate:number|null;color:string;previous_ratio:number|null;relative_volume:number|null;tags:string[];
+    divergence:{direction:string;score:number|null;status:string;interpretation:string};
+    reversal_candidates:{direction:string;score:number}[];reversal_outcomes:{direction:string;outcome:string}[]};
+  session_levels?: {scope:string;status:string;high:{price:number};low:{price:number};ranked_highs:{price:number}[];ranked_lows:{price:number}[];near:{side:string;rank:number;kind:string;price:number}[]};
   global_context: string; global_status: string; local_events: Event[]; global_events: Event[];
   direction?: string; local_bias?: string; global_bias?: string; candle_shape?: { tags: string[] };
   progression?: { tags: string[]; cycle?: Cycle | null; closed_cycle?: Cycle | null; completed_cycles: number;
@@ -26,7 +30,9 @@ type Result = { rows: StructuralState[]; pending_count: number; global_available
   global_book: { id: string; fingerprint: string } | null; context_start: number | null };
 const defaults = { reversal_bps: 50, volatility_multiple: 2, body_half_life: 5,
   consolidation_body_multiple: .25, proximity_body_multiple: 1, macd_gap_bps: 25, tail_range_fraction: .5, indecision_body_fraction: .2, expansion_body_multiple: 1.5, expansion_body_fraction: .65,
-  movement_body_multiple: .1, movement_min_bps: 1, deep_correction_multiple: 2, evidence_memory_candles: 1800, pressure_closes: 2 };
+  movement_body_multiple: .1, movement_min_bps: 1, deep_correction_multiple: 2, evidence_memory_candles: 1800, pressure_closes: 2,
+  volume_half_life: 5, volume_change_fraction: .1, volume_warmup_candles: 5, session_level_count: 3,
+  volume_expansion_multiple: 1.5, volume_divergence_min_score: 30, volume_setup_max_candles: 20 };
 const fields = [ ['reversal_bps', 'Minimum local reversal (bps)', 1, 1000, 1],
   ['volatility_multiple', 'Local volatility multiple', .1, 10, .1],
   ['body_half_life', 'Body average half-life (candles)', 1, 100, 1],
@@ -41,12 +47,25 @@ const fields = [ ['reversal_bps', 'Minimum local reversal (bps)', 1, 1000, 1],
   ['movement_min_bps', 'Minimum close progress (bps)', .01, 100, .1],
   ['deep_correction_multiple', 'Deep correction · starting body multiple', .5, 20, .5],
   ['evidence_memory_candles', 'Retain absent structural evidence (candles)', 10, 20000, 1],
-  ['pressure_closes', 'Persistent pressure · rejection closes', 2, 20, 1] ] as const;
+  ['pressure_closes', 'Persistent pressure · rejection closes', 2, 20, 1],
+  ['volume_half_life', 'Volume rate average half-life (candles)', 1, 100, 1],
+  ['volume_change_fraction', 'Meaningful volume change (fraction)', .01, 1, .01],
+  ['volume_warmup_candles', 'Volume warmup (observed candles)', 1, 100, 1],
+  ['session_level_count', 'Ranked session swing highs / lows', 1, 10, 1],
+  ['volume_expansion_multiple', 'High volume · prior average multiple', 1, 20, .1],
+  ['volume_divergence_min_score', 'Exhaustion candidate minimum evidence score', 1, 100, 1],
+  ['volume_setup_max_candles', 'Reversal candidate lifetime (candles)', 1, 1000, 1] ] as const;
 const human = (s: string) => s.replaceAll('_', ' ');
+const volumeText = (s:string) => ({volume_falling:'volume ↓',volume_rising:'volume ↑',volume_stable:'volume steady',
+  red_to_green:'red → green',green_to_red:'green → red',price_volume_expansion:'price + volume expansion',
+  countermove_volume_fading:'fading pullback volume',recovery_after_countermove:'recovery',recovery_at_session_level:'at session level',
+  observed_hod_break:'HOD break',observed_hod_rejection:'HOD rejection',observed_hod_test:'HOD test',observed_hod_approach:'near HOD',
+  observed_lod_break:'LOD break',observed_lod_rejection:'LOD rejection',observed_lod_test:'LOD test',observed_lod_approach:'near LOD'}[s] || human(s));
 const labelFields = { state: 'Movement', direction: 'Direction', local: 'Local interactions', global: 'Global interactions',
   localBias: 'Local swing trend', globalBias: 'Global swing trend', shape: 'Candle shape', macd: 'MACD context', body: 'Recent body size', source: 'Global availability',
   progression: 'Progression', cycle: 'Recovery cycle', levelProgress: 'Levels crossed / lost', context: 'Combined structure context', retained: 'Retained structural history',
-  localDetails: 'All local band details', globalDetails: 'All global band details' };
+  localDetails: 'All local band details', globalDetails: 'All global band details',
+  volume: 'Volume', volumeTrend: 'Volume progression', divergence: 'Volume divergence score', reversal: 'Reversal evidence progression', dayLevels: 'Observed HOD / LOD', rankedHighs: 'Ranked session highs', rankedLows: 'Ranked session lows', nearDayLevel: 'Session level interaction' };
 type LabelField = keyof typeof labelFields;
 export type LabelRows = LabelField[][];
 const defaultRows: LabelRows = [['state'], ['progression'], ['local'], ['global'], ['shape']];
@@ -54,12 +73,20 @@ const price = (n: unknown) => typeof n==='number' ? n.toLocaleString('en-US',{ma
 const eventText = (events: Event[]) => [...new Map(events.map(e => [e.state+':'+(e.band_id || JSON.stringify(e.level)),
   `${human(e.state)} ${e.level.lower!=null ? price(e.level.lower)+'–'+price(e.level.upper) : price(e.level.price)}${e.encounters ? ' #'+e.encounters : ''}${(e.rejection_closes || 0)>1 ? ' · '+e.rejection_closes+' rejection closes' : ''}`])).values()].join(' · ') || 'none';
 export function structuralLabelRows(row: StructuralState, rows: LabelRows) {
-  const p=row.progression, c=p?.cycle || p?.closed_cycle;
+  const p=row.progression, c=p?.cycle || p?.closed_cycle, v=row.volume_analysis, d=v?.divergence, s=row.session_levels;
   const focused=(scope:'local'|'global_context',fallback:Event[]) => {
     const focus=row.focus_interactions?.[scope];
     return focus ? eventText(focus.primary ? [focus.primary] : [])+(focus.other_bands ? ` · +${focus.other_bands} other bands` : '') : eventText(fallback);
   };
   const values: Record<LabelField,string> = { state: human(row.state), direction: row.direction || 'unknown',
+    volume: v?.status==='available' ? `${price(v.volume)} vol · ${v.color} · ${v.relative_volume==null ? 'RV warming up' : v.relative_volume.toFixed(2)+'× RV'}` : 'Volume unavailable',
+    volumeTrend: v?.status==='available' ? v.tags.map(volumeText).join(' · ') || 'Volume: no prior comparison' : 'Volume unavailable',
+    divergence: d?.status==='available' ? d.direction==='none' ? 'No qualified divergence' : `${d.direction} div. ${d.score?.toFixed(0) ?? '—'}/100` : `Divergence ${human(d?.status || 'unavailable')}`,
+    reversal: v ? [...v.reversal_candidates.map(c=>`${c.direction} candidate ${c.score.toFixed(0)}/100`),...v.reversal_outcomes.map(o=>o.direction+' '+human(o.outcome))].join(' · ') || 'No active reversal evidence' : 'Reversal evidence unavailable',
+    dayLevels: s?.status==='partial_session' ? `Obs. HOD ${price(s.high.price)} · LOD ${price(s.low.price)}` : 'Session extremes unavailable',
+    rankedHighs: s ? 'Observed highs: '+(s.ranked_highs.map((l,i)=>`#${i+1} ${price(l.price)}`).join(' · ') || 'awaiting confirmed swings') : 'Session highs unavailable',
+    rankedLows: s ? 'Observed lows: '+(s.ranked_lows.map((l,i)=>`#${i+1} ${price(l.price)}`).join(' · ') || 'awaiting confirmed swings') : 'Session lows unavailable',
+    nearDayLevel: s ? s.near.map(l=>`${l.kind==='running_extreme' ? 'Prior '+(l.side==='high'?'HOD':'LOD') : l.side+' #'+l.rank} ${price(l.price)}`).join(' · ') || 'Away from observed session levels' : 'Session levels unavailable',
     local: 'L: '+focused('local',row.local_events), global: 'G: '+focused('global_context',row.global_events),
     localDetails:'Local details: '+eventText(row.local_events), globalDetails:'Global details: '+eventText(row.global_events),
     localBias: 'Local: '+(row.local_bias || 'unknown'), globalBias: 'Global: '+(row.global_bias || 'unknown'),
@@ -97,7 +124,7 @@ function candleEnd(candle: Candle, timeframe: string, seconds: number) {
   return candle.time+seconds;
 }
 
-export function useStructuralDetector(ticker: string, timeframe: string, candles: Candle[], asOf: string | undefined, storageKey: string, splitAdjusted: boolean) {
+export function useStructuralDetector(ticker: string, timeframe: string, candles: Candle[], asOf: string | undefined, storageKey: string, splitAdjusted: boolean, volumes?: {time:number;value:number}[]) {
   const [stored, setStored] = useState<{ key: string; enabled: boolean; settings: typeof defaults; labelRows: LabelRows }>({ key: '', enabled: false, settings: defaults, labelRows: defaultRows });
   useEffect(() => {
     try {
@@ -115,9 +142,10 @@ export function useStructuralDetector(ticker: string, timeframe: string, candles
   const identity = `${ticker}:${timeframe}:${splitAdjusted}:${JSON.stringify(stored.settings)}`;
   // Forecasts never enter this request. End-time gating excludes a forming bar.
   const closed = useMemo(() => candles.filter(c => candleEnd(c, timeframe, seconds) <= cutoff), [candles, timeframe, seconds, cutoff]);
+  const volumeByTime = useMemo(() => new Map((volumes || []).map(v=>[v.time,v.value])),[volumes]);
   const body = useMemo(() => enabled ? JSON.stringify({ ticker, timeframe, as_of: closed.length ? candleEnd(closed.at(-1)!, timeframe, seconds) : cutoff,
-    candles: closed.map(c => ({ time: c.time, end: candleEnd(c, timeframe, seconds), open: c.open, high: c.high, low: c.low, close: c.close })),
-    settings: stored.settings, split_adjusted: splitAdjusted }) : '', [enabled, ticker, timeframe, closed, seconds, cutoff, stored.settings, splitAdjusted]);
+    candles: closed.map(c => ({ time: c.time, end: candleEnd(c, timeframe, seconds), open: c.open, high: c.high, low: c.low, close: c.close, volume: volumeByTime.get(c.time) ?? c.volume ?? null })),
+    settings: stored.settings, split_adjusted: splitAdjusted }) : '', [enabled, ticker, timeframe, closed, seconds, cutoff, stored.settings, splitAdjusted, volumeByTime]);
   const latestBody = useRef(body); latestBody.current = body;
   useEffect(() => {
     if (!enabled || !seconds) return;
@@ -159,6 +187,8 @@ export function useStructuralDetector(ticker: string, timeframe: string, candles
         <section className="chart-settings-section"><h3>Candle labels</h3>
           <p className="chart-settings-help">Choose the contents of each row. Labels appear below completed candles without hovering. Zoom in to separate dense labels. Empty rows are hidden.</p>
           <p className="chart-settings-help">Add Progression or Recovery cycle to an existing layout to see the new sequence evidence. Band # is the independent encounter number. Local/global rows show the primary band and count other bands; select All band details for the complete list. Retained history includes distant levels, not current tests.</p>
+          <p className="chart-settings-help">Volume and session-level fields can be added to any row. Green/red describes candle direction, not buy/sell order flow. Divergence scores measure heuristic evidence, not reversal probability. HOD/LOD and ranked confirmed swings cover only loaded candles, reset by New York date, and are not certified full-day extremes.</p>
+          <p className="chart-settings-help">A reversal candidate requires divergence near an extreme or structural rejection. A later close must cross its candle boundary with a matching structural break to confirm. Candidates expire or invalidate on volume-supported continuation; past labels stay unchanged.</p>
           {stored.labelRows.map((row,index) => <fieldset className="structural-label-row-config" key={index}>
             <legend>Row {index+1}</legend>
             <div className="structural-label-fields">{Object.entries(labelFields).map(([key,label]) => <label className="chart-setting-toggle" key={key}>

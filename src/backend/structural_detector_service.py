@@ -27,6 +27,7 @@ class Candle(BaseModel):
     high: float = Field(gt=0)
     low: float = Field(gt=0)
     close: float = Field(gt=0)
+    volume: float | None = Field(default=None, ge=0)
 
 
 class Settings(BaseModel):
@@ -46,6 +47,13 @@ class Settings(BaseModel):
     deep_correction_multiple: float = Field(default=2, ge=.5, le=20)
     evidence_memory_candles: int = Field(default=1800, ge=10, le=20000)
     pressure_closes: int = Field(default=2, ge=2, le=20)
+    volume_half_life: float = Field(default=5, ge=1, le=100)
+    volume_change_fraction: float = Field(default=.1, ge=.01, le=1)
+    volume_warmup_candles: int = Field(default=5, ge=1, le=100)
+    session_level_count: int = Field(default=3, ge=1, le=10)
+    volume_expansion_multiple: float = Field(default=1.5, ge=1, le=20)
+    volume_divergence_min_score: float = Field(default=30, ge=1, le=100)
+    volume_setup_max_candles: int = Field(default=20, ge=1, le=1000)
 
 
 class DetectorRequest(BaseModel):

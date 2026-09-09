@@ -2489,6 +2489,10 @@ def capture(args: argparse.Namespace) -> int:
                             request = route.request.post_data_json
                             times = {bar['time'] for bar in request['candles'] if bar['end'] <= request['as_of']}
                             selected = [row for row in source_rows if row['time'] in times]
+                            if evidence.get('contract')=='structural-candle-detector-4':
+                                volumes={row['time']:row['candle'].get('volume') for row in selected}
+                                if any(bar.get('volume')!=volumes.get(bar['time']) for bar in request['candles']):
+                                    raise RuntimeError('Chart-to-detector volume mapping changed')
                             route.fulfill(status=200, content_type='application/json', body=json.dumps({**evidence,
                                 'rows': selected, 'global_available_count': sum(r['global_status']=='available' for r in selected)}))
                         page.route('**/api/indicators/structural-detector', detector_response)
@@ -2501,7 +2505,7 @@ def capture(args: argparse.Namespace) -> int:
                             document.body.append(host);
                             localStorage.removeItem('review.structural.structural-detector');
                             const payload={candles:rows.map(r=>({...r.candle,endTime:r.effective_at})),markers:[],
-                                overlay_series:[],oscillator_series:[],price_zones:[],regions:[],volume:[]};
+                                overlay_series:[],oscillator_series:[],price_zones:[],regions:[],volume:rows.filter(r=>r.candle.volume!=null).map(r=>({time:r.time,value:r.candle.volume,color:'green'}))};
                             const root=createRoot(host);
                             root.render(React.createElement(ChartPanel,{payload,ticker:'REVIEW',timeframe:'1s',timeframes:['1s'],
                                 indicatorAsOf:new Date(rows.at(-1).effective_at*1000).toISOString(),settingsStorageKey:'review.structural',
@@ -2538,6 +2542,15 @@ def capture(args: argparse.Namespace) -> int:
                         if not dialog.get_by_role('checkbox',name='Row 6: MACD context',exact=True).is_checked():
                             raise RuntimeError('Reopened configuration lost row settings')
                         dialog.get_by_role('button',name='Reset label rows',exact=True).click()
+                        if evidence.get('contract')=='structural-candle-detector-4':
+                            for row_index,old,new in [(2,'Progression','Volume progression'),(3,'Local interactions','Volume divergence score'),(4,'Global interactions','Observed HOD / LOD'),(5,'Candle shape','Volume')]:
+                                dialog.get_by_role('checkbox',name=f'Row {row_index}: {old}',exact=True).uncheck()
+                                dialog.get_by_role('checkbox',name=f'Row {row_index}: {new}',exact=True).check()
+                            dialog.get_by_role('button',name='Done',exact=True).click()
+                            page.wait_for_function("[...document.querySelectorAll('.structural-candle-label')].some(n=>n.textContent.includes('Obs. HOD'))")
+                            page.wait_for_timeout(300)
+                            page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__volume-labels.png')),full_page=True)
+                            panel.get_by_role('button',name='Structural detector settings',exact=True).click()
                         dialog.get_by_role('checkbox',name='Row 1: Movement',exact=True).focus()
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__detector-details.png')),full_page=True)
                         if page.get_by_text('Chart renderer stopped', exact=True).count():
