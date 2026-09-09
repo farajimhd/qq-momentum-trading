@@ -32,6 +32,12 @@ def main():
                   key=lambda p:p['gross_return_bps'],default=None)
     for ax in axes:
         ax.plot(times,b['eligible_trade_prices'],color='#37474f',linewidth=.65,label='Eligible trade price')
+        for side, marker, color in [('BUY', '^', '#1565c0'), ('SELL', 'v', '#8e24aa')]:
+            fills = [e for e in r['executions'] if e['side'] == side]
+            if fills:
+                ax.scatter([dt(e['source_event_time']) for e in fills],
+                    [float(e['price']) for e in fills], marker=marker, color=color,
+                    s=12, alpha=.7, zorder=4, label=f'{side.title()} fills')
         for n,p in enumerate(positions,1):
             start,end = dt(p['opened_at']),dt(p['closed_at'] or r['run']['session_end'])
             entry,exit_price = float(p['entry_price']),float(p['exit_price'] or p['entry_price'])
@@ -53,6 +59,7 @@ def main():
         ax.set_ylabel('Price ($)')
         ax.grid(alpha=.15)
     axes[0].set_title(f"{b['symbol']} | {r['run'].get('configuration_label','Research candidate')} | Actual fills and effective protection")
+    axes[0].legend(loc='upper left', fontsize=8)
     if biggest:
         width = max(10.,biggest['exit_time']-biggest['entry_time'])
         left,right = biggest['entry_time']-.3*width,biggest['exit_time']+.3*width
@@ -62,7 +69,7 @@ def main():
             margin = max(max(visible)-min(visible),max(visible)*.01)*.1
             axes[1].set_ylim(min(visible)-margin,max(visible)+margin)
         axes[1].set_title('Largest price-only hindsight episode — offline diagnostic, not an executable return')
-    axes[1].set_xlabel('New York time | green/red: profitable/losing position; faint red/blue: effective stop/target')
+    axes[1].set_xlabel('New York time | triangles: individual fills; green/red lines: position average prices; faint red/blue: effective stop/target')
     args.output.parent.mkdir(parents=True,exist_ok=True)
     figure.savefig(args.output,dpi=150)
     plt.close(figure)
