@@ -6231,6 +6231,12 @@ class AssignedLongMomentumStrategy:
                 self._campaigns.register(updated)
                 return
             if action in {"enter_long", "add_long", "enter_short", "add_short"}:
+                if action == 'enter_long' and incremental_fill > 0:
+                    episode = (state.get('v5_entry_selection') or {}).get('episode_started_at')
+                    if episode is not None:
+                        # Only an actual acquisition qualifies a later entry as
+                        # re-entry. Rejected/unfilled requests cannot do so.
+                        state['last_acquired_macd_episode'] = episode
                 if state.get("target_replenishment_pending"):
                     state["target_replenishment_pending"] = False
                     state.pop("target_replenishment_pending_quantity", None)

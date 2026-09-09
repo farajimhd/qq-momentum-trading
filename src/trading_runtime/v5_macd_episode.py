@@ -67,12 +67,15 @@ def observe(o, p, state):
     line_bps = o.macd_line / normalizer * 10000 if o.macd_line is not None and normalizer and normalizer > 0 else None
     opened = gap is not None and gap >= p['v5_breakout']['minimum_macd_gap_bps'] - 1e-9
     if gap is not None and not opened:
+        d.pop('episode_started_at', None)
         if d.get('period_max', 0) > 0:
             d['previous_episode_body_high'] = d['period_max']
         if d.get('macd_open') or d.get('period_max', 0) > 0:
             d['episode_reset_at'] = o.observed_at.isoformat()
             d['episode_reset_gap_bps'] = gap
         d['period_max'] = 0.0
+    if opened and d.get('episode_started_at') is None:
+        d['episode_started_at'] = now
     prior = d.get('levels', [])
     current_levels = v5.rows(o, p)
     d.update(observed_at=now, macd_open=opened, macd_gap_bps=gap, macd_line_bps=line_bps,
@@ -217,13 +220,24 @@ def select(o, p, state):
         return {'reason': 'v5_second_target_unavailable'}
     selected = target(above[ordinal - 1], p)
     stop, stop_selection = initial_stop(o, p, o.price)
+    episode = d.get('episode_started_at')
+    if (policy.get('same_episode_reentry_stop') and episode is not None
+            and state.get('last_acquired_macd_episode') == episode):
+        high = d.get('prior_max', 0.)
+        if not isfinite(high) or high <= 0:
+            return {'reason': 'v5_reentry_episode_high_unavailable'}
+        tick = p['execution']['tick_size']
+        offset = policy['reentry_stop_offset_bps']
+        stop = floor((high-max(tick, high*offset/10000))/tick+1e-9)*tick
+        stop_selection = dict(source='macd_episode_high', episode_started_at=episode,
+                              high=high, offset_bps=offset, tick_size=tick)
     if stop <= 0 or stop >= min(o.price, o.bid):
         return {'reason': 'v5_stop_already_triggered'}
     return dict(reason='', stop=stop, stop_selection=stop_selection,
                 target=selected['price'], target_selection=selected,
                 broken_at=o.observed_at.timestamp(), references=levels,
                 session_high=o.structural_session_high, interval_based=True,
-                entry_atr=d.get('closed_atr', 0.))
+                entry_atr=d.get('closed_atr', 0.), episode_started_at=episode)
 
 
 def sample_gaps(d, levels, anchor):
