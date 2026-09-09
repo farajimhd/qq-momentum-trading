@@ -86,10 +86,12 @@ def main():
                 for event in timeline:
                     t = dt(event['event_time'])
                     if active:
-                        ax.plot([active[0],t],[active[1],active[1]],color=linecolor,alpha=protection_alpha,linewidth=protection_width)
+                        left, right = max(start, active[0]), min(end, t)
+                        if right >= left:
+                            ax.plot([left,right],[active[1],active[1]],color=linecolor,alpha=protection_alpha,linewidth=protection_width)
                     active = (t,float(event['price'])) if event.get('active') and event.get('price') else None
-                if active:
-                    ax.plot([active[0],end],[active[1],active[1]],color=linecolor,alpha=protection_alpha,linewidth=protection_width)
+                if active and max(start, active[0]) <= end:
+                    ax.plot([max(start, active[0]),end],[active[1],active[1]],color=linecolor,alpha=protection_alpha,linewidth=protection_width)
         ax.xaxis.set_major_formatter(dates.DateFormatter('%H:%M:%S',tz=ny))
         ax.set_ylabel('Price ($)')
         ax.grid(alpha=.15)
