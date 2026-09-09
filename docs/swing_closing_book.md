@@ -39,6 +39,28 @@ The Backtest selector labels new builds **Swing book v5 · scored S/R**. Automat
 selection prefers them over legacy builds with the same coverage. Charts accept
 role-prefixed hashed IDs and display evidence scores for both roles.
 
+Historical builds run `scripts/build_swing_book_v5.py`. Its
+`symmetric_selection_sql()` query scans the certified V4 candidate table once
+and groups by ticker, closing timestamp **and role**, so nearby supports and
+resistances cannot merge. Only geometry, identity and score enter the grouping
+arrays; source JSON is not carried through the sort/fold. The legacy single-role
+SQL entry point remains available for reproduction.
+
+The builder writes `selection.sql`, query profiles, per-side interval counts,
+the pinned selection contract and validation evidence under the specified
+runtime directory. It uses the V4 checkpoints rather than replaying market
+events. Existing V5 databases are preserved; query changes produce a new
+fingerprinted output. For example, using the script's managed environment-file
+default (override `--env-file` when required):
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B scripts/build_swing_book_v5.py --tickers SUGP JUNS --start 2025-01-01 --end 2026-09-04 --threads 2 --runtime D:/TradingML/runtimes/structure-validation/swing-v5-bulk
+```
+
+Choose an end date covered by the certified V4 source. Missing certified source
+days fail validation; the builder does not fall back to raw market files.
+
 `causal-swing-closing-book-3` reuses the accepted `causal-session-swing-v4`
 detector. It is an opt-in Backtest book, not a Live promotion or a replacement
 for retained v18/legacy ClickHouse builds.

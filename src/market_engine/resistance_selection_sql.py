@@ -1,11 +1,13 @@
-"""ClickHouse bulk equivalent of resistance selection over certified v4 closes."""
+"""ClickHouse bulk selection over certified V4 closes, without market replay."""
 import re
 
 
 def selection_sql(database, *, side='resistance', role_safe=False):
     if not re.fullmatch(r'structure_book_[a-f0-9]{12}', database):
         raise ValueError('Invalid source book')
-    if side not in ('support','resistance'): raise ValueError('Invalid selection side')
+    if side not in ('support','resistance','both'): raise ValueError('Invalid selection side')
+    if side=='both' and not role_safe: raise ValueError('Both roles require the symmetric contract')
+    role_filter = "role IN ('support','resistance')" if side=='both' else f"role='{side}'"
     departure = "if(flipped,0.,least(1.,if(threshold>0,JSONExtractFloat(state_json,'best_departure')/threshold,0.)))" if role_safe else "least(1.,if(threshold>0,JSONExtractFloat(state_json,'best_departure')/threshold,0.))"
     return f"""
 WITH source AS (
@@ -21,12 +23,12 @@ WITH source AS (
  greatest(0.,40*departure+40*least(if(flipped,role_tests,tests)/3.,1.)+20*least(role_tests/2.,1.)-20*crossings) AS raw_score,
  if(flipped AND role_tests=0,least(raw_score,20.),raw_score) AS score
  FROM {database}.book FINAL
- WHERE scale='major' AND state='active' AND role='{side}'
+ WHERE scale='major' AND state='active' AND {role_filter}
  AND greatest(JSONExtractFloat(state_json,'pivot_at'),JSONExtractFloat(state_json,'confirmed_at'),
  JSONExtractFloat(state_json,'formed_at'),JSONExtractFloat(state_json,'last_role_change_at'))<=valid_from_us/1000000.
 ), ordered AS (
- SELECT ticker,valid_from_us,arraySort(x->(x.1,x.4),groupArray((lower,upper,price,level_id,score,state_json))) AS a
- FROM source GROUP BY ticker,valid_from_us
+ SELECT ticker,valid_from_us,role,arraySort(x->(x.1,x.4),groupArray((lower,upper,price,level_id,score))) AS a
+ FROM source GROUP BY ticker,valid_from_us,role
 ), grouped AS (
  SELECT *, arrayFold((acc,x)->
  if(acc.3=0 OR (greatest(x.2,acc.2)-acc.1)/acc.1*10000>100,
@@ -34,13 +36,19 @@ WITH source AS (
  (acc.1,greatest(acc.2,x.2),acc.3,arrayPushBack(acc.4,acc.3))),
  a,(toFloat64(0),toFloat64(0),toUInt64(0),CAST([],'Array(UInt64)'))).4 AS groups FROM ordered
 ), flat AS (
- SELECT ticker,valid_from_us,pair.1 AS r,pair.2 AS g FROM grouped ARRAY JOIN arrayZip(a,groups) AS pair
+ SELECT ticker,valid_from_us,role,pair.1 AS r,pair.2 AS g FROM grouped ARRAY JOIN arrayZip(a,groups) AS pair
 )
 SELECT ticker,valid_from_us,
- concat('{"r" if side=="resistance" else "s"}:',substring(lower(hex(SHA256(arrayStringConcat(arraySort(groupArray(toString(r.4))), '|')))),1,16)) AS level_id,
+ concat(if(role='support','s:','r:'),substring(lower(hex(SHA256(arrayStringConcat(arraySort(groupArray(toString(r.4))), '|')))),1,16)) AS level_id,
  min(r.1) AS lower,max(r.2) AS upper,
  argMax(r.3,(r.5,r.3,-r.1,-toInt64(r.4))) AS price,
  round(max(r.5),1) AS selection_score,
  arraySort(groupArray(toString(r.4))) AS members
-FROM flat GROUP BY ticker,valid_from_us,g HAVING max(r.5)>=30 {"AND (max(r.2)-min(r.1))/min(r.1)*10000<=100" if role_safe else ""}
+ {",toInt8(if(role='support',1,-1)) AS side" if side=='both' else ""}
+FROM flat GROUP BY ticker,valid_from_us,role,g HAVING max(r.5)>=30 {"AND (max(r.2)-min(r.1))/min(r.1)*10000<=100" if role_safe else ""}
 """
+
+
+def symmetric_selection_sql(database):
+    """One source scan; role-partitioned grouping and current-role evidence."""
+    return selection_sql(database,side='both',role_safe=True)
