@@ -144,6 +144,31 @@ MACD resets and clears when flat. Entry, target order coverage and structural
 failure exits remain unchanged. These defaults are hypotheses for comparison,
 not fitted ticker rules or demonstrated profitability improvements.
 
+## Defensive structure successor
+
+`swing-v5-defensive-structure-v1` enables `defensive_structure_enabled` on the
+Candidate 175 policy. Earlier candidates keep their original behavior.
+Completed resistance breaks are now retained in bounded ticker state before
+entry, with original bounds, break time and the next overhead boundary. A later
+close can qualify half-gap progress without recrossing or counting candles.
+The flat ticker witness is invalidated by a close back inside/below the band;
+the acquired position retains its own structural evidence.
+
+Promoted resistance stops use `structural_stop_offset_bps` (default zero),
+rounded to the highest valid tick strictly below the band's lower boundary.
+Neither spread nor ATR shifts this boundary. OMS remains responsible for
+execution. The previous spread/ATR buffer remains only in older candidates.
+Confirmed exhaustion also qualifies defensive promotion without requiring
+further upward progress. A desired higher stop already breached by price
+produces an explicit exit instead of an invalid stop amendment.
+
+A causally detected forming resistance now immediately requests a full exit,
+without waiting for support failure. Existing swing detection still requires
+its configured right-hand confirmation candles: the pivot candle's time is
+not the time its formation became knowable. Journal evidence carries the actual
+confirmation time. Targets remain broker-held during management and the usual
+OMS exit/cancellation reconciliation handles liquidation.
+
 Focused tests cover causal pivot confirmation, ordinary pullbacks, strict
 breaks, failed support, missing candles, MACD reset continuity, restart state,
 full-target entry construction, partial acquisition and bracket activation,

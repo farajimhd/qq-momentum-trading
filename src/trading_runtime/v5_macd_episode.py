@@ -138,6 +138,9 @@ def observe(o, p, state):
             d['entry_close_location'] = ((o.price-low)/(high-low)
                 if high is not None and low is not None and high > low and low <= o.price <= high else None)
         d['decision_levels'] = list({r['unified_level_id']: r for r in [*current_levels, *d['crossed']]}.values())
+        if (p.get('episode_management') or {}).get('defensive_structure_enabled'):
+            from .expansion_stop import observe_break
+            observe_break(o, d)
     d['levels'] = current_levels
     if (p.get('episode_management') or {}).get('adaptive_target_enabled'):
         from .adaptive_episode_target import observe as observe_target
@@ -147,7 +150,8 @@ def observe(o, p, state):
         d['entry_high_threshold'] = max(d['entry_high_threshold'],
             d['entry_range_high'] * (1 + p['v5_breakout']['episode_high_offset_bps'] / 10_000))
     if o.position_quantity <= 0:
-        for key in ('position_gaps', 'pending_target', 'fill_stop_initialized', 'profit_trail', 'expansion_stop'):
+        for key in ('position_gaps', 'pending_target', 'fill_stop_initialized', 'profit_trail', 'expansion_stop',
+                    'defensive_structure_failure'):
             d.pop(key, None)
     state['v5_breakout_state'] = d
 
