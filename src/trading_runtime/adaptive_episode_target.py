@@ -2,6 +2,14 @@
 from math import isfinite
 
 
+def body_mean(values, policy):
+    half_life = policy.get('adaptive_target_body_half_life', 0.)
+    if not values:
+        return 0.
+    weights = [2**(-age/half_life) if half_life else 1. for age in reversed(range(len(values)))]
+    return sum(v*w for v, w in zip(values, weights))/sum(weights)
+
+
 def observe(o, d, policy):
     if not d.get('macd_open'):
         d.pop('adaptive_target', None)
@@ -19,7 +27,7 @@ def observe(o, d, policy):
     if s.get('closed_at') and now-s['closed_at'] != 1:
         s['contraction_closes'] = s['stall_closes'] = 0
     bodies = s['bodies']
-    baseline = sum(bodies)/len(bodies) if bodies else 0.
+    baseline = body_mean(bodies, policy)
     body = max(0., o.price-o.bar_open)
     contracting = baseline > 0 and body < baseline*policy['adaptive_target_contraction_ratio']
     s['contraction_closes'] = s['contraction_closes']+1 if contracting else 0
@@ -55,7 +63,7 @@ def select(above, d, p):
     if not gaps:
         gaps = [b['lower']-a['lower'] for a, b in zip(above, above[1:])
                 if b['lower'] > a['lower']][:policy['adaptive_target_gap_window']]
-    mean_body = sum(bodies)/len(bodies) if bodies else 0.
+    mean_body = body_mean(bodies, policy)
     mean_gap = sum(gaps)/len(gaps) if gaps else 0.
     distance = max(mean_gap*policy['adaptive_target_gap_multiple'],
                    mean_body*policy['adaptive_target_body_multiple'])
@@ -69,6 +77,7 @@ def select(above, d, p):
     selected = next((r for r in choices if r['price'] >= reference), choices[-1])
     return dict(selected, adaptive_contract='episode-expansion-target-1',
                 average_gap=mean_gap, average_bullish_body=mean_body,
+                body_half_life=policy.get('adaptive_target_body_half_life', 0.),
                 body_samples=len(bodies), gap_samples=len(gaps), target_reference=reference,
                 book_limited=selected['price'] < reference, episode=s.get('episode'),
                 statistics_closed_at=s.get('closed_at'))

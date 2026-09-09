@@ -15,7 +15,10 @@ DEFAULTS = dict(rejection_from_below=True, rejection_closes=1,
                 adaptive_target_enabled=False, adaptive_target_body_window=8,
                 adaptive_target_gap_window=32, adaptive_target_body_multiple=2.,
                 adaptive_target_gap_multiple=1., adaptive_target_contraction_ratio=.5,
-                adaptive_target_exhaustion_closes=2)
+                adaptive_target_exhaustion_closes=2, adaptive_target_body_half_life=0.,
+                expansion_stop_enabled=False, expansion_stop_gap_fraction=.5,
+                expansion_stop_minimum_breaks=2, expansion_stop_close_location=.75,
+                expansion_stop_atr_multiple=.25, expansion_stop_gap_cap=.25)
 
 
 def configure(parameters):
@@ -27,7 +30,7 @@ def configure(parameters):
     policy = dict(DEFAULTS, **raw)
     if any(type(policy[key]) is not bool for key in ('rejection_from_below','entry_on_close','require_range_context',
                                                    'rejection_buffer_requires_armed_trail', 'position_structure_enabled',
-                                                   'same_episode_reentry_stop', 'adaptive_target_enabled')):
+                                                   'same_episode_reentry_stop', 'adaptive_target_enabled', 'expansion_stop_enabled')):
         raise ValueError('Episode policy flags must be boolean')
     if type(policy['rejection_closes']) is not int or not 1 <= policy['rejection_closes'] <= 60:
         raise ValueError('Rejection confirmation must be one to sixty completed candles')
@@ -70,6 +73,16 @@ def configure(parameters):
         raise ValueError('Adaptive contraction ratio cannot exceed one')
     if policy['adaptive_target_enabled'] and not policy['position_structure_enabled']:
         raise ValueError('Adaptive targets require position structure and its full broker target')
+    for key in ('adaptive_target_body_half_life', 'expansion_stop_atr_multiple'):
+        if type(policy[key]) not in (int, float) or not isfinite(policy[key]) or policy[key] < 0:
+            raise ValueError('Weighting and expansion buffer must be finite and nonnegative')
+    for key in ('expansion_stop_gap_fraction', 'expansion_stop_close_location', 'expansion_stop_gap_cap'):
+        if type(policy[key]) not in (int, float) or not isfinite(policy[key]) or not 0 < policy[key] <= 1:
+            raise ValueError('Expansion fractions must be in (0, 1]')
+    if type(policy['expansion_stop_minimum_breaks']) is not int or not 2 <= policy['expansion_stop_minimum_breaks'] <= 120:
+        raise ValueError('Expansion requires two to 120 distinct bands')
+    if policy['expansion_stop_enabled'] and not (policy['position_structure_enabled'] and policy['adaptive_target_enabled']):
+        raise ValueError('Expansion stops require adaptive targets and position structure')
     if policy['position_structure_enabled']:
         from .v5_breakout import MACD_REJECTION_CONTRACT
         if parameters.get('v5_breakout_contract') != MACD_REJECTION_CONTRACT:

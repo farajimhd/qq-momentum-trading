@@ -115,6 +115,35 @@ existing replacement/acknowledgement path. A target already filled intrabar
 cannot be retrospectively moved using that candle's final size. Each sample
 window is bounded to at most 120 entries and persists with the strategy state.
 
+## Weighted targets and expansion protection
+
+The separate `swing-v5-weighted-expansion-protection-v1` profile preserves
+Candidate 174 and enables two policies. `adaptive_target_body_half_life=3`
+weights completed body samples exponentially: three samples ago carries half
+the newest sample's weight. Target selection and contraction detection use the
+same weighted mean. Zero retains the previous equal-weight behavior.
+
+`expansion_stop_enabled` replaces the blanket resistance-minus-2-ATR ratchet.
+The highest strictly broken resistance becomes eligible after a completed close
+reaches `expansion_stop_gap_fraction=0.5` of the open gap to the next resistance,
+or after one bullish candle clears at least `expansion_stop_minimum_breaks=2`
+non-overlapping bands and closes in the top quarter of its range
+(`expansion_stop_close_location=0.75`). Overlapping bands count once. A retained
+break witness allows later gap progress to qualify without needing another
+crossing. An unbroken overhead resistance is never the stop anchor.
+
+The resistance buffer is the greater of one tick, current spread and 0.25 ATR;
+the ATR component is capped at 25 percent of the next structural gap when one
+exists. Multipliers and fractions are configurable. Without an overhead gap,
+only multi-band confirmation can promote the resistance. Each stop decision
+chooses the higher qualified resistance stop or established swing-support
+boundary, retaining existing protection if neither improves it. Stops round
+down to ticks, remain below the bid and never loosen. Evidence records the
+anchor, confirmation, progress, break count and buffer. Position state survives
+MACD resets and clears when flat. Entry, target order coverage and structural
+failure exits remain unchanged. These defaults are hypotheses for comparison,
+not fitted ticker rules or demonstrated profitability improvements.
+
 Focused tests cover causal pivot confirmation, ordinary pullbacks, strict
 breaks, failed support, missing candles, MACD reset continuity, restart state,
 full-target entry construction, partial acquisition and bracket activation,

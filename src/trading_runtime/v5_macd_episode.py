@@ -147,7 +147,7 @@ def observe(o, p, state):
         d['entry_high_threshold'] = max(d['entry_high_threshold'],
             d['entry_range_high'] * (1 + p['v5_breakout']['episode_high_offset_bps'] / 10_000))
     if o.position_quantity <= 0:
-        for key in ('position_gaps', 'pending_target', 'fill_stop_initialized', 'profit_trail'):
+        for key in ('position_gaps', 'pending_target', 'fill_stop_initialized', 'profit_trail', 'expansion_stop'):
             d.pop(key, None)
     state['v5_breakout_state'] = d
 
@@ -312,6 +312,8 @@ def manage(o, p, state):
         if below:
             sample_gaps(d, entry_levels, max(below, key=lambda r: r['upper']))
     for broken in d.get('crossed', []):
+        if (p.get('episode_management') or {}).get('expansion_stop_enabled'):
+            continue
         proposed = v5.below(broken, p)
         multiple = (p.get('episode_management') or {}).get('stop_atr_multiple', 0.)
         if multiple:
@@ -348,6 +350,9 @@ def manage(o, p, state):
             if selected and selected['price'] > existing:
                 d['pending_target'] = dict(selected, confirmed_at=o.observed_at.isoformat(),
                     broken_level_ids=[r['unified_level_id'] for r in d['crossed']])
+    if (p.get('episode_management') or {}).get('expansion_stop_enabled'):
+        from .expansion_stop import manage as manage_expansion_stop
+        current = manage_expansion_stop(o, p, state, current)
     if p.get('episode_management'):
         from .v5_episode_management import profit_trail
         current = profit_trail(o, d, state, p['episode_management'], p['execution']['tick_size'], current)
