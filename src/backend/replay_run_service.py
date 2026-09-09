@@ -1885,6 +1885,25 @@ class ReplayRunController:
                    maximum_seconds=max(row['maximum_seconds'], elapsed))
 
     async def canvas_payload(self, symbol: str = "AAPL") -> dict[str, Any]:
+        # Concurrent polls of one chart share a publication, rather than
+        # queueing complete rebuilds behind the presentation lock. Cancelling
+        # one HTTP request must not cancel work awaited by other readers.
+        symbol = _ticker(symbol)
+        tasks = getattr(self, '_canvas_publications', None)
+        if tasks is None:
+            tasks = self._canvas_publications = {}
+        task = tasks.get(symbol)
+        if task is None:
+            task = tasks[symbol] = asyncio.create_task(self._build_canvas_payload(symbol))
+            def release(completed):
+                if tasks.get(symbol) is completed:
+                    tasks.pop(symbol, None)
+                if not completed.cancelled():
+                    completed.exception()
+            task.add_done_callback(release)
+        return await asyncio.shield(task)
+
+    async def _build_canvas_payload(self, symbol: str) -> dict[str, Any]:
         # One presentation build per controller, shared by concurrent charts.
         async with self._canvas_build_lock:
             started = time.perf_counter()
@@ -1936,7 +1955,7 @@ class ReplayRunController:
                 "next_offset": activity_page.get("next_offset"),
             }
             trading["presentation_run"] = publication_run
-            self._canvas_state_cache = (now, trading)
+            self._canvas_state_cache = (time.monotonic(), trading)
             self._canvas_state_cache_state = cache_state
         ticker = _ticker(symbol)
         chart_activity_rows = (await asyncio.to_thread(self.strategy_activity_snapshot,

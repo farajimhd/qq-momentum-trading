@@ -50,6 +50,21 @@ def test_missing_evidence_fails_closed(tmp_path):
     journal.close()
 
 
+def test_execution_references_are_idempotent_and_recover_original_evidence(tmp_path):
+    journal = TradingJournal(tmp_path / 'execution.sqlite3')
+    metadata = {'action': 'enter_long', 'protective_stop_selection': {
+        'level': {'price': 12, 'references': [{'price': 11}]}}}
+    compact = journal.reference_evidence(metadata)
+    count = journal._fetchone('SELECT count(*) n FROM journal_evidence')['n']
+    assert REFERENCE in compact['protective_stop_selection']
+    assert journal.reference_evidence(compact) == compact
+    journal.append(run_id='run', category='execution', entity_type='fill', entity_id='fill',
+                   payload={'canonical_metadata': compact})
+    assert journal._fetchone('SELECT count(*) n FROM journal_evidence')['n'] == count
+    assert journal.records('run')[0].payload['canonical_metadata'] == metadata
+    journal.close()
+
+
 def test_checkpoint_and_oms_state_recover_complete_evidence(tmp_path):
     journal = TradingJournal(tmp_path / 'recovery.sqlite3')
     state = {'profit_target_selection': {'references': [{'price': 12}], 'target': 12}}

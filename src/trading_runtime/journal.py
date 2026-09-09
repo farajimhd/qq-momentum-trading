@@ -94,6 +94,15 @@ class TradingJournal:
         result['state'] = self._hydrate(result['state'])
         return result
 
+    def reference_evidence(self, value):
+        """Persist immutable evidence before handing its references to execution.
+
+        Operational scalars stay inline; only the existing evidence contract
+        is externalized. Normal journal/recovery reads hydrate and verify it.
+        """
+        with self._lock, self._connection:
+            return json.loads(self._dump_evidence(value))
+
     def close(self) -> None:
         with self._lock:
             self._connection.close()

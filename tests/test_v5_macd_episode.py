@@ -18,14 +18,16 @@ def setup():
     return p, state, o
 
 
-def test_gap_normalization_threshold_and_equality_entry():
+def test_gap_normalization_and_buffered_strict_entry():
     p, state, o = setup()
     assert M.gap_bps(replace(o, price=100, macd_line=.25, macd_signal=0)) == 25
     exact = replace(o, price=100, ask=100.01, bid=99.99, execution_vwap=99,
                     macd_line=.25, macd_signal=0)
     M.observe(replace(exact, observed_at=NOW+timedelta(seconds=1)), p, state)
     state['v5_breakout_state']['prior_max'] = 100
-    assert M.select(exact, p, state)['reason'] == ''
+    assert M.select(exact, p, state)['reason'] == 'v5_period_high_not_reclaimed'
+    assert M.select(replace(exact, price=100.15, macd_line=.3), p, state)['reason'] == 'v5_period_high_not_reclaimed'
+    assert M.select(replace(exact, price=100.16, ask=100.17, bid=100.15, macd_line=.3), p, state)['reason'] == ''
     assert not M.acquisition_valid(replace(exact, macd_line=.2499), p)
     assert M.select(replace(exact, price=99.99), p, state)['reason'] == 'v5_period_high_not_reclaimed'
 
@@ -53,6 +55,20 @@ def test_initial_second_target_and_outer_low_overrides_five_percent():
     assert selected['stop_selection']['source'] == 'outer_swing_low'
     state['v5_breakout_state']['decision_levels'] = [resistance(104)]
     assert M.select(o, p, state)['reason'] == 'v5_second_target_unavailable'
+
+
+def test_unavailable_macd_blocks_entry_without_fabricating_an_episode_reset():
+    p, state, o = setup()
+    M.observe(replace(o, observed_at=NOW+timedelta(seconds=1), price=103.5, bar_open=104,
+                      source_timeframe='1s', evaluation_events=('bar_close',)), p, state)
+    missing = replace(o, observed_at=NOW+timedelta(seconds=1.1), macd_line=None)
+    M.observe(missing, p, state)
+    assert M.select(missing, p, state)['reason'] == 'v5_macd_gap_below_minimum'
+    assert state['v5_breakout_state']['period_max'] == 104
+    recovered = replace(o, observed_at=NOW+timedelta(seconds=1.2))
+    M.observe(recovered, p, state)
+    assert state['v5_breakout_state']['prior_max'] == 104
+    assert M.select(recovered, p, state)['reason'] == 'v5_period_high_not_reclaimed'
 
 
 def test_touch_and_intrabar_break_do_not_advance_protection():

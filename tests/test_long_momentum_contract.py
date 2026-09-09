@@ -404,6 +404,21 @@ class PortfolioContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await engine.authorize_entry_reprice(approved, "A", 90, 99))
         self.assertEqual(engine.reservations, before)
 
+    async def test_acquisition_headroom_is_reserved_once_and_consumed_by_repricing(self):
+        engine = self.make_portfolio()
+        request = replace(intent("entry", quantity=100, price=100, invalidation=90),
+                          metadata={"assignment_id": "assignment-AAPL", "entry_completion_quote": "ask",
+                                    "entry_acquisition_buffer_bps": 500.0})
+        decision, approved = await engine.approve(request, account_id="A")
+        self.assertEqual(decision.approved_quantity, 94)
+        self.assertEqual(approved.metadata["entry_funding_price"], 105)
+        before = engine.reservations[approved.metadata["portfolio_reservation_id"]].reserved_notional
+        self.assertTrue(await engine.authorize_entry_reprice(approved, "A", 103, 94))
+        self.assertTrue(await engine.authorize_entry_reprice(approved, "A", 105, 94))
+        after = engine.reservations[approved.metadata["portfolio_reservation_id"]].reserved_notional
+        self.assertAlmostEqual(before, after)
+        self.assertFalse(await engine.authorize_entry_reprice(approved, "A", 110, 94))
+
     async def test_partial_acquisition_does_not_shrink_its_original_risk_budget(self):
         from tests.test_portfolio_management import position
         from src.trading_runtime.order_management import OrderGroupSnapshot

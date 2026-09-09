@@ -52,6 +52,8 @@ def configure(parameters):
         settings.setdefault('vwap_offset_bps', 10.)
     if episode(parameters):
         settings.setdefault('minimum_macd_gap_bps', 25.)
+        settings.setdefault('episode_high_offset_bps', 15.)
+        settings.setdefault('entry_acquisition_buffer_bps', 500.)
         settings.setdefault('initial_target_ordinal', 2)
         if type(settings['initial_target_ordinal']) is not int or settings['initial_target_ordinal'] < 2:
             raise ValueError('Initial target ordinal must be an integer of at least two')
@@ -204,6 +206,10 @@ def evidence(observation, state):
         return dict(observed_at=observation.observed_at.isoformat(), price=observation.price,
             contract=data['contract'], macd_open=data.get('macd_open'), macd_gap_bps=data.get('macd_gap_bps'),
             reentry_restricted=data.get('exited'), prior_period_body_high=data.get('prior_max'),
+            entry_high_threshold=data.get('entry_high_threshold'),
+            episode_reset_at=data.get('episode_reset_at'),
+            episode_reset_gap_bps=data.get('episode_reset_gap_bps'),
+            previous_episode_body_high=data.get('previous_episode_body_high'),
             crossed_lower=[r['lower'] for r in data.get('crossed', [])],
             forming_resistance=data.get('forming'))
     breakout = data.get('breakout') or {}

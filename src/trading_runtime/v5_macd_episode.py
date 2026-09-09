@@ -39,7 +39,12 @@ def observe(o, p, state):
         return
     gap = gap_bps(o)
     opened = gap is not None and gap >= p['v5_breakout']['minimum_macd_gap_bps'] - 1e-9
-    if not opened:
+    if gap is not None and not opened:
+        if d.get('period_max', 0) > 0:
+            d['previous_episode_body_high'] = d['period_max']
+        if d.get('macd_open') or d.get('period_max', 0) > 0:
+            d['episode_reset_at'] = o.observed_at.isoformat()
+            d['episode_reset_gap_bps'] = gap
         d['period_max'] = 0.0
     prior = d.get('levels', [])
     current_levels = v5.rows(o, p)
@@ -65,6 +70,7 @@ def observe(o, p, state):
         d.update(closed_at=now, closed_price=o.price, closed_levels=current_levels)
         d['decision_levels'] = list({r['unified_level_id']: r for r in [*current_levels, *d['crossed']]}.values())
     d['levels'] = current_levels
+    d['entry_high_threshold'] = d['prior_max'] * (1 + p['v5_breakout']['episode_high_offset_bps'] / 10_000)
     if o.position_quantity <= 0:
         for key in ('position_gaps', 'pending_target', 'fill_stop_initialized'):
             d.pop(key, None)
@@ -121,7 +127,8 @@ def select(o, p, state):
         return {'reason': 'v5_macd_gap_below_minimum'}
     if not acquisition_valid(o, p):
         return {'reason': 'v5_price_not_above_vwap'}
-    if o.price < d.get('prior_max', 0.0):
+    threshold = d.get('prior_max', 0.0) * (1 + p['v5_breakout']['episode_high_offset_bps'] / 10_000)
+    if not strictly_below(threshold, o.price):
         return {'reason': 'v5_period_high_not_reclaimed'}
     levels = d.get('decision_levels', [])
     above = overhead(levels, max(o.price, o.ask), p)

@@ -1055,6 +1055,14 @@ class PortfolioManagementEngine:
             return decision, None
 
         price = _worst_entry_price(intent) if entry else float(intent.reference_price)
+        if entry and intent.metadata.get("entry_completion_quote") in {"bid", "ask"}:
+            buffer = float(intent.metadata.get("entry_acquisition_buffer_bps", 0.0))
+            if not math.isfinite(buffer) or buffer < 0:
+                raise ValueError("Acquisition funding buffer must be finite and nonnegative")
+            # Freeze once at admission. Repricing consumes this reserve; it
+            # must not demand a fresh percentage buffer above every new ask.
+            intent = replace(intent, metadata={**intent.metadata,
+                "entry_funding_price": price * (1 + buffer / 10_000)})
         base_price = price * fx_to_base
         if (entry and requested <= 0 and price > 0 and intent.metadata.get("wait_for_capital")
                 and intent.capital_request is not None):
@@ -1234,8 +1242,11 @@ class PortfolioManagementEngine:
 
     @staticmethod
     def _entry_funding_factor(intent: StrategyIntent, policy: PortfolioPolicy) -> float:
-        return (1 + policy.entry_fee_buffer_bps / 10_000
-                if intent.metadata.get("entry_completion_quote") in {"bid", "ask"} else 1.0)
+        if intent.metadata.get("entry_completion_quote") not in {"bid", "ask"}:
+            return 1.0
+        price = _worst_entry_price(intent)
+        reserved_price = max(price, float(intent.metadata.get("entry_funding_price") or price))
+        return reserved_price / price * (1 + policy.entry_fee_buffer_bps / 10_000)
 
     async def authorize_entry_reprice(self, intent: StrategyIntent, account_id: str,
                                       price: float, remaining: float) -> bool:
@@ -1291,7 +1302,7 @@ class PortfolioManagementEngine:
                 return False
             self._assert_active_admission_lease()
             updated = replace(reservation, reference_price=price,
-                              reserved_notional=remaining * price * fx * self._entry_funding_factor(intent, policy),
+                              reserved_notional=remaining * price * fx * self._entry_funding_factor(repriced, policy),
                               reserved_planned_risk=planned_risk)
             self.reservations[reservation_id] = updated
             self._record("portfolio_reservation", reservation_id, account_id,

@@ -585,6 +585,7 @@ class TradingRuntime:
                       for a in self.strategy.assignments() if a.account_id == account_id}
             self.portfolio.withdraw_invalidated_requests(account_id, active)
         for intent in evaluation.intents:
+            intent = replace(intent, metadata=self.journal.reference_evidence(intent.metadata))
             self.journal.append(
                 run_id=self.run_id,
                 category="strategy",

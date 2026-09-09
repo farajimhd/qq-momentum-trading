@@ -16,10 +16,13 @@ EVIDENCE_KEYS = frozenset({
 
 def encode_evidence(value, dumps, evidence):
     if isinstance(value, dict):
+        if set(value) == {REFERENCE}:
+            return dict(value)
         result = {}
         for key, item in value.items():
             encoded = encode_evidence(item, dumps, evidence)
-            if key in EVIDENCE_KEYS and isinstance(item, (dict, list, tuple)) and item:
+            if (key in EVIDENCE_KEYS and isinstance(item, (dict, list, tuple)) and item
+                    and not (isinstance(item, dict) and set(item) == {REFERENCE})):
                 raw = dumps(encoded)
                 digest = sha256(raw.encode('utf-8')).hexdigest()
                 evidence[digest] = raw

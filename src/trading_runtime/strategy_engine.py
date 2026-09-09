@@ -5278,6 +5278,8 @@ class LongMomentumStrategyEngine:
                            and action in {"enter_long", "enter_short"} else {}),
                         **({"entry_completion_quote": "ask" if self.revision >= 39 else "bid"} if self.revision >= 37
                            and action in {"enter_long", "add_long"} else {}),
+                        **({"entry_acquisition_buffer_bps": assignment.parameters['v5_breakout']['entry_acquisition_buffer_bps']}
+                           if v5_breakout.episode(assignment.parameters) and action == "enter_long" else {}),
                         "bid": observation.bid,
                         "ask": observation.ask,
                         "quote_observed_at": (
