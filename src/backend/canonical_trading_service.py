@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -169,6 +170,7 @@ def trading_state_payload(
     snapshot: TradingStateSnapshot,
     *,
     include_strategy_activity: bool = True,
+    protection_as_of: datetime | None = None,
 ) -> dict[str, Any]:
     if (
         snapshot.mode in {TradingMode.BACKTEST, TradingMode.BACKTEST_DEBUG}
@@ -179,7 +181,19 @@ def trading_state_payload(
             snapshot,
             closed_trades=tuple(derive_round_trip_trades(list(snapshot.executions))),
         )
-    payload = snapshot.to_dict()
+    presentation = snapshot
+    if snapshot.mode in {TradingMode.BACKTEST, TradingMode.BACKTEST_DEBUG}:
+        # Avoid copying entire evidence books before discarding them below.
+        presentation = replace(snapshot,
+            orders=tuple(replace(row, raw={k: row.raw[k] for k in ('submitted_at', 'cancelled_at', 'replaced_at', 'canonical_metadata') if k in row.raw}) for row in snapshot.orders),
+            executions=tuple(replace(row, raw={}) for row in snapshot.executions),
+            activity=tuple(replace(row, payload={}) for row in snapshot.activity))
+        presentation = replace(presentation, orders=tuple(replace(row, raw={
+            **{k: v for k, v in row.raw.items() if k != 'canonical_metadata'},
+            'canonical_metadata': {k: v for k, v in row.raw.get('canonical_metadata', {}).items()
+                                   if k in ('execution_role', 'fill_role', 'action', 'reason', 'reason_code')}
+        }) for row in presentation.orders))
+    payload = presentation.to_dict()
     if snapshot.mode in {TradingMode.BACKTEST, TradingMode.BACKTEST_DEBUG}:
         _compact_historical_broker_projection(payload)
     metrics = portfolio_metrics(payload.get("account_values", []), payload.get("ledger", []), payload.get("positions", []))
@@ -195,6 +209,10 @@ def trading_state_payload(
         snapshot.orders,
         snapshot.positions,
     )
+    from src.trading_runtime.protection_timeline import attach_protection_timelines
+    payload['protection_unassigned_count'] = attach_protection_timelines(
+        position_lifecycles, snapshot.protection_events, snapshot.executions, protection_as_of or snapshot.as_of)
+    payload.pop('protection_events', None)
     payload["position_lifecycles"] = position_lifecycles
     if snapshot.mode in {TradingMode.BACKTEST, TradingMode.BACKTEST_DEBUG}:
         # A completed historical trade is one flat-to-flat position lifecycle.

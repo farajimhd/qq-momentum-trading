@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from time import perf_counter
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+from .journal_evidence import encode_evidence, decode_evidence, activity_payload
 
 from src.request_context import causal_identity, current_request_identity
 
@@ -41,6 +44,7 @@ class TradingJournal:
         read_only: bool = False,
         synchronous: str = "FULL",
     ) -> None:
+        self.timings = {"serialization_seconds": 0.0, "transaction_seconds": 0.0, "append_count": 0}
         self.path = path
         self.read_only = read_only
         self.synchronous = str(synchronous or "FULL").strip().upper()
@@ -62,6 +66,33 @@ class TradingJournal:
         self._lock = threading.RLock()
         if not read_only:
             self._initialize()
+
+    def _hydrate(self, value):
+        cache = {}
+        def fetch(digest):
+            if digest not in cache:
+                found = self._fetchone("SELECT payload_json FROM journal_evidence WHERE sha256 = ?", (digest,))
+                cache[digest] = found["payload_json"] if found else None
+            return cache[digest]
+        return decode_evidence(value, fetch)
+
+    def _record(self, row) -> JournalRecord:
+        record = _record(row)
+        return replace(record, payload=self._hydrate(record.payload))
+
+    def _dump_evidence(self, value, pending=None):
+        evidence = {} if pending is None else pending
+        dumps = lambda item: json.dumps(item, separators=(",", ":"), sort_keys=True, default=_json_default)
+        result = dumps(encode_evidence(value, dumps, evidence))
+        if pending is None:
+            self._connection.executemany(
+                "INSERT OR IGNORE INTO journal_evidence(sha256, payload_json) VALUES (?, ?)", evidence.items())
+        return result
+
+    def _assignment(self, row):
+        result = _assignment(row)
+        result['state'] = self._hydrate(result['state'])
+        return result
 
     def close(self) -> None:
         with self._lock:
@@ -111,6 +142,7 @@ class TradingJournal:
     def append_many(self, entries: Iterable[dict[str, Any]]) -> list[JournalRecord]:
         """Append an ordered event batch in one durable SQLite transaction."""
 
+        serialization_started = perf_counter()
         prepared: list[dict[str, Any]] = []
         for entry in entries:
             run_id = str(entry["run_id"])
@@ -149,19 +181,23 @@ class TradingJournal:
                     "event_time": event_time,
                     "recorded_at": recorded_at,
                     "payload": payload,
-                    "payload_json": json.dumps(
-                        payload,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                        default=_json_default,
-                    ),
+
                 }
             )
         if not prepared:
             return []
 
+        evidence: dict[str, str] = {}
+        dumps = lambda value: json.dumps(value, separators=(",", ":"), sort_keys=True, default=_json_default)
+        for entry in prepared:
+            entry["payload_json"] = dumps(encode_evidence(entry["payload"], dumps, evidence))
+            entry["activity_json"] = dumps(activity_payload(entry["payload"]))
+        self.timings["serialization_seconds"] += perf_counter() - serialization_started
+        transaction_started = perf_counter()
         records: list[JournalRecord] = []
         with self._lock, self._connection:
+            self._connection.executemany(
+                "INSERT OR IGNORE INTO journal_evidence(sha256, payload_json) VALUES (?, ?)", evidence.items())
             next_sequence: dict[str, int] = {}
             for entry in prepared:
                 run_id = entry["run_id"]
@@ -193,6 +229,10 @@ class TradingJournal:
                         entry["payload_json"],
                     ),
                 )
+                if entry["category"] in {"market_discovery_signal", "watchlist_membership", "strategy", "strategy_decision", "order_management"}:
+                    self._connection.execute(
+                        "INSERT INTO journal_activity(record_id, payload_json) VALUES (?, ?)",
+                        (entry["record_id"], entry["activity_json"]))
                 self._connection.execute(
                     "INSERT INTO outbox(record_id, attempts, last_error, delivered_at) VALUES (?, 0, '', NULL)",
                     (entry["record_id"],),
@@ -211,6 +251,8 @@ class TradingJournal:
                         entry["payload"],
                     )
                 )
+        self.timings["transaction_seconds"] += perf_counter() - transaction_started
+        self.timings["append_count"] += len(records)
         return records
 
     def append_once(
@@ -232,7 +274,7 @@ class TradingJournal:
                 (category, entity_type, entity_id),
             ).fetchone()
             if existing is not None:
-                return _record(existing), False
+                return self._record(existing), False
             try:
                 return (
                     self.append(
@@ -253,7 +295,7 @@ class TradingJournal:
                 ).fetchone()
                 if existing is None:
                     raise
-                return _record(existing), False
+                return self._record(existing), False
 
     def append_once_many(
         self, entries: Iterable[dict[str, Any]]
@@ -291,7 +333,7 @@ class TradingJournal:
                         (category, entity_type, *chunk),
                     ).fetchall()
                     for row in rows:
-                        record = _record(row)
+                        record = self._record(row)
                         existing_by_key[(category, entity_type, record.entity_id)] = record
 
             new_entries: list[dict[str, Any]] = []
@@ -326,7 +368,7 @@ class TradingJournal:
                 ON CONFLICT(run_id) DO UPDATE SET cursor=excluded.cursor, event_time=excluded.event_time,
                     state_json=excluded.state_json, updated_at=excluded.updated_at
                 """,
-                (run_id, cursor, event_time.astimezone(timezone.utc).isoformat(), json.dumps(state, sort_keys=True, default=_json_default), datetime.now(timezone.utc).isoformat()),
+                (run_id, cursor, event_time.astimezone(timezone.utc).isoformat(), self._dump_evidence(state), datetime.now(timezone.utc).isoformat()),
             )
 
     def load_checkpoint(self, run_id: str) -> dict[str, Any] | None:
@@ -336,7 +378,7 @@ class TradingJournal:
             ).fetchone()
         if row is None:
             return None
-        return {"run_id": row["run_id"], "cursor": row["cursor"], "event_time": row["event_time"], "state": json.loads(row["state_json"]), "updated_at": row["updated_at"]}
+        return {"run_id": row["run_id"], "cursor": row["cursor"], "event_time": row["event_time"], "state": self._hydrate(json.loads(row["state_json"])), "updated_at": row["updated_at"]}
 
     def save_portfolio_state(self, account_id: str, state: dict[str, Any]) -> None:
         if not account_id:
@@ -351,7 +393,7 @@ class TradingJournal:
                 """,
                 (
                     account_id,
-                    json.dumps(state, sort_keys=True, default=_json_default),
+                    self._dump_evidence(state),
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
@@ -360,7 +402,7 @@ class TradingJournal:
         rows = self._fetchall(
             "SELECT account_id, state_json FROM portfolio_states ORDER BY account_id"
         )
-        return {str(row["account_id"]): json.loads(row["state_json"]) for row in rows}
+        return {str(row["account_id"]): self._hydrate(json.loads(row["state_json"])) for row in rows}
 
     def portfolio_reservation(
         self, account_id: str, reservation_id: str
@@ -374,7 +416,7 @@ class TradingJournal:
             ).fetchone()
         if row is None:
             return None
-        state = json.loads(str(row["state_json"]))
+        state = self._hydrate(json.loads(str(row["state_json"])))
         return next(
             (
                 dict(reservation)
@@ -579,7 +621,7 @@ class TradingJournal:
                     group_id,
                     run_id,
                     account_id,
-                    json.dumps(state, sort_keys=True, default=_json_default),
+                    self._dump_evidence(state),
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
@@ -599,7 +641,7 @@ class TradingJournal:
                 "group_id": str(row["group_id"]),
                 "run_id": str(row["run_id"]),
                 "account_id": str(row["account_id"]),
-                "state": json.loads(row["state_json"]),
+                "state": self._hydrate(json.loads(row["state_json"])),
                 "updated_at": str(row["updated_at"]),
             }
             for row in rows
@@ -825,6 +867,7 @@ class TradingJournal:
 
         prepared: list[tuple[Any, ...]] = []
         assignment_ids: list[str] = []
+        evidence = {}
         now = datetime.now(timezone.utc).isoformat()
         for raw in payloads:
             payload = dict(raw)
@@ -851,11 +894,7 @@ class TradingJournal:
                         sort_keys=True,
                         default=_json_default,
                     ),
-                    json.dumps(
-                        payload.get("state") or {},
-                        sort_keys=True,
-                        default=_json_default,
-                    ),
+                    self._dump_evidence(payload.get("state") or {}, evidence),
                     str(payload.get("source") or "order_entry"),
                     str(payload.get("created_at") or now),
                     str(payload.get("updated_at") or now),
@@ -864,6 +903,7 @@ class TradingJournal:
         if not prepared:
             return []
         with self._lock, self._connection:
+            self._connection.executemany("INSERT OR IGNORE INTO journal_evidence(sha256,payload_json) VALUES (?,?)", evidence.items())
             self._connection.executemany(
                 """
                 INSERT INTO strategy_assignments(
@@ -883,7 +923,7 @@ class TradingJournal:
             assignment_ids,
         )
         by_id = {
-            str(row["assignment_id"]): _assignment(row)
+            str(row["assignment_id"]): self._assignment(row)
             for row in rows
         }
         return [by_id[assignment_id] for assignment_id in assignment_ids]
@@ -892,7 +932,7 @@ class TradingJournal:
         row = self._fetchone(
             "SELECT * FROM strategy_assignments WHERE assignment_id = ?", (assignment_id,)
         )
-        return _assignment(row) if row is not None else None
+        return self._assignment(row) if row is not None else None
 
     def strategy_assignments(
         self,
@@ -915,7 +955,7 @@ class TradingJournal:
         rows = self._fetchall(
             f"SELECT * FROM strategy_assignments{where} ORDER BY updated_at DESC", values
         )
-        return [_assignment(row) for row in rows]
+        return [self._assignment(row) for row in rows]
 
     def strategy_records(
         self,
@@ -941,7 +981,7 @@ class TradingJournal:
             f"SELECT * FROM journal WHERE {' AND '.join(clauses)} ORDER BY event_time DESC, recorded_at DESC LIMIT ?",
             values,
         )
-        return [_record(row) for row in reversed(rows)]
+        return [self._record(row) for row in reversed(rows)]
 
     def strategy_activity_records(
         self,
@@ -955,6 +995,7 @@ class TradingJournal:
         limit: int = 2000,
         offset: int = 0,
         consequential_only: bool = False,
+        compact: bool = False,
         after_sequence: int = 0,
         through_sequence: int | None = None,
     ) -> list[JournalRecord]:
@@ -1034,12 +1075,15 @@ class TradingJournal:
                 max(0, int(offset)),
             )
         )
+        source = "journal"
+        if compact and self._fetchone("SELECT name FROM sqlite_master WHERE name='journal_activity'"):
+            source = "(SELECT j.record_id,j.run_id,j.sequence,j.event_time,j.recorded_at,j.category,j.entity_type,j.entity_id,j.account_id,COALESCE(a.payload_json,j.payload_json) AS payload_json FROM journal j LEFT JOIN journal_activity a USING(record_id))"
         rows = self._fetchall(
-            f"SELECT * FROM journal WHERE {' AND '.join(clauses)} "
+            f"SELECT * FROM {source} WHERE {' AND '.join(clauses)} "
             "ORDER BY event_time DESC, recorded_at DESC, sequence DESC LIMIT ? OFFSET ?",
             values,
         )
-        return [_record(row) for row in rows]
+        return [_record(row) if compact else self._record(row) for row in rows]
 
     def order_management_records(
         self,
@@ -1068,7 +1112,7 @@ class TradingJournal:
             "ORDER BY event_time DESC, recorded_at DESC LIMIT ?",
             values,
         )
-        return [_record(row) for row in reversed(rows)]
+        return [self._record(row) for row in reversed(rows)]
 
     def portfolio_management_records(
         self,
@@ -1087,14 +1131,19 @@ class TradingJournal:
             "ORDER BY event_time DESC, recorded_at DESC LIMIT ?",
             values,
         )
-        return [_record(row) for row in reversed(rows)]
+        return [self._record(row) for row in reversed(rows)]
+
+    def protection_records(self, run_id, after_sequence=0):
+        rows = self._fetchall("SELECT * FROM journal WHERE run_id=? AND category='protection' AND sequence>? ORDER BY sequence",
+                              (run_id, after_sequence))
+        return [_record(row) for row in rows]
 
     def records(self, run_id: str, *, after_sequence: int = 0) -> list[JournalRecord]:
         rows = self._fetchall(
             "SELECT * FROM journal WHERE run_id = ? AND sequence > ? ORDER BY sequence",
             (run_id, after_sequence),
         )
-        return [_record(row) for row in rows]
+        return [self._record(row) for row in rows]
 
     def latest_sequence(self, run_id: str) -> int:
         row = self._fetchone(
@@ -1123,7 +1172,7 @@ class TradingJournal:
                 *categories,
             ),
         )
-        return _record(row) if row is not None else None
+        return self._record(row) if row is not None else None
 
     def watchlist_membership_records(
         self,
@@ -1142,7 +1191,7 @@ class TradingJournal:
             "ORDER BY event_time ASC, recorded_at ASC, sequence ASC LIMIT ?",
             values,
         )
-        return [_record(row) for row in rows]
+        return [self._record(row) for row in rows]
 
     def signal_stream_records(
         self,
@@ -1173,7 +1222,7 @@ class TradingJournal:
             "ORDER BY event_time DESC, recorded_at DESC, sequence DESC LIMIT ?",
             values,
         )
-        return [_record(row) for row in rows]
+        return [self._record(row) for row in rows]
 
     def recent_records(
         self,
@@ -1196,7 +1245,7 @@ class TradingJournal:
             """,
             (run_id, *categories, bounded_limit),
         )
-        return [_record(row) for row in rows]
+        return [self._record(row) for row in rows]
 
     def pending_outbox(self, limit: int = 500) -> list[JournalRecord]:
         rows = self._fetchall(
@@ -1208,7 +1257,7 @@ class TradingJournal:
             """,
             (limit,),
         )
-        return [_record(row) for row in rows]
+        return [self._record(row) for row in rows]
 
     def mark_delivered(self, record_ids: Iterable[str]) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -1240,6 +1289,12 @@ class TradingJournal:
                     ON journal(run_id, event_time DESC, sequence DESC);
                 CREATE INDEX IF NOT EXISTS idx_journal_run_category_sequence
                     ON journal(run_id, category, sequence DESC);
+                CREATE TABLE IF NOT EXISTS journal_evidence(
+                    sha256 TEXT PRIMARY KEY, payload_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS journal_activity(
+                    record_id TEXT PRIMARY KEY REFERENCES journal(record_id), payload_json TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS outbox(
                     record_id TEXT PRIMARY KEY REFERENCES journal(record_id), attempts INTEGER NOT NULL,
                     last_error TEXT NOT NULL, delivered_at TEXT

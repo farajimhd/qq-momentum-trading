@@ -9,21 +9,22 @@ STAGED_CONTINUOUS_CONTRACT = 'swing-v5-staged-breakout-2'
 INTERVAL_CONTRACT = 'swing-v5-interval-breakout-1'
 HOD_CONTRACT = 'swing-v5-hod-ladder-1'
 MACD_GAP_CONTRACT = 'swing-v5-macd-gap-1'
+MACD_EPISODE_CONTRACT = 'swing-v5-macd-episode-1'
 DEFAULTS = dict(direction_window_ms=400., maximum_sample_gap_ms=250.,
                 breakout_lifetime_ms=1000., stop_offset_bps=5., target_offset_ticks=1,
                 minimum_selection_score=30., entry_resistance_count=3)
 
 
 def enabled(parameters):
-    return parameters.get('v5_breakout_contract') in (CONTRACT, STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT, HOD_CONTRACT, MACD_GAP_CONTRACT)
+    return parameters.get('v5_breakout_contract') in (CONTRACT, STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT, HOD_CONTRACT, MACD_GAP_CONTRACT, MACD_EPISODE_CONTRACT)
 
 
 def staged(parameters):
-    return parameters.get('v5_breakout_contract') in (STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT, HOD_CONTRACT, MACD_GAP_CONTRACT)
+    return parameters.get('v5_breakout_contract') in (STAGED_CONTRACT, STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT, HOD_CONTRACT, MACD_GAP_CONTRACT, MACD_EPISODE_CONTRACT)
 
 
 def continuous(parameters):
-    return parameters.get('v5_breakout_contract') in (STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT, HOD_CONTRACT, MACD_GAP_CONTRACT)
+    return parameters.get('v5_breakout_contract') in (STAGED_CONTINUOUS_CONTRACT, INTERVAL_CONTRACT, HOD_CONTRACT, MACD_GAP_CONTRACT, MACD_EPISODE_CONTRACT)
 
 
 def configure(parameters):
@@ -42,8 +43,13 @@ def configure(parameters):
         if type(settings[key]) is not int:
             raise ValueError(key+' must be an integer')
     parameters['v5_breakout'] = settings
-    if parameters.get('v5_breakout_contract') == MACD_GAP_CONTRACT:
+    if parameters.get('v5_breakout_contract') in (MACD_GAP_CONTRACT, MACD_EPISODE_CONTRACT):
         settings.setdefault('vwap_offset_bps', 10.)
+    if parameters.get('v5_breakout_contract') == MACD_EPISODE_CONTRACT:
+        settings.setdefault('minimum_macd_gap_bps', 25.)
+        settings.setdefault('initial_target_ordinal', 2)
+        if type(settings['initial_target_ordinal']) is not int or settings['initial_target_ordinal'] < 2:
+            raise ValueError('Initial target ordinal must be an integer of at least two')
     if staged(parameters):
         settings['entry_resistance_count'] = 4
         settings.setdefault('initial_stop_pct', 5.)
@@ -54,7 +60,7 @@ def configure(parameters):
             settings.pop(key, None)
     parameters.update(completed_macd_setup=False, require_completed_entry_candle=False,
                       require_breakout_reset=False)
-    parameters['entry_body_breakout'] = dict(enabled=parameters.get('v5_breakout_contract') != MACD_GAP_CONTRACT, offset_ticks=1)
+    parameters['entry_body_breakout'] = dict(enabled=parameters.get('v5_breakout_contract') not in (MACD_GAP_CONTRACT, MACD_EPISODE_CONTRACT), offset_ticks=1)
     parameters['entry_candle_confirmation'].update(enabled=False, require_closed_bar=False,
         evaluate_macd_intrabar=True, reject_bearish_close=False)
     parameters['structural_entry'].update(enabled=False, accept_live_price_above_entry_level=True)
@@ -92,6 +98,9 @@ def target(levels, broken, average, parameters):
 
 
 def observe(observation, parameters, state):
+    if parameters.get('v5_breakout_contract') == MACD_EPISODE_CONTRACT:
+        from .v5_macd_episode import observe as operation
+        return operation(observation, parameters, state)
     if parameters.get('v5_breakout_contract') == MACD_GAP_CONTRACT:
         from .v5_macd_gap import observe as operation
         return operation(observation, parameters, state)
@@ -170,6 +179,9 @@ def observe(observation, parameters, state):
 
 
 def select(observation, parameters, state):
+    if parameters.get('v5_breakout_contract') == MACD_EPISODE_CONTRACT:
+        from .v5_macd_episode import select as operation
+        return operation(observation, parameters, state)
     if parameters.get('v5_breakout_contract') == MACD_GAP_CONTRACT:
         from .v5_macd_gap import select as operation
         selected = operation(observation, parameters, state)
@@ -183,9 +195,9 @@ def select(observation, parameters, state):
 
 def evidence(observation, state):
     data = state.get('v5_breakout_state') or {}
-    if data.get('contract') == MACD_GAP_CONTRACT:
+    if data.get('contract') in (MACD_GAP_CONTRACT, MACD_EPISODE_CONTRACT):
         return dict(observed_at=observation.observed_at.isoformat(), price=observation.price,
-            contract=data['contract'], macd_open=data.get('macd_open'),
+            contract=data['contract'], macd_open=data.get('macd_open'), macd_gap_bps=data.get('macd_gap_bps'),
             reentry_restricted=data.get('exited'), prior_period_body_high=data.get('prior_max'),
             crossed_lower=[r['lower'] for r in data.get('crossed', [])],
             forming_resistance=data.get('forming'))
@@ -255,6 +267,9 @@ def _select(observation, parameters, state):
 
 
 def manage(observation, parameters, state):
+    if parameters.get('v5_breakout_contract') == MACD_EPISODE_CONTRACT:
+        from .v5_macd_episode import manage as operation
+        return operation(observation, parameters, state)
     if parameters.get('v5_breakout_contract') == MACD_GAP_CONTRACT:
         from .v5_macd_gap import manage as operation
         return operation(observation, parameters, state)

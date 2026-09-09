@@ -2661,8 +2661,11 @@ class LongMomentumStrategyEngine:
 
     def evaluate(self, assignment: StrategyAssignment, observation: StrategyObservation) -> StrategyEngineResult:
         result = self._evaluate(assignment, observation)
-        if assignment.parameters.get('v5_breakout_contract') == v5_breakout.MACD_GAP_CONTRACT:
-            from .v5_macd_gap import acquisition_valid
+        if assignment.parameters.get('v5_breakout_contract') in (v5_breakout.MACD_GAP_CONTRACT, v5_breakout.MACD_EPISODE_CONTRACT):
+            if assignment.parameters['v5_breakout_contract'] == v5_breakout.MACD_EPISODE_CONTRACT:
+                from .v5_macd_episode import acquisition_valid
+            else:
+                from .v5_macd_gap import acquisition_valid
             valid = acquisition_valid(observation, assignment.parameters)
             previous = assignment.state.get('acquisition_invalid', False)
             result.state['acquisition_invalid'] = not valid
@@ -6264,7 +6267,8 @@ class AssignedLongMomentumStrategy:
                         aggregate_position_quantity is not None
                         and abs(float(aggregate_position_quantity)) > 1e-9
                     ):
-                        state["profit_target_liquidation_required"] = not bool(swing_gap.runner_policy(assignment.parameters))
+                        state["profit_target_liquidation_required"] = (assignment.parameters.get("v5_breakout_contract") != v5_breakout.MACD_EPISODE_CONTRACT
+                            and not bool(swing_gap.runner_policy(assignment.parameters)))
                         state["target_replenishment_quantity"] = 0.0
                         state["target_replenishment_pending"] = False
                 if (

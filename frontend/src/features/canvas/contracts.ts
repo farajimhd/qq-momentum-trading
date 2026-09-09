@@ -153,6 +153,7 @@ export type CanonicalTradingPreview = {
   ledger: PreviewRow[];
   positions: PreviewRow[];
   position_lifecycles?: PreviewRow[];
+  presentation_as_of?: string;
   orders: PreviewRow[];
   executions: PreviewRow[];
   closed_trades: PreviewRow[];

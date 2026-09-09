@@ -1031,6 +1031,7 @@ class ReplayRunController:
         self._resume_state = deepcopy(resume_state) if resume_state is not None else None
         self._source_cursor: dict[str, Any] = {}
         self._frame_cursor: dict[str, Any] = {}
+        self._stage_timings = {}
         self._processed_frames = 0
         self._last_restart_checkpoint_event_bucket = 0
         self._last_restart_checkpoint_frame_bucket = 0
@@ -1521,6 +1522,9 @@ class ReplayRunController:
             "run_id": self.run_id,
             "status": self.status,
             "runtime_ready": self._runtime_inputs_ready,
+            "performance_timings": {"stages": deepcopy(getattr(self, '_stage_timings', {})),
+                "journal": dict(getattr(self._journal, 'timings', {})),
+                "scope": "inclusive wall time; journal work is included in execution stages"},
             "preparation_stage": self._preparation_stage,
             "preparation_progress": {
                 "completed": self._preparation_completed_units,
@@ -1872,10 +1876,22 @@ class ReplayRunController:
             "schema_version": int(state.get("schema_version") or 1),
         }
 
+    def _record_stage_time(self, stage, started):
+        elapsed = time.perf_counter() - started
+        timings = getattr(self, '_stage_timings', {})
+        self._stage_timings = timings
+        row = timings.setdefault(stage, dict(calls=0, seconds=0., maximum_seconds=0.))
+        row.update(calls=row['calls'] + 1, seconds=row['seconds'] + elapsed,
+                   maximum_seconds=max(row['maximum_seconds'], elapsed))
+
     async def canvas_payload(self, symbol: str = "AAPL") -> dict[str, Any]:
         # One presentation build per controller, shared by concurrent charts.
         async with self._canvas_build_lock:
-            return await self._canvas_payload_unlocked(symbol)
+            started = time.perf_counter()
+            try:
+                return await self._canvas_payload_unlocked(symbol)
+            finally:
+                self._record_stage_time('presentation', started)
 
     async def _canvas_payload_unlocked(self, symbol: str) -> dict[str, Any]:
         if self._runtime is None or self._journal is None:
@@ -1901,6 +1917,7 @@ class ReplayRunController:
             trading = await asyncio.to_thread(
                 trading_state_payload, snapshot,
                 include_strategy_activity=False,
+                protection_as_of=publication_time,
             )
             activity_page = await asyncio.to_thread(self.strategy_activity_snapshot,
                 as_of=publication_time,
@@ -1935,6 +1952,7 @@ class ReplayRunController:
         # force the browser to ingest every routine wait observation.
         trading = {
             **{key: value for key, value in trading.items() if key != "presentation_run"},
+            "presentation_as_of": publication_time.isoformat(),
             "strategy_chart_activity": _compact_strategy_chart_activity_rows(
                 chart_activity_rows
             ),
@@ -2881,7 +2899,9 @@ class ReplayRunController:
                 self._flush_passive_market_events()
         else:
             self._flush_passive_market_events()
+            started = time.perf_counter()
             await self._runtime.process_event(event, evaluate_strategy=evaluate_strategy)
+            self._record_stage_time('market_and_broker', started)
         self._source_cursor = {
             "ts": event.ts.astimezone(UTC).isoformat(),
             "ticker": event.ticker,
@@ -3532,7 +3552,14 @@ class ReplayRunController:
         if snapshot.get('normalization'):
             self._record_data_authority(f'level_normalization:{ticker}:{snapshot["normalization"]["frozen_at"]}',
                                         snapshot['normalization'])
-        return strategy_snapshot(snapshot, as_of, self.definition.minimum_p_norm)
+        cache = getattr(self, '_experimental_projection_cache', {})
+        self._experimental_projection_cache = cache
+        previous = cache.get(key)
+        if previous is not None and previous[0] is snapshot and previous[1] == self.definition.minimum_p_norm:
+            return previous[2]
+        projected = strategy_snapshot(snapshot, as_of, self.definition.minimum_p_norm)
+        cache[key] = (snapshot, self.definition.minimum_p_norm, projected)
+        return projected
 
     async def _event_structure_context(self, event: TradeEvent) -> dict[str, Any]:
         """Advance the shared producer through this exact canonical event.
@@ -3622,10 +3649,9 @@ class ReplayRunController:
                 ),
                 force_entry=bool(assignment.state.get("force_entry_requested")),
             )
-            await self._runtime.process_account_strategy_observation(
-                observation,
-                assignment.account_id,
-            )
+            started = time.perf_counter()
+            await self._runtime.process_account_strategy_observation(observation, assignment.account_id)
+            self._record_stage_time('strategy_and_execution', started)
 
     def _entry_structure_context_is_actionable(
         self,

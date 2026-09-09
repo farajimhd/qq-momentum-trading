@@ -523,6 +523,7 @@ def strategy_activity_payload(
         limit=requested_limit + 1,
         offset=requested_offset,
         consequential_only=consequential_only,
+        compact=not include_decision_evidence,
     )
     complete = len(records) <= requested_limit
     records = records[:requested_limit]

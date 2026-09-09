@@ -884,11 +884,7 @@ class TradingRuntime:
         )
         changed: list[tuple[Any, dict[str, Any], tuple[str, str], bool]] = []
         for assignment in selected:
-            payload = assignment.payload()
-            version = (
-                str(payload.get("status") or ""),
-                str(payload.get("updated_at") or ""),
-            )
+            version = (assignment.status.value, assignment.updated_at.isoformat())
             if self._persisted_assignment_versions.get(assignment.assignment_id) == version:
                 continue
             previous = self._persisted_assignment_versions.get(assignment.assignment_id)
@@ -902,6 +898,8 @@ class TradingRuntime:
                 and event_time < last_persisted_at + timedelta(seconds=5)
             ):
                 continue
+            # Do not deep-copy the full book for a state that will not be written.
+            payload = assignment.payload()
             changed.append((assignment, payload, version, status_changed))
         if not changed:
             return
@@ -950,6 +948,17 @@ class TradingRuntime:
                     account_id=account_id, event_time=event_time, payload=position.to_cpapi(),
                 )
 
+    def _with_protection_history(self, snapshot):
+        rows = getattr(self, '_protection_history', [])
+        sequence = getattr(self, '_protection_history_sequence', 0)
+        records = self.journal.protection_records(self.run_id, sequence)
+        if records:
+            rows = [*rows, *({**r.payload, 'sequence': r.sequence, 'event_time': r.event_time.isoformat(),
+                             'account_id': r.account_id} for r in records)]
+            self._protection_history = rows
+            self._protection_history_sequence = records[-1].sequence
+        return replace(snapshot, protection_events=tuple(rows))
+
     def projected_snapshot(self):
         """Read the engine-owned broker projection without reconciliation or writes.
 
@@ -958,7 +967,7 @@ class TradingRuntime:
         """
         if self._canonical_session is None:
             raise RuntimeError("The configured broker does not expose canonical Replay state")
-        return self._canonical_session.projector.snapshot()
+        return self._with_protection_history(self._canonical_session.projector.snapshot())
 
     async def canonical_snapshot(self, *, as_of: datetime | None = None):
         """Return the freshest canonical broker projection for UI and recovery consumers."""
@@ -969,6 +978,7 @@ class TradingRuntime:
                 snapshot,
                 persist=not self._review_only,
             )
+            snapshot = self._with_protection_history(snapshot)
             return replace(snapshot, as_of=as_of) if as_of is not None else snapshot
         raise RuntimeError("The configured broker does not expose canonical Replay state")
 

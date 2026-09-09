@@ -420,7 +420,7 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       .forEach((orderId) => ordersById.set(orderId, order));
   });
   const normalizedSymbol = symbol.toUpperCase();
-  const asOfTime = parsedTime(trading?.as_of) ?? Date.now() / 1_000;
+  const asOfTime = parsedTime(trading?.presentation_as_of) ?? parsedTime(trading?.as_of) ?? Date.now() / 1_000;
   const activity = (trading?.strategy_chart_activity ?? trading?.strategy_activity ?? [])
     .filter((row) => String(row.ticker || "").toUpperCase() === normalizedSymbol)
     .map((row) => ({ row, time: Date.parse(String(row.event_time || "")) / 1000 }))
@@ -514,6 +514,7 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
     let activeStop = plannedStopPrice;
     let activeTarget = positiveNumber(selectedTargets[0] ?? (Array.isArray(decisionValues.profit_targets) ? decisionValues.profit_targets[0] : undefined)) ?? plannedTargetPrices[0];
     activity.forEach(({ row: event, time }) => {
+      if (Array.isArray(row.protection_timeline) && row.protection_timeline.length) return;
       if (time <= planStartTime || time > endTime || (status === "closed" && time === endTime)) return;
       const eventGates = (event.chart_plan as PreviewRow | undefined)
         ?? (event.gate_snapshot as PreviewRow | undefined)
@@ -649,6 +650,16 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       pnl,
       positionSide: side === "SHORT" ? "SHORT" : "LONG",
       status,
+      protectionPath: Array.isArray(row.protection_timeline) && row.protection_timeline.length
+        ? (row.protection_timeline as PreviewRow[])
+          .filter(event => event.phase === "effective" && (event.kind === "stop" || event.kind === "target")
+            && Number.isFinite(Number(event.price)) && parsedTime(event.event_time) !== undefined
+            && parsedTime(event.event_time)! <= endTime)
+          .map(event => ({ time: parsedTime(event.event_time)!, sequence: Number(event.sequence),
+            orderId: String(event.order_id), kind: event.kind as "stop" | "target",
+            price: Number(event.price), active: event.active === true }))
+          .sort((a, b) => a.time - b.time || a.sequence - b.sequence)
+        : undefined,
       stopPrice: plannedStopPrice,
       targetPrices,
     }];

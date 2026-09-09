@@ -1332,6 +1332,13 @@ class OrderManagementEngine:
                 else OrderManagementState.WORKING
             )
         self._transition(group, next_state, {"event": "broker_order_update", "order": order.to_cpapi()})
+        request_index = group.broker_order_request_indexes.get(str(order.orderId))
+        if request_index is not None:
+            request = group.orders[request_index]
+            effective = replace(request, price=order.price or request.price, auxPrice=order.auxPrice or request.auxPrice)
+            self._record_protection(group, effective, phase="effective", broker_order_id=str(order.orderId),
+                                    active=order.order_status in OPEN_ORDER_STATUSES)
+
         if next_state in TERMINAL_MANAGEMENT_STATES and group.reprice_task:
             group.reprice_task.cancel()
         if next_state in TERMINAL_MANAGEMENT_STATES:
@@ -1588,10 +1595,40 @@ class OrderManagementEngine:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    def _record_protection(self, group, request, *, phase, broker_order_id="", active=True, event_time=None):
+        role = (group.broker_order_roles.get(str(broker_order_id))
+                or dict(request.raw.get('canonical_metadata') or {}).get('execution_role')
+                or _order_role(request, str(group.intent.action)))
+        if role not in {"profit_target", "protective_stop", "trailing_stop"}:
+            return
+        price = request.price if role == "profit_target" else request.auxPrice
+        if price is None:
+            return
+        roots = [r.cOID for r in group.orders if _order_role(r, str(group.intent.action)) == "entry" and r.cOID]
+        roots.extend(k for k, value in group.broker_order_roles.items() if value == "entry")
+        # Standalone repaired protection retains its parent entry identity.
+        if request.parentId:
+            roots.append(str(request.parentId))
+        identity = (group.group_id, request.cOID, str(broker_order_id), role, phase)
+        value = (float(price), bool(active))
+        cache = getattr(self, '_protection_versions', {})
+        self._protection_versions = cache
+        if cache.get(identity) == value:
+            return
+        self._record("protection", "protection_change", str(broker_order_id or request.cOID),
+            group.account_id, event_time or self._causal_group_time(group.intent, previous=group.updated_at),
+            dict(schema_version=1, order_group_id=group.group_id, entry_order_ids=sorted(set(roots)),
+                 order_id=str(broker_order_id or request.cOID), client_order_id=request.cOID,
+                 kind="target" if role == "profit_target" else "stop", phase=phase,
+                 price=float(price), active=bool(active), ticker=group.intent.ticker,
+                 source_intent_id=group.intent.intent_id))
+        cache[identity] = value
+
     async def _submit(self, group: _ManagedOrderGroup) -> None:
         started = perf_counter()
         self._transition(group, OrderManagementState.SUBMITTING, {"event": "submission_started"})
         for request in group.orders:
+            self._record_protection(group, request, phase="requested", event_time=group.intent.event_time)
             self._record(
                 "command",
                 "order",
@@ -1652,6 +1689,7 @@ class OrderManagementEngine:
                     str(group.intent.action),
                 )
                 group.broker_order_request_indexes[order_id] = request_index
+                self._record_protection(group, request, phase="effective", broker_order_id=order_id)
                 if group.plan.order_slice_ids:
                     group.broker_order_slices[order_id] = group.plan.order_slice_ids[request_index]
             self._record(
@@ -1746,6 +1784,7 @@ class OrderManagementEngine:
                         },
                     },
                 )
+                self._record_protection(group, replacement, phase="requested", broker_order_id=broker_order_id, event_time=intent.event_time)
                 response = await self.broker.modify_order(
                     account_id,
                     broker_order_id,
@@ -1756,6 +1795,7 @@ class OrderManagementEngine:
                         response = await self._resolve_warning_chain_locked(group, response)
                 _require_modify_acknowledgement(response)
                 responses.extend(response)
+                self._record_protection(group, replacement, phase="effective", broker_order_id=broker_order_id, event_time=intent.event_time)
                 group.orders[request_index] = replacement
                 profile = group.intent.resolved_protection_profile()
                 if profile is not None:
@@ -2516,11 +2556,13 @@ class OrderManagementEngine:
                                          if request.orderType == "STOP_LIMIT" and request.price is not None
                                          else request.price))
             async with self._command_lane(account_id):
+                self._record_protection(group, replacement, phase="requested", broker_order_id=str(order.orderId), event_time=intent.event_time)
                 response = await self.broker.modify_order(account_id, str(order.orderId), replacement)
             if _warning_response(response):
                 async with self._warning_lane:
                     response = await self._resolve_warning_chain_locked(group, response)
             _require_modify_acknowledgement(response)
+            self._record_protection(group, replacement, phase="effective", broker_order_id=str(order.orderId), event_time=intent.event_time)
             group.orders[index] = replacement
             profile = group.intent.resolved_protection_profile()
             if profile is not None:
@@ -3150,6 +3192,8 @@ class OrderManagementEngine:
                     runner_repair = replace(repair, cOID=f"{self._protective_order_prefix()}repair-{uuid4().hex[:12]}",
                                             quantity=missing-target_quantity, isSingleGroup=False)
                 async with self._command_lane(group.account_id):
+                    for request in [*repairs, *([runner_repair] if runner_repair is not None else [])]:
+                        self._record_protection(group, request, phase="requested")
                     response = await self.broker.place_orders(group.account_id, repairs)
                     if runner_repair is not None:
                         response += await self.broker.place_orders(group.account_id, [runner_repair])
@@ -3182,6 +3226,7 @@ class OrderManagementEngine:
                         group.broker_order_ids.append(order_id)
                     self._group_by_broker_id[order_id] = group.group_id
                     group.broker_order_roles[order_id] = role
+                    self._record_protection(group, request, phase="effective", broker_order_id=order_id)
                     if runner_profile:
                         group.broker_order_slices[order_id] = (
                             next(iter(targeted)) if valid_target and request is not runner_repair

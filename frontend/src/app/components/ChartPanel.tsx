@@ -136,6 +136,7 @@ type TradeAnnotation = {
   status?: "open" | "closed";
   stopPrice?: number;
   targetPrices?: number[];
+  protectionPath?: Array<{ time: number; sequence: number; orderId: string; kind: "stop" | "target"; price: number; active: boolean }>;
   triggerPrice?: number;
 };
 type StrategyPresentationStyleSettings = {
@@ -7587,7 +7588,7 @@ function drawTradeAnnotationPrimitiveGeometry(
     annotation.exitFills?.forEach((fill) => drawFinalFill(fill, "exit"));
     // Protection evidence is decision-critical. Paint it after lifecycle
     // labels so dense, fast entry/exit clusters cannot hide every SL/TP line.
-    if ((elements.stopLine.visible || elements.stopLabel.visible) && typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
+    if (!annotation.protectionPath && (elements.stopLine.visible || elements.stopLabel.visible) && typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
       const y = priceSeries.priceToCoordinate(annotation.stopPrice);
       const firstChange = annotation.fills?.filter(fill => fill.kind === 'stop_change').sort((a,b) => a.time-b.time)[0];
       const right = firstChange ? guideX(firstChange.time) ?? guideSpan.right : guideSpan.right;
@@ -7614,7 +7615,7 @@ function drawTradeAnnotationPrimitiveGeometry(
       const y = priceSeries.priceToCoordinate(annotation.highOfDayPrice);
       if (y !== null) drawCanvasTradeGuide(context, referenceLeft, referenceRight, y, STRATEGY_ENTRY_REFERENCE_COLOR, `HOD ${formatPrice(annotation.highOfDayPrice)}`, chartBackground, width, height, elements.highOfDayLine, elements.highOfDayLabel, labelLayout, elements.connector, true);
     }
-    if (elements.targetLine.visible || elements.targetLabel.visible) annotation.targetPrices?.forEach((price, index) => {
+    if (!annotation.protectionPath && (elements.targetLine.visible || elements.targetLabel.visible)) annotation.targetPrices?.forEach((price, index) => {
       const y = priceSeries.priceToCoordinate(price);
       const firstChange = annotation.fills?.filter(fill => fill.kind === 'target_change').sort((a,b) => a.time-b.time)[0];
       const right = firstChange ? guideX(firstChange.time) ?? guideSpan.right : guideSpan.right;
@@ -7624,8 +7625,34 @@ function drawTradeAnnotationPrimitiveGeometry(
       const y = priceSeries.priceToCoordinate(annotation.triggerPrice);
       if (y !== null) drawCanvasTradeGuide(context, span.left, span.right, y, infoColor, "Trigger", chartBackground, width, height, elements.levelLine, elements.levelLabel, labelLayout, elements.connector);
     }
-    if (elements.adjustmentLine.visible || elements.adjustmentArrow.visible || elements.adjustmentLabel.visible) annotation.fills?.forEach((fill) => {
-      if (fill.kind === 'stop_change' || fill.kind === 'target_change') {
+    // Broker-effective paths own protection geometry. A request is never
+    // treated as a successful replacement, and each child order has its own rail.
+    annotation.protectionPath?.forEach((point, index, path) => {
+      if (!point.active) return;
+      const lineStyle = point.kind === "stop" ? elements.stopLine : elements.targetLine;
+      const labelStyle = point.kind === "stop" ? elements.stopLabel : elements.targetLabel;
+      if (!lineStyle.visible && !labelStyle.visible) return;
+      const next = path.slice(index + 1).find(candidate => candidate.orderId === point.orderId);
+      const start = Math.max(annotation.entryTime, point.time);
+      const finish = Math.min(endTime, next?.time ?? endTime);
+      if (finish < firstTime || start > lastTime || finish < start) return;
+      const left = guideX(start), right = guideX(finish);
+      const y = priceSeries.priceToCoordinate(point.price);
+      const color = point.kind === "stop" ? stopColor : successColor;
+      if (left === null || right === null || y === null) return;
+      drawCanvasTradeGuide(context, Math.max(0, left), Math.min(width, right), y, color,
+        point.kind === "stop" ? "SL" : "TP", chartBackground, width, height,
+        lineStyle, labelStyle, labelLayout, elements.connector);
+      if (lineStyle.visible && next?.active && next.time <= endTime) {
+        const nextY = priceSeries.priceToCoordinate(next.price);
+        if (nextY !== null) {
+          context.beginPath(); context.strokeStyle = color; context.lineWidth = lineStyle.lineWidth;
+          context.moveTo(right, y); context.lineTo(right, nextY); context.stroke();
+        }
+      }
+    });
+    if (elements.stopLine.visible || elements.stopLabel.visible || elements.targetLine.visible || elements.targetLabel.visible || elements.adjustmentLine.visible || elements.adjustmentArrow.visible || elements.adjustmentLabel.visible) annotation.fills?.forEach((fill) => {
+      if (!annotation.protectionPath && (fill.kind === 'stop_change' || fill.kind === 'target_change')) {
         const following = annotation.fills?.filter(next => next.kind === fill.kind && next.time > fill.time)
           .sort((a, b) => a.time - b.time)[0];
         const left = guideX(fill.time);
@@ -7634,7 +7661,8 @@ function drawTradeAnnotationPrimitiveGeometry(
         if (left !== null && right !== null && y !== null && (!following || following.time > firstTime)) drawCanvasTradeGuide(context,
           Math.max(0, left), Math.min(width, right), y, fill.kind === 'stop_change' ? stopColor : successColor,
           fill.kind === 'stop_change' ? 'SL' : 'TP', chartBackground, width, height,
-          elements.adjustmentLine, elements.adjustmentLabel, labelLayout, elements.connector);
+          fill.kind === "stop_change" ? elements.stopLine : elements.targetLine,
+          fill.kind === "stop_change" ? elements.stopLabel : elements.targetLabel, labelLayout, elements.connector);
       }
       const x = guideX(fill.time);
       const y = priceSeries.priceToCoordinate(fill.price);
@@ -8006,6 +8034,7 @@ function tradeAnnotationAutoscaleInfo(
     prices.push(...(trade.resistancePrices?.slice(0, 4) ?? []));
     if (typeof trade.highOfDayPrice === "number") prices.push(trade.highOfDayPrice);
     if (typeof trade.triggerPrice === "number") prices.push(trade.triggerPrice);
+    prices.push(...(trade.protectionPath ?? []).filter(point => point.active).map(point => point.price));
     if (typeof trade.stopPrice === "number") prices.push(trade.stopPrice);
     prices.push(...(trade.targetPrices ?? []));
     prices.push(...(trade.fills?.map((fill) => fill.price) ?? []));

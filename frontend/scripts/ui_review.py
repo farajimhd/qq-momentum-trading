@@ -2521,6 +2521,17 @@ def capture(args: argparse.Namespace) -> int:
                             if(annotations[0]?.resistancePrices?.length!==4)throw Error('Missing frozen R1-R4');
                             if(annotations[0]?.fills?.filter(f=>f.kind==='stop_change').length!==2)throw Error('Missing stop adjustments');
                             if(annotations[0]?.fills?.filter(f=>f.kind==='target_change').length!==2)throw Error('Missing target adjustments');
+                            const protection=(s,sequence,kind,price,phase='effective')=>({event_time:iso(s),sequence,
+                                kind,price,phase,active:true,order_id:kind+'-order'});
+                            preview.position_lifecycles[0].protection_timeline=[
+                                protection(4,1,'stop',9.5),protection(4,2,'target',10.5),
+                                protection(19,3,'stop',9.85,'requested'),protection(20,4,'stop',9.85),
+                                protection(20,5,'target',11.2),protection(40,6,'stop',10.4),protection(40,7,'target',11.5)];
+                            const effective=positionLifecycleAnnotations({...preview,as_of:iso(19)},'TEST')[0];
+                            if(effective.protectionPath.length!==2 || effective.protectionPath.some(p=>p.price===9.85))
+                                throw Error('Unacknowledged or future protection rendered as effective');
+                            const path=positionLifecycleAnnotations(preview,'TEST')[0].protectionPath;
+                            if(path.length!==6 || path[2].time!==t+20)throw Error('Effective protection path lost event time');
                             const candles=Array.from({length:61},(_,i)=>({time:t+i,open:10+i*.015,
                                 close:10.01+i*.015,high:10.04+i*.015,low:9.98+i*.015}));
                             const level={unified_level_id:'r:0123456789abcdef',side:-1,price:10.7,lower:10.69,upper:10.71,
@@ -2554,6 +2565,9 @@ def capture(args: argparse.Namespace) -> int:
                             preview.positions=[{account_id:'SIM',instrument:{symbol:'TEST'},quantity:100,average_price:10,unrealized_pnl:91}];
                             preview.orders=[{account_id:'SIM',instrument:{symbol:'TEST'},side:'SELL',terminal:false,order_type:'STP',stop_price:10.4},
                                 {account_id:'SIM',instrument:{symbol:'TEST'},side:'SELL',terminal:false,order_type:'LMT',limit_price:11.5}];
+                            const {CANVAS_SETTINGS_STORAGE_KEY}=await import('/src/app/canvasWorkspace.ts');
+                            localStorage.setItem(`${CANVAS_SETTINGS_STORAGE_KEY}.clock-sync.strategy-presentation`,JSON.stringify({
+                                version:5,visible:true,elements:{adjustmentLine:{visible:false},adjustmentLabel:{visible:false},adjustmentArrow:{visible:false}}}));
                             const root=createRoot(host);
                             let trim=0;
                             const render=()=>root.render(React.createElement(ChartPreview,{

@@ -26,7 +26,7 @@ class ReplayActivityIndex:
             fence = self.journal.latest_sequence(self.run_id)
             if fence > index['sequence']:
                 records = self.journal.strategy_activity_records(run_id=self.run_id,
-                    after_sequence=index['sequence'], through_sequence=fence, limit=50_001, **filters)
+                    after_sequence=index['sequence'], through_sequence=fence, limit=50_001, compact=True, **filters)
                 if len(records) + len(index['items']) > 50_000:
                     # Large histories retain the authoritative paged SQL path.
                     # No records are dropped or falsely marked complete.

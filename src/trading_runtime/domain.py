@@ -432,6 +432,7 @@ class TradingStateSnapshot:
     executions: tuple[Execution, ...]
     closed_trades: tuple[RoundTripTrade, ...] = ()
     activity: tuple[BrokerEventEnvelope, ...] = ()
+    protection_events: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return json_safe(asdict(self))

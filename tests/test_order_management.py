@@ -1197,6 +1197,11 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 if order_id != "100"
             }
             self.assertEqual(repaired_roles, {"profit_target", "protective_stop"})
+            protection = journal.protection_records(manager.run_id)
+            self.assertEqual({(row.payload['kind'], row.payload['phase']) for row in protection},
+                             {('stop', 'requested'), ('stop', 'effective'),
+                              ('target', 'requested'), ('target', 'effective')})
+            self.assertTrue(all('100' in row.payload['entry_order_ids'] for row in protection))
             await manager.close()
             journal.close()
 
@@ -2569,6 +2574,11 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.action, "exit")
             self.assertEqual(result.fill_role, "profit_target")
             self.assertEqual(callbacks[-1].action, "exit")
+            protection = [r.payload for r in journal.protection_records("run-1")]
+            self.assertEqual({r['kind'] for r in protection}, {'stop', 'target'})
+            self.assertEqual({r['phase'] for r in protection}, {'requested', 'effective'})
+            self.assertTrue(all(snapshot.client_order_ids[0] in r['entry_order_ids'] for r in protection))
+            self.assertFalse([r for r in protection if r['kind'] == 'target'][-1]['active'])
             await manager.close()
             journal.close()
 
