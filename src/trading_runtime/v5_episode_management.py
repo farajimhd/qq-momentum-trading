@@ -11,7 +11,11 @@ DEFAULTS = dict(rejection_from_below=True, rejection_closes=1,
                 rejection_buffer_requires_armed_trail=False,
                 position_structure_enabled=False, swing_left_bars=2, swing_right_bars=2,
                 swing_buffer_bps=5., swing_buffer_atr_multiple=.25,
-                same_episode_reentry_stop=False, reentry_stop_offset_bps=5.)
+                same_episode_reentry_stop=False, reentry_stop_offset_bps=5.,
+                adaptive_target_enabled=False, adaptive_target_body_window=8,
+                adaptive_target_gap_window=32, adaptive_target_body_multiple=2.,
+                adaptive_target_gap_multiple=1., adaptive_target_contraction_ratio=.5,
+                adaptive_target_exhaustion_closes=2)
 
 
 def configure(parameters):
@@ -23,7 +27,7 @@ def configure(parameters):
     policy = dict(DEFAULTS, **raw)
     if any(type(policy[key]) is not bool for key in ('rejection_from_below','entry_on_close','require_range_context',
                                                    'rejection_buffer_requires_armed_trail', 'position_structure_enabled',
-                                                   'same_episode_reentry_stop')):
+                                                   'same_episode_reentry_stop', 'adaptive_target_enabled')):
         raise ValueError('Episode policy flags must be boolean')
     if type(policy['rejection_closes']) is not int or not 1 <= policy['rejection_closes'] <= 60:
         raise ValueError('Rejection confirmation must be one to sixty completed candles')
@@ -56,6 +60,16 @@ def configure(parameters):
             raise ValueError('Swing confirmation must use one to sixty candles per side')
     if policy['reentry_stop_offset_bps'] >= 10000:
         raise ValueError('Re-entry stop offset must be less than 100 percent')
+    for key in ('adaptive_target_body_window', 'adaptive_target_gap_window', 'adaptive_target_exhaustion_closes'):
+        if type(policy[key]) is not int or not 1 <= policy[key] <= 120:
+            raise ValueError('Adaptive target windows must be between one and 120 samples')
+    for key in ('adaptive_target_body_multiple', 'adaptive_target_gap_multiple', 'adaptive_target_contraction_ratio'):
+        if type(policy[key]) not in (int, float) or not isfinite(policy[key]) or policy[key] <= 0:
+            raise ValueError('Adaptive target multipliers must be positive and finite')
+    if policy['adaptive_target_contraction_ratio'] > 1:
+        raise ValueError('Adaptive contraction ratio cannot exceed one')
+    if policy['adaptive_target_enabled'] and not policy['position_structure_enabled']:
+        raise ValueError('Adaptive targets require position structure and its full broker target')
     if policy['position_structure_enabled']:
         from .v5_breakout import MACD_REJECTION_CONTRACT
         if parameters.get('v5_breakout_contract') != MACD_REJECTION_CONTRACT:

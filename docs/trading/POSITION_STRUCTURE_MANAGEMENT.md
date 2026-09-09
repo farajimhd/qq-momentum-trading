@@ -80,6 +80,41 @@ Position swing history contains at most `left + right + 1` bars (maximum 121),
 plus the latest pivot, resistance and support witnesses. No new historical data
 source or global level-book writer is introduced.
 
+## Adaptive episode targets (separate opt-in version)
+
+`adaptive_target_enabled` requires position structure and its full-position
+broker target. It is off for existing profiles. The new profile
+`swing-v5-adaptive-episode-target-v1` derives from Candidate 173, preserving its
+entry, stop, re-entry, execution and structural-exit rules.
+
+Only completed one-second candles contribute statistics. Each MACD episode
+starts fresh. A rolling mean of positive candle bodies (bearish/doji candles
+contribute zero) measures bullish expansion. Every confirmed resistance break
+contributes its next two adjacent lower-bound gaps, deduplicated within a bounded
+window. Before any break, initial selection uses the available overhead gaps.
+
+The desired price is the nearest overhead resistance's lower bound plus
+`max(mean_gap * gap_multiple, mean_bullish_body * body_multiple)`. Select the
+first eligible resistance whose executable target price meets that distance,
+at least the existing initial target ordinal. If none reaches it, use the
+highest eligible resistance and record `book_limited=true`; do not invent a
+price level or remove the broker target. Selected evidence records both means,
+sample counts, desired price, episode and statistics timestamp.
+
+Defaults are 8 body samples, 32 gap samples, body multiple 2, gap multiple 1,
+contraction ratio 0.5 and 2 exhaustion closes. All are configurable and are
+engineering defaults, not fitted backtest results. Two contracting closes
+(each below half the preceding rolling mean) or two closes stalled below the
+same forming resistance pause target advancement. Renewed expansion and a
+resolved resistance can resume it. Gaps in candle time reset consecutive counts.
+
+All breaks at one close produce one upward-only target proposal. Existing
+stop ratchets and structural failure exits continue during a pause; contraction
+alone creates no sell instruction. A broker target remains working through the
+existing replacement/acknowledgement path. A target already filled intrabar
+cannot be retrospectively moved using that candle's final size. Each sample
+window is bounded to at most 120 entries and persists with the strategy state.
+
 Focused tests cover causal pivot confirmation, ordinary pullbacks, strict
 breaks, failed support, missing candles, MACD reset continuity, restart state,
 full-target entry construction, partial acquisition and bracket activation,

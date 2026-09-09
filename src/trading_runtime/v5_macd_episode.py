@@ -139,6 +139,9 @@ def observe(o, p, state):
                 if high is not None and low is not None and high > low and low <= o.price <= high else None)
         d['decision_levels'] = list({r['unified_level_id']: r for r in [*current_levels, *d['crossed']]}.values())
     d['levels'] = current_levels
+    if (p.get('episode_management') or {}).get('adaptive_target_enabled'):
+        from .adaptive_episode_target import observe as observe_target
+        observe_target(o, d, p['episode_management'])
     d['entry_high_threshold'] = d['prior_max'] * (1 + p['v5_breakout']['episode_high_offset_bps'] / 10_000)
     if (p.get('episode_management') or {}).get('entry_range_seconds') and d.get('entry_range_high') is not None:
         d['entry_high_threshold'] = max(d['entry_high_threshold'],
@@ -256,6 +259,11 @@ def select(o, p, state):
     if len(above) < ordinal:
         return {'reason': 'v5_second_target_unavailable'}
     selected = target(above[ordinal - 1], p)
+    if policy.get('adaptive_target_enabled'):
+        from .adaptive_episode_target import select as select_target
+        selected = select_target(above, d, p)
+        if selected is None:
+            return {'reason': 'v5_second_target_unavailable'}
     stop, stop_selection = initial_stop(o, p, o.price)
     if same_episode_reentry:
         high = reentry_high
@@ -313,6 +321,8 @@ def manage(o, p, state):
             tick = p['execution']['tick_size']
             proposed = min(proposed, floor((broken['lower']-multiple*atr)/tick+1e-9)*tick)
         current = max(current, proposed)
+        if (p.get('episode_management') or {}).get('adaptive_target_enabled'):
+            continue
         average = sample_gaps(d, d['decision_levels'], broken)
         above = overhead(d['decision_levels'], max(o.price, o.ask), p)
         if average is None or len(above) < 2:
@@ -325,6 +335,19 @@ def manage(o, p, state):
                         (d.get('pending_target') or {}).get('price', 0)])
         if selected['price'] > existing:
             d['pending_target'] = selected
+    if (p.get('episode_management') or {}).get('adaptive_target_enabled'):
+        from .adaptive_episode_target import select as select_target
+        s = d.get('adaptive_target') or {}
+        # One proposal for all breaks at this close; no intrabar target chase.
+        if (d.get('crossed') and d.get('macd_open') and not s.get('paused')
+                and s.get('closed_at') == o.observed_at.timestamp()):
+            above = overhead(d['decision_levels'], max(o.price, o.ask), p)
+            selected = select_target(above, d, p) if above else None
+            existing = max([*(state.get('structural_profit_targets') or [0]),
+                            (d.get('pending_target') or {}).get('price', 0)])
+            if selected and selected['price'] > existing:
+                d['pending_target'] = dict(selected, confirmed_at=o.observed_at.isoformat(),
+                    broken_level_ids=[r['unified_level_id'] for r in d['crossed']])
     if p.get('episode_management'):
         from .v5_episode_management import profit_trail
         current = profit_trail(o, d, state, p['episode_management'], p['execution']['tick_size'], current)
