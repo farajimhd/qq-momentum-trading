@@ -71,6 +71,46 @@ def test_unavailable_macd_blocks_entry_without_fabricating_an_episode_reset():
     assert M.select(recovered, p, state)['reason'] == 'v5_period_high_not_reclaimed'
 
 
+def test_completed_macd_ignores_intrabar_dips_and_freezes_normalization_price():
+    p, _, o = setup()
+    p['macd_evaluation_mode'] = 'completed_1s'
+    state = {}
+    M.observe(o, p, state)
+    assert not state['v5_breakout_state']['macd_open']
+    closed = replace(o, observed_at=NOW+timedelta(seconds=1), price=100, bar_open=100,
+                     macd_line=.25, macd_signal=0, source_timeframe='1s', evaluation_events=('bar_close',))
+    M.observe(closed, p, state)
+    assert state['v5_breakout_state']['macd_gap_bps'] == 25
+    intrabar = replace(o, observed_at=NOW+timedelta(seconds=1.2), price=101,
+                       macd_line=-1, macd_signal=0)
+    M.observe(intrabar, p, state)
+    assert state['v5_breakout_state']['prior_max'] == 100
+    assert state['v5_breakout_state']['macd_gap_bps'] == 25
+    assert M.acquisition_valid(replace(intrabar, execution_vwap=99), p, state)
+    M.observe(replace(closed, observed_at=NOW+timedelta(seconds=2), macd_line=.24), p, state)
+    assert state['v5_breakout_state']['prior_max'] == 0
+    M.observe(replace(o, observed_at=NOW+timedelta(seconds=2.1)), p, state)
+    assert not state['v5_breakout_state']['macd_open']
+
+
+def test_engine_uses_closed_macd_for_generic_rules_as_well_as_episode_gate():
+    p, _, o = rejection_setup()
+    p['macd_evaluation_mode'] = 'completed_1s'
+    engine = S.LongMomentumStrategyEngine(revision=47)
+    result = engine.evaluate(assignment(strategy_revision=47, parameters=p), o)
+    assert not any(i.action == 'enter_long' for i in result.evaluation.intents)
+    closed = replace(o, observed_at=NOW+timedelta(seconds=1), source_timeframe='1s',
+                     evaluation_events=('bar_close',), bar_open=o.price)
+    result = engine.evaluate(assignment(strategy_revision=47, parameters=p, state=result.state), closed)
+    trade = replace(o, observed_at=NOW+timedelta(seconds=1.1), price=103.5, bid=103.49,
+                    ask=103.51, macd_line=-1, macd_signal=0)
+    result = engine.evaluate(assignment(strategy_revision=47, parameters=p, state=result.state), trade)
+    assert any(i.action == 'enter_long' for i in result.evaluation.intents)
+    evidence = result.state['confirmed_episode_macd']
+    assert evidence['observed_at'] == closed.observed_at.isoformat()
+    assert evidence['line'] == closed.macd_line
+
+
 def test_touch_and_intrabar_break_do_not_advance_protection():
     p, state, o = setup()
     state.update(active_stop=98, initial_stop=98)

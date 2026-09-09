@@ -4,6 +4,7 @@ Episode state belongs to the ticker; gap samples and protection belong to a
 single acquired position. Only past, causally available levels are used.
 """
 from math import floor, isfinite, isclose
+from dataclasses import replace
 
 from . import v5_breakout as v5, swing_gap
 from .v5_hod_ladder import target
@@ -24,8 +25,29 @@ def gap_bps(o):
     return value if isfinite(value) else None
 
 
-def acquisition_valid(o, p):
-    gap = gap_bps(o)
+def completed_macd(o, p, state):
+    """Freeze all MACD operands, including the normalization close, at 1s close."""
+    if p.get('macd_evaluation_mode') != 'completed_1s':
+        return o
+    sample = state.get('confirmed_episode_macd', {})
+    if (o.source_timeframe == '1s' and 'bar_close' in o.evaluation_events
+            and o.observed_at.timestamp() > sample.get('timestamp', 0)):
+        sample = dict(timestamp=o.observed_at.timestamp(), observed_at=o.observed_at.isoformat(),
+                      line=o.macd_line, signal=o.macd_signal, histogram=o.macd_histogram,
+                      close=o.price, gap_bps=gap_bps(o))
+        state['confirmed_episode_macd'] = sample
+    values = dict(o.source_values)
+    for name in ('line', 'signal', 'histogram'):
+        source = {'value': sample.get(name), 'observed_at': sample.get('observed_at')}
+        values[f'indicator.macd.{name}'] = source
+        values[f'indicator.macd.{name}@1s'] = source
+    return replace(o, macd_line=sample.get('line'), macd_signal=sample.get('signal'),
+                   macd_histogram=sample.get('histogram'), source_values=values)
+
+
+def acquisition_valid(o, p, state=None):
+    gap = ((state or {}).get('confirmed_episode_macd', {}).get('gap_bps')
+           if p.get('macd_evaluation_mode') == 'completed_1s' else gap_bps(o))
     settings = p['v5_breakout']
     return (gap is not None and gap >= settings['minimum_macd_gap_bps'] - 1e-9
             and o.execution_vwap is not None
@@ -33,11 +55,13 @@ def acquisition_valid(o, p):
 
 
 def observe(o, p, state):
+    o = completed_macd(o, p, state)
     now = o.observed_at.timestamp()
     d = dict(state.get('v5_breakout_state') or {'contract': p['v5_breakout_contract']})
     if now < d.get('observed_at', 0):
         return
-    gap = gap_bps(o)
+    gap = (state.get('confirmed_episode_macd', {}).get('gap_bps')
+           if p.get('macd_evaluation_mode') == 'completed_1s' else gap_bps(o))
     opened = gap is not None and gap >= p['v5_breakout']['minimum_macd_gap_bps'] - 1e-9
     if gap is not None and not opened:
         if d.get('period_max', 0) > 0:
@@ -125,7 +149,7 @@ def select(o, p, state):
     d = state.get('v5_breakout_state', {})
     if not d.get('macd_open'):
         return {'reason': 'v5_macd_gap_below_minimum'}
-    if not acquisition_valid(o, p):
+    if not acquisition_valid(o, p, state):
         return {'reason': 'v5_price_not_above_vwap'}
     threshold = d.get('prior_max', 0.0) * (1 + p['v5_breakout']['episode_high_offset_bps'] / 10_000)
     if not strictly_below(threshold, o.price):

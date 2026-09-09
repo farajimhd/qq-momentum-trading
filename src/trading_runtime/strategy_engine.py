@@ -2667,9 +2667,10 @@ class LongMomentumStrategyEngine:
         if assignment.parameters.get('v5_breakout_contract') in (v5_breakout.MACD_GAP_CONTRACT, v5_breakout.MACD_EPISODE_CONTRACT):
             if assignment.parameters['v5_breakout_contract'] == v5_breakout.MACD_EPISODE_CONTRACT:
                 from .v5_macd_episode import acquisition_valid
+                valid = acquisition_valid(observation, assignment.parameters, result.state)
             else:
                 from .v5_macd_gap import acquisition_valid
-            valid = acquisition_valid(observation, assignment.parameters)
+                valid = acquisition_valid(observation, assignment.parameters)
             previous = assignment.state.get('acquisition_invalid', False)
             result.state['acquisition_invalid'] = not valid
             if (not valid and not previous
@@ -2701,6 +2702,9 @@ class LongMomentumStrategyEngine:
         if entry_body.enabled(parameters):
             entry_body.observe(observation, state)
         if v5_breakout.enabled(parameters):
+            if v5_breakout.episode(parameters):
+                from .v5_macd_episode import completed_macd
+                observation = completed_macd(observation, parameters, state)
             v5_breakout.observe(observation, parameters, state)
         if parameters.get("completed_macd_setup"):
             closed = "bar_close" in observation.evaluation_events and observation.source_timeframe in {"", "1s"}

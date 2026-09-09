@@ -51,6 +51,9 @@ def configure(parameters):
     if parameters.get('v5_breakout_contract') == MACD_GAP_CONTRACT or episode(parameters):
         settings.setdefault('vwap_offset_bps', 10.)
     if episode(parameters):
+        parameters.setdefault('macd_evaluation_mode', 'intrabar')
+        if parameters['macd_evaluation_mode'] not in ('intrabar', 'completed_1s'):
+            raise ValueError('MACD evaluation mode must be intrabar or completed_1s')
         settings.setdefault('minimum_macd_gap_bps', 25.)
         settings.setdefault('episode_high_offset_bps', 15.)
         settings.setdefault('entry_acquisition_buffer_bps', 500.)
@@ -210,6 +213,7 @@ def evidence(observation, state):
             episode_reset_at=data.get('episode_reset_at'),
             episode_reset_gap_bps=data.get('episode_reset_gap_bps'),
             previous_episode_body_high=data.get('previous_episode_body_high'),
+            confirmed_macd=state.get('confirmed_episode_macd'),
             crossed_lower=[r['lower'] for r in data.get('crossed', [])],
             forming_resistance=data.get('forming'))
     breakout = data.get('breakout') or {}
