@@ -21,7 +21,8 @@ DEFAULTS = dict(rejection_from_below=True, rejection_closes=1,
                 expansion_stop_atr_multiple=.25, expansion_stop_gap_cap=.25,
                 defensive_structure_enabled=False, structural_stop_offset_bps=0.,
                 completed_body_reentry_enabled=False,
-                continuation_detector_enabled=False, detector_recovery_body_multiple=.5)
+                continuation_detector_enabled=False, detector_recovery_body_multiple=.5,
+                detector_candle_states_enabled=False)
 
 
 def configure(parameters):
@@ -34,7 +35,8 @@ def configure(parameters):
     if any(type(policy[key]) is not bool for key in ('rejection_from_below','entry_on_close','require_range_context',
                                                    'rejection_buffer_requires_armed_trail', 'position_structure_enabled',
                                                    'same_episode_reentry_stop', 'adaptive_target_enabled', 'expansion_stop_enabled',
-                                                   'defensive_structure_enabled', 'completed_body_reentry_enabled', 'continuation_detector_enabled')):
+                                                   'defensive_structure_enabled', 'completed_body_reentry_enabled', 'continuation_detector_enabled',
+                                                   'detector_candle_states_enabled')):
         raise ValueError('Episode policy flags must be boolean')
     if type(policy['rejection_closes']) is not int or not 1 <= policy['rejection_closes'] <= 60:
         raise ValueError('Rejection confirmation must be one to sixty completed candles')
@@ -91,6 +93,8 @@ def configure(parameters):
         raise ValueError('Defensive structure requires expansion protection')
     if policy['continuation_detector_enabled'] and not (policy['defensive_structure_enabled'] and policy['completed_body_reentry_enabled']):
         raise ValueError('Continuation detector requires defensive structure and completed-body reentry')
+    if policy['detector_candle_states_enabled'] and not policy['continuation_detector_enabled']:
+        raise ValueError('Candle states require the continuation detector')
     if policy['completed_body_reentry_enabled'] and (not policy['same_episode_reentry_stop']
             or parameters.get('macd_evaluation_mode') != 'completed_1s'):
         raise ValueError('Completed-body reentry requires episode stops and completed 1s MACD')

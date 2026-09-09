@@ -467,6 +467,7 @@ export type CanvasLiveChartState = {
 export type BarGptChartVersion = "v2" | "v3";
 export type BarGptChartQuantile = "q10" | "q50" | "q90";
 export type CanvasChartSettings = {
+  showDetectorStates?: boolean;
   showSplitEvents: boolean;
   showVolume: boolean;
   symbol: string;

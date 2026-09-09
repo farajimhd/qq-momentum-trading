@@ -1036,6 +1036,7 @@ class ReplayRunController:
         self._historical_structure_prefetch_exhausted = False
         self._data_authority: dict[str, dict[str, Any]] = {}
         self._resume_state = deepcopy(resume_state) if resume_state is not None else None
+        self._candle_detector_states = deepcopy((resume_state or {}).get('candle_detector_states') or {})
         self._source_cursor: dict[str, Any] = {}
         self._frame_cursor: dict[str, Any] = {}
         self._stage_timings = {}
@@ -1861,6 +1862,7 @@ class ReplayRunController:
                 assignment.payload() for assignment in self._strategy.assignments()
             ] if self._strategy is not None else [
             ],
+            "candle_detector_states": deepcopy(self._candle_detector_states),
             "broker": broker_checkpoint(),
         }
 
@@ -3014,9 +3016,42 @@ class ReplayRunController:
         self._pending_passive_market_events = []
         self._runtime.process_passive_market_events(pending)
 
+    async def _observe_episode_candle(self, frame: ReplayDerivedFrame) -> None:
+        configuration = self.definition.configuration_revision['payload'].get('strategy') or {}
+        parameters = configuration.get('parameters') or {}
+        if frame.timeframe != '1s' or not (parameters.get('episode_management') or {}).get('detector_candle_states_enabled'):
+            return
+        from src.trading_runtime.candle_state_detector import observe_stream
+        from src.trading_runtime.strategy_engine import resolve_long_momentum_parameters
+        if not getattr(self, '_candle_detector_parameters', None):
+            self._candle_detector_parameters = resolve_long_momentum_parameters(parameters, revision=int(configuration['revision']))
+        parameters = self._candle_detector_parameters
+        levels = frame.indicator.get('qmd_structure_unified_levels') or []
+        if self.definition.experimental_structure_book:
+            snapshot = await self._experimental_structure_snapshot(frame.ticker, frame.as_of, 'frame')
+            levels = snapshot['unified_levels']
+        observation = StrategyObservation(ticker=frame.ticker, observed_at=frame.as_of,
+            price=float(frame.bar['close']), bar_open=frame.bar['open'],
+            bar_high=frame.bar['high'], bar_low=frame.bar['low'],
+            macd_line=frame.indicator.get('macd_line'), macd_signal=frame.indicator.get('macd_signal'),
+            volatility=float(frame.indicator.get('atr_14') or 0), structural_resistance_levels=tuple(levels),
+            source_timeframe='1s', evaluation_events=('bar_close',))
+        detector = observe_stream(observation, parameters, self._candle_detector_states)
+        if detector is None:
+            return
+        decision = dict(detector['decision'], strategy_action='observe', strategy_reason='completed_episode_candle')
+        self._journal.append(run_id=self.run_id, category='strategy_decision', entity_type='signal',
+            entity_id=f"episode-candle:{frame.ticker}:{frame.as_of.isoformat()}", event_time=frame.as_of,
+            payload=dict(ticker=frame.ticker, strategy_id=configuration['strategy_id'],
+                strategy_revision=configuration['revision'], action='observe', reason='completed_episode_candle',
+                reference_price=observation.price, metadata={'continuation_detector':decision}))
+
     async def _process_strategy_frame(self, frame: ReplayDerivedFrame) -> bool:
         if self._runtime is None or self._strategy is None:
             return False
+        # Passive market classification precedes discovery/assignment gates.
+        # It emits evidence only; those gates still exclusively authorize trades.
+        await self._observe_episode_candle(frame)
         self._remember_strategy_frame(frame)
         self._flush_passive_market_events()
         if frame.timeframe == "1s":
@@ -3395,6 +3430,9 @@ class ReplayRunController:
                 ),
                 source_values=deepcopy(source_cache),
             )
+        if frame.ticker in getattr(self, '_candle_detector_states', {}):
+            base = replace(base, candle_detector_state=deepcopy(
+                self._candle_detector_states[frame.ticker]['continuation_detector']))
         self._latest_strategy_observations[frame.ticker] = base
         await self._evaluate_strategy_observation(base, ticker_assignments)
         self._frame_cursor = {

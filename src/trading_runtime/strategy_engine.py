@@ -361,6 +361,7 @@ class StrategyObservation:
     market_pressure: dict[str, Any] = field(default_factory=dict)
     source_values: dict[str, Any] = field(default_factory=dict)
     completed_range_context: dict[str, Any] = field(default_factory=dict)
+    candle_detector_state: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.observed_at.tzinfo is None:
@@ -3981,7 +3982,10 @@ class LongMomentumStrategyEngine:
                 "position_fraction": 1.0,
             }
         elif ((parameters.get('episode_management') or {}).get('continuation_detector_enabled')
-              and (state.get('v5_breakout_state', {}).get('continuation_detector') or {}).get('state') == 'rejection'):
+              and (state.get('v5_breakout_state', {}).get('continuation_detector') or {}).get('state') == 'rejection'
+              and (not (parameters.get('episode_management') or {}).get('detector_candle_states_enabled')
+                   or (_optional_aware_datetime(state['v5_breakout_state']['continuation_detector']['decision']['candle_end'])
+                       > (_optional_aware_datetime(state.get('entry_at')) or observation.observed_at)))):
             evidence = state['v5_breakout_state']['continuation_detector']['decision']
             exit_route = dict(route_id='continuation-rejected', name='Continuation rejected',
                              mechanism=evidence['reason'], position_fraction=1.0, evidence=evidence)

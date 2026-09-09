@@ -6,10 +6,10 @@ position management projection, not a replacement for the shared V5 level book.
 from math import isfinite
 
 
-def observe(o, d, closed, policy, levels):
+def observe(o, d, closed, policy, levels, *, market_scope=False):
     from .v5_macd_episode import strictly_below
 
-    if o.position_quantity <= 0:
+    if not market_scope and o.position_quantity <= 0:
         d.pop('position_structure', None)
         d.pop('position_structure_failure', None)
         return
@@ -18,7 +18,7 @@ def observe(o, d, closed, policy, levels):
         acquired_observed_at=now, bars=[]))
     # Exclude the candle spanning first acquisition, even if first seen at its
     # close. Quotes and duplicate closes cannot confirm or erase a pivot.
-    if not closed or now <= s.get('closed_at', 0) or now-1 < s['acquired_observed_at']:
+    if not closed or now <= s.get('closed_at', 0) or (not market_scope and now-1 < s['acquired_observed_at']):
         return
     values = (o.bar_open, o.bar_high, o.bar_low, o.price)
     if any(v is None or not isfinite(v) or v <= 0 for v in values):

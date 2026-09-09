@@ -3,6 +3,7 @@ import type { PreviewRow } from "./contracts";
 import "./detectorTimeline.css";
 
 type Decision = {
+  contract?: string; detector_id?: string; candle_start?: string; candle_end?: string; episode?: number | null; valid?: boolean;
   effective_at: string; sequence: number; state: string; reason: string; action: string;
   strategy_action: string; strategy_reason: string; reference_price?: number;
   assignment_id?: string; support_boundary?: number;
@@ -10,6 +11,25 @@ type Decision = {
   resistance?: { lower?: number; upper?: number };
 };
 export type DetectorRow = Decision & { key: string; at: string; until: string };
+const stateLabels: Record<string, [string, string]> = {
+  advance: ['A', 'var(--success)'], pullback: ['PB', 'var(--warning)'],
+  recovery: ['REC', 'var(--primary)'], continuation: ['C', 'var(--success)'],
+  rejection: ['REJ', 'var(--danger)'], unresolved: ['?', 'var(--text-muted)'],
+};
+export function detectorCandleMarkers(rows: DetectorRow[], bars: { bar_start: string }[], asOf: string) {
+  const starts = new Set(bars.map(b => Date.parse(b.bar_start)));
+  const seen = new Set<string>();
+  return rows.flatMap(row => {
+    const start = Date.parse(row.candle_start || '');
+    const end = Date.parse(row.candle_end || '');
+    const key = `${row.detector_id || row.assignment_id || row.key.split(':')[0]}:${start}`;
+    if (row.contract !== 'candle-state-detector-1' || row.episode == null || !starts.has(start)
+        || end - start !== 1000 || end > Date.parse(asOf) || seen.has(key)) return [];
+    seen.add(key);
+    const [text, color] = stateLabels[row.state] || stateLabels.unresolved;
+    return [{ time: start / 1000, position: 'belowBar' as const, shape: 'circle' as const, size: 0, text, color }];
+  });
+}
 const clock = (value: string) => new Intl.DateTimeFormat("en-GB", {
   timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
 }).format(new Date(value));
@@ -25,7 +45,7 @@ export function detectorRows(rows: PreviewRow[], ticker: string, asOf: string): 
     const plan = (row.chart_plan || row.gate_snapshot) as Record<string, unknown> | undefined;
     const d = plan?.continuation_detector as Decision | undefined;
     if (!d || !Number.isFinite(Date.parse(d.effective_at))) continue;
-    const owner = String(d.assignment_id || row.strategy_id) + ":" + String(row.strategy_revision);
+    const owner = String(d.detector_id || d.assignment_id || row.strategy_id) + ":" + String(row.strategy_revision);
     const signature = `${d.sequence}:${d.strategy_action}:${d.strategy_reason}`;
     if (last.get(owner) === signature) continue;
     last.set(owner, signature);

@@ -2491,8 +2491,11 @@ def capture(args: argparse.Namespace) -> int:
                                 if(response.ok){
                                     const actual=await response.json();
                                     const projected=positionLifecycleAnnotations(actual.trading,'SUGP');
+                                    const hasFrozenReferences=(actual.trading.strategy_chart_activity||[]).some(row=>
+                                        row.chart_plan?.unified_structural_trigger?.current_snapshot?.levels?.length);
                                     window.__actualProtectionAudit={run:latest.run_id,positions:projected.length,
-                                        missing:projected.filter(a=>!a.stopPrice||!a.targetPrices?.length||!a.resistancePrices?.length).map(a=>({id:a.id,entry:a.entryTime,stop:a.stopPrice,targets:a.targetPrices,r:a.resistancePrices}))};
+                                        hasFrozenReferences,
+                                        missing:projected.filter(a=>!a.stopPrice||!a.targetPrices?.length||(hasFrozenReferences&&!a.resistancePrices?.length)).map(a=>({id:a.id,entry:a.entryTime,stop:a.stopPrice,targets:a.targetPrices,r:a.resistancePrices}))};
                                 }
                             }
                             const t=Date.parse('2026-08-21T11:00:00Z')/1000;
@@ -2544,10 +2547,11 @@ def capture(args: argparse.Namespace) -> int:
                             if(zones.length!==2 || zones[0].end!==t+30 || zones[1].start!==t+30 ||
                                zones[1].borderStyle!=='dashed' || !zones[1].latest || !zones[1].label.includes('awaiting retest'))
                                 throw Error('Broken resistance disappeared or its prior active interval was rewritten: '+JSON.stringify(zones));
-                            const {detectorRows}=await import('/src/features/canvas/DetectorTimeline.tsx');
+                            const {detectorRows,detectorCandleMarkers}=await import('/src/features/canvas/DetectorTimeline.tsx');
                             const detectorEvents=['advance','pullback','recovery','rejection','continuation'].map((state,i)=>({
                                 ticker:'TEST',strategy_id:'fixture',strategy_revision:1,sequence:100+i,event_time:iso(10+i*10),
                                 chart_plan:{continuation_detector:{sequence:i+1,effective_at:iso(10+i*10),state,
+                                    contract:'candle-state-detector-1',episode:t,candle_start:iso(9+i*10),candle_end:iso(10+i*10),
                                     action:i===3?'exit':'hold',reason:['completed_high_reclaimed','retreat_support_unbroken',
                                       'support_held_recovery_attempt','failed_recovery_support_break','episode_body_high_reclaimed'][i],
                                     strategy_action:i===3?'exit':i===4?'wait':'hold',strategy_reason:i===4?'pending_exit_quantity':'detector_evidence',
@@ -2555,6 +2559,10 @@ def capture(args: argparse.Namespace) -> int:
                                     entry_threshold:10.82,resistance:{lower:10.79,upper:10.81}}}}));
                             if(detectorRows(detectorEvents,'TEST',iso(25)).length!==2)throw Error('Detector leaked future state');
                             if(detectorRows(detectorEvents,'OTHER',iso(65)).length)throw Error('Detector mixed tickers');
+                            const labels=detectorCandleMarkers(detectorRows([...detectorEvents,...detectorEvents],'TEST',iso(65)),
+                                candles.map((c,i)=>({bar_start:iso(i)})),iso(25));
+                            if(labels.length!==2 || labels[0].time!==t+9 || labels[1].text!=='PB' || labels.some(m=>m.position!=='belowBar'))
+                                throw Error('Candle state timestamp, deduplication or close cutoff is wrong');
                             preview.strategy_chart_activity.push(...detectorEvents);
                             const host=document.createElement('div');host.id='staged-strategy-fixture';host.style.cssText='position:fixed;inset:0;z-index:9999;background:var(--surface);';
                             window.__openProtectionLabels=[];
@@ -2582,11 +2590,12 @@ def capture(args: argparse.Namespace) -> int:
                                 version:5,visible:true,elements:{adjustmentLine:{visible:false},adjustmentLabel:{visible:false},adjustmentArrow:{visible:false}}}));
                             const root=createRoot(host);
                             let trim=0;
+                            let showDetectorStates=true;
                             const render=()=>root.render(React.createElement(ChartPreview,{
                                 canvasId:'fixture',instanceId:'clock-sync',changeAsOf:preview.as_of,
-                                chartSettings:{...DEFAULT_SETTINGS.chart,timeframe:'1s',visibleIndicators:[],showSplitEvents:false},
+                                chartSettings:{...DEFAULT_SETTINGS.chart,timeframe:'1s',visibleIndicators:[],showSplitEvents:false,showDetectorStates},
                                 linkContext:{symbol:'TEST'},symbolEditable:false,fillHeight:true,
-                                onChartSettingsChange:()=>{},onLinkContextChange:()=>{},runId:'fixture',trading:{...preview},
+                                onChartSettingsChange:settings=>{showDetectorStates=settings.showDetectorStates;render();},onLinkContextChange:()=>{},runId:'fixture',trading:{...preview},
                                 liveChart:{bars:candles.map((c,i)=>({...c,bar_start:iso(i),bar_end:iso(i+1),volume:1})).slice(trim),
                                     indicators:[],marketSignalEvents:[],structureEvents:[],structureLevelHistory:[],
                                     loading:false,loadingEarlier:false,canLoadEarlier:false,loadEarlier:()=>{}}
@@ -2606,6 +2615,11 @@ def capture(args: argparse.Namespace) -> int:
                             raise RuntimeError('Synthetic staged strategy chart failed to render')
                         page.locator('#staged-strategy-fixture canvas').first.wait_for(state='visible', timeout=args.timeout_ms)
                         page.wait_for_function("window.__openProtectionLabels.includes('SL') && window.__openProtectionLabels.includes('TP')", timeout=args.timeout_ms)
+                        page.wait_for_function("window.__openProtectionLabels.includes('REJ')", timeout=args.timeout_ms)
+                        page.locator('#staged-strategy-fixture').get_by_role('button', name='Candle states', exact=True).click()
+                        if page.locator('#staged-strategy-fixture').get_by_role('button', name='Candle states', exact=True).get_attribute('aria-pressed') != 'false':
+                            raise RuntimeError('Candle state visibility toggle failed')
+                        page.locator('#staged-strategy-fixture').get_by_role('button', name='Candle states', exact=True).click()
                         page.locator('.live-position-protection-line[data-role="stop"][data-position-price="10.4"]').wait_for()
                         audit=page.evaluate('window.__actualProtectionAudit')
                         print('Actual protection audit:',audit)

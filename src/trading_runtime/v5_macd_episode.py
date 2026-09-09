@@ -161,7 +161,11 @@ def observe(o, p, state):
             d.pop(key, None)
     if (p.get('episode_management') or {}).get('continuation_detector_enabled'):
         from .continuation_detector import observe as observe_detector
-        observe_detector(o, d, p['episode_management'])
+        if (p['episode_management'].get('detector_candle_states_enabled')
+                and getattr(o, 'candle_detector_state', None) is not None):
+            d['continuation_detector'] = o.candle_detector_state
+        else:
+            observe_detector(o, d, p['episode_management'])
     state['v5_breakout_state'] = d
 
 

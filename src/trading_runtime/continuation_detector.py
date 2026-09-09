@@ -5,6 +5,9 @@ from .adaptive_episode_target import body_mean
 
 
 def observe(o, d, policy):
+    if policy.get('detector_candle_states_enabled'):
+        from .candle_state_detector import observe as observe_candle
+        return observe_candle(o, d, policy)
     now = o.observed_at.timestamp()
     s = d.setdefault('continuation_detector', {})
     if now < s.get('observed_at', 0):

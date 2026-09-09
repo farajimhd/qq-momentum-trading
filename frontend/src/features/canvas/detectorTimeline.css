@@ -6,3 +6,5 @@
 .detector-timeline table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
 .detector-timeline th, .detector-timeline td { text-align: left; vertical-align: top; padding: .4rem .6rem; border-bottom: 1px solid var(--border); }
 .detector-timeline td:first-child { white-space: nowrap; }
+
+.detector-candle-toggle { width: auto; flex: 0 0 auto; padding-inline: 0.5rem; white-space: nowrap; }
