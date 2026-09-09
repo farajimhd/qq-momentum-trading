@@ -2,6 +2,21 @@
 
 ## 2026
 
+### [2026-09-08 16:16 PDT - Strategy, independent candle detector and V6 campaigns](docs/codex/chat-summaries/2026/CHAT-20260908-1616-strategy-detector-v6-campaign.md)
+
+- Chat/task ID: `01a0834e-a0f6-7551-8c40-025356273ee8`
+- Related tasks: `TASK-0014`, `TASK-0206`, `TASK-0207`, `TASK-0208`
+- Summary written: 2026-09-09 16:09 PDT
+
+Tracks strategy/reentry/protection corrections, independent symmetric candle and
+volume/HOD observations, V5 support grading and V6 survivor-only daily carry.
+SUGP/JUNS each have 420 validated sessions pending quality acceptance. Workstation
+campaign delivery includes 64-worker query-budget correction, explicit SSD
+placement, atomic SMB persistence and a stable Rich dashboard. Existing campaigns
+remain resumable; all-ticker completion and strategy profitability are unaccepted.
+The df562ae5 workstation base includes later 07bdc577/f9fc93f8 patches. Early
+candidate-run evidence is partial.
+
 ### [2026-09-06 04:58 PDT - Swing books, hindsight and strategy through Candidate 118](docs/codex/chat-summaries/2026/CHAT-20260906-0458-swing-books-hindsight-strategy118.md)
 
 - Chat/task ID: `01a07695-7116-7a73-a7b1-dc3d521d8728`
