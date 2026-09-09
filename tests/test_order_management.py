@@ -918,6 +918,68 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 await manager.close()
                 journal.close()
 
+    async def test_ask_following_keeps_requested_size_until_full_fill_or_exit(self) -> None:
+        from tests.test_trading_runtime import quote
+        for reject_after_partial in (False, True):
+            with self.subTest(reject_after_partial=reject_after_partial), tempfile.TemporaryDirectory() as directory:
+                broker = SimulatedBrokerAdapter(['DU1'], mode=TradingMode.BACKTEST)
+                manager, journal = await self._manager(directory, broker, policy=BrokerCommunicationPolicy(),
+                                                       causal_execution_clock=True)
+                def bracket_plan(request, account_id, event):
+                    plan = planner(request, account_id, event)
+                    if request.action != 'enter_long':
+                        return replace(plan, cancel_strategy_protection=True)
+                    parent = plan.orders[0]
+                    stop = replace(parent, cOID=parent.cOID+'-stop', parentId=parent.cOID,
+                                   side='SELL', orderType='STP', price=None, auxPrice=request.invalidation_price)
+                    return StrategyOrderPlan((parent, stop))
+                manager.planner = bracket_plan
+                try:
+                    start = datetime(2026, 8, 21, 14, tzinfo=timezone.utc)
+                    event = replace(quote(bid=10, ask=10.02, ask_size=80), ticker='TEST', raw={'conid': 123},
+                                    ts=start, ingest_ts=start)
+                    await broker.on_market_event(event)
+                    request = replace(intent(quantity=100), event_time=start,
+                                      metadata={**intent().metadata, 'entry_completion_quote': 'ask', 'quote_observed_at': start.isoformat()},
+                                      execution_policy=ExecutionPolicy(policy_id='persistent-ask',
+                                        name=ExecutionPolicyName.ADAPTIVE_URGENT,
+                                        envelope=ExecutionEnvelope(persist_until_cancelled=True, deadline_ms=100,
+                                                                   maximum_reprices=1, minimum_reprice_interval_ms=25)))
+                    submitted = await manager.submit_intent(portfolio_approved(journal, request), account_id='DU1', event=None)
+                    self.assertEqual(submitted.filled_quantity, 20)
+                    entry_group = manager._groups[submitted.group_id]
+                    for step, ask in enumerate((10.12, 10.22, 10.32, 10.42), 1):
+                        at = start + timedelta(seconds=step)
+                        event = replace(event, ts=at, ingest_ts=at, sequence=step+1, bid_price=ask-.02, ask_price=ask)
+                        manager.on_market_snapshot(ExecutionMarketSnapshot('TEST', ask-.02, ask, .01, at, 'test'))
+                        if reject_after_partial:
+                            exit_request = replace(intent(action='exit', quantity=20), event_time=at,
+                                reference_price=ask-.02, reason='resistance_rejection',
+                                metadata={'bid': ask-.02, 'ask': ask, 'quote_observed_at': at.isoformat(),
+                                          'tick_size': .01, 'cancel_entry_acquisition': True})
+                            await manager.submit_intent(portfolio_approved(journal, exit_request), account_id='DU1', event=None)
+                            await broker.on_market_event(event)
+                            await manager.reconcile()
+                            await manager.advance_adaptive_execution(at+timedelta(seconds=1))
+                            self.assertEqual(entry_group.filled_quantity, 20)
+                            self.assertEqual(await broker.positions('DU1'), [])
+                            self.assertTrue(entry_group.terminal_broker_order_ids)
+                            break
+                        self.assertEqual(await manager.expire_entry_deadlines(at), ())
+                        await manager.advance_adaptive_execution(at)
+                        self.assertAlmostEqual(entry_group.current_limit_price, ask,
+                            msg=str((entry_group.snapshot(manager.policy.version), manager._execution_quote(entry_group.intent))))
+                        self.assertEqual(entry_group.orders[0].quantity, 100)
+                        await broker.on_market_event(event)
+                        await manager.reconcile()
+                    if not reject_after_partial:
+                        self.assertEqual(entry_group.filled_quantity, 100)
+                        self.assertEqual(entry_group.remaining_quantity, 0)
+                        self.assertEqual((await broker.positions('DU1'))[0].position, 100)
+                finally:
+                    await manager.close()
+                    journal.close()
+
     async def test_historical_marketable_entry_fills_from_latest_causal_quote(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             event_time = datetime(2026, 8, 21, 14, 0, tzinfo=timezone.utc)

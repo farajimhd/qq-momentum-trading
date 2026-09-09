@@ -138,3 +138,92 @@ def test_trade_at_close_cannot_erase_completed_break_witness():
     assert not state['v5_breakout_state']['crossed']
     M.observe(replace(trade, source_timeframe='1s', evaluation_events=('bar_close',)), p, state)
     assert any(r['price'] == 103.6 for r in state['v5_breakout_state']['crossed'])
+
+
+def rejection_setup():
+    p, _, o = setup()
+    p['v5_breakout_contract'] = V.MACD_REJECTION_CONTRACT
+    p = S.resolve_long_momentum_parameters(p, revision=47)
+    state = {}
+    M.observe(o, p, state)
+    M.observe(replace(o, observed_at=NOW+timedelta(milliseconds=1)), p, state)
+    return p, state, o
+
+
+def test_rejection_requires_held_contact_and_completed_close_strictly_below():
+    p, state, o = rejection_setup()
+    level = M.overhead(state['v5_breakout_state']['levels'], o.price, p)[0]
+    def observe(seconds, price, closed=False, held=100, levels=None):
+        current = replace(o, observed_at=NOW+timedelta(seconds=seconds), price=price,
+                          position_quantity=held, source_timeframe='1s' if closed else '',
+                          evaluation_events=('bar_close',) if closed else ('market_data_update',),
+                          structural_resistance_levels=levels if levels is not None else o.structural_resistance_levels)
+        M.observe(current, p, state)
+        return state['v5_breakout_state']
+    assert not observe(1, level['lower']-.01, True).get('resistance_rejection')
+    assert not observe(2, level['price']).get('resistance_rejection')
+    assert not observe(3, level['lower'], True).get('resistance_rejection')
+    assert not observe(3.1, level['lower']-.01).get('resistance_rejection')
+    # The touched band's witness survives its removal from the live book.
+    rejected = observe(4, level['lower']-.01, True, levels=())['resistance_rejection']
+    assert rejected['level']['unified_level_id'] == level['unified_level_id']
+    assert rejected['touched_at'] == (NOW+timedelta(seconds=2)).isoformat()
+    assert not observe(5, level['price'], held=0).get('resistance_rejection')
+
+
+def test_completed_break_clears_rejection_attempt_and_pre_entry_touch_is_ignored():
+    p, state, o = rejection_setup()
+    level = M.overhead(state['v5_breakout_state']['levels'], o.price, p)[0]
+    for seconds, price, held in [(1,level['price'],0), (2,level['lower']-.01,100),
+                                  (3,level['price'],100), (4,level['upper']+.01,100),
+                                  (5,level['lower']-.01,100)]:
+        M.observe(replace(o, observed_at=NOW+timedelta(seconds=seconds), price=price,
+                  position_quantity=held, source_timeframe='1s', evaluation_events=('bar_close',)), p, state)
+        assert not state['v5_breakout_state'].get('resistance_rejection')
+
+
+def test_rejection_boundary_ignores_float_noise_but_preserves_sub_tick_prices():
+    level = {'unified_level_id': 'band', 'lower': 3.5300000000000002, 'upper': 3.55}
+    _, _, o = rejection_setup()
+    d = {}
+    M.observe_rejection(replace(o, position_quantity=100, price=3.54), d, [level], False)
+    M.observe_rejection(replace(o, position_quantity=100, price=3.53), d, [level], True)
+    assert not d.get('resistance_rejection')
+    M.observe_rejection(replace(o, position_quantity=100, price=3.5299), d, [level], True)
+    assert d['resistance_rejection']['close_price'] == 3.5299
+
+
+def test_new_contract_does_not_confirm_break_at_equal_float_upper_bound():
+    p, state, o = rejection_setup()
+    level = {'unified_level_id': 'band', 'lower': 3.53, 'upper': 3.5499999999999998}
+    state['v5_breakout_state'].update(closed_levels=[level], closed_price=3.54)
+    M.observe(replace(o, observed_at=NOW+timedelta(seconds=1), price=3.55,
+                      source_timeframe='1s', evaluation_events=('bar_close',)), p, state)
+    assert not state['v5_breakout_state']['crossed']
+
+
+def test_new_engine_keeps_acquiring_on_entry_gate_lapse_then_exits_on_rejection():
+    p, state, o = rejection_setup()
+    engine = S.LongMomentumStrategyEngine(revision=47)
+    result = engine.evaluate(assignment(strategy_revision=47, parameters=p, state=state), o)
+    entry = next(i for i in result.evaluation.intents if i.action == 'enter_long')
+    assert entry.metadata['entry_completion_quote'] == 'ask'
+    assert entry.resolved_execution_policy().envelope.persist_until_cancelled
+    assert entry.resolved_execution_policy().envelope.maximum_buy_price is None
+    assert str(entry.resolved_execution_policy().partial_fill_policy) == 'complete_remainder'
+    for seconds, price, closed in [(1,103.6,False),(1.1,103.55,False),(2,103.49,True)]:
+        result = engine.evaluate(assignment(strategy_revision=47, parameters=p, state=result.state,
+                                 status=S.AssignmentStatus.MANAGING),
+                                 replace(o, observed_at=NOW+timedelta(seconds=seconds), price=price,
+                                         bid=price-.01, ask=price+.01, position_quantity=20,
+                                         average_price=103.3, macd_line=.51, execution_vwap=104,
+                                         source_timeframe='1s' if closed else '',
+                                         evaluation_events=('bar_close',) if closed else ('market_data_update',)))
+        assert not any(i.action == 'cancel_entry' for i in result.evaluation.intents)
+        if not closed:
+            assert not any(i.action == 'exit' for i in result.evaluation.intents)
+    exit_intent = next(i for i in result.evaluation.intents if i.action == 'exit')
+    assert exit_intent.reason == 'resistance_rejection'
+    assert exit_intent.quantity == 20
+    assert exit_intent.metadata['cancel_entry_acquisition']
+    assert result.state['entry_acquisition_exit_latched']

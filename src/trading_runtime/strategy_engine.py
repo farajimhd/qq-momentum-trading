@@ -2661,6 +2661,9 @@ class LongMomentumStrategyEngine:
 
     def evaluate(self, assignment: StrategyAssignment, observation: StrategyObservation) -> StrategyEngineResult:
         result = self._evaluate(assignment, observation)
+        # Episode v2 uses these gates only to start acquisition. Once approved,
+        # the persistent ask-following order is cancelled by an exit, not by
+        # a subsequent lapse in the MACD/VWAP entry setup.
         if assignment.parameters.get('v5_breakout_contract') in (v5_breakout.MACD_GAP_CONTRACT, v5_breakout.MACD_EPISODE_CONTRACT):
             if assignment.parameters['v5_breakout_contract'] == v5_breakout.MACD_EPISODE_CONTRACT:
                 from .v5_macd_episode import acquisition_valid
@@ -3972,6 +3975,11 @@ class LongMomentumStrategyEngine:
                 "mechanism": "protective_stop",
                 "position_fraction": 1.0,
             }
+        elif (parameters.get('v5_breakout_contract') == v5_breakout.MACD_REJECTION_CONTRACT
+              and state.get('v5_breakout_state', {}).get('resistance_rejection')):
+            exit_route = dict(route_id='v5-resistance-rejection', name='Confirmed resistance rejection',
+                             mechanism='resistance_rejection', position_fraction=1.0,
+                             evidence=state['v5_breakout_state']['resistance_rejection'])
         elif parameters.get("broken_level_stop_only"):
             exit_route = None
         elif exit_automatic and parameters.get("local_swing_management"):
@@ -6267,7 +6275,7 @@ class AssignedLongMomentumStrategy:
                         aggregate_position_quantity is not None
                         and abs(float(aggregate_position_quantity)) > 1e-9
                     ):
-                        state["profit_target_liquidation_required"] = (assignment.parameters.get("v5_breakout_contract") != v5_breakout.MACD_EPISODE_CONTRACT
+                        state["profit_target_liquidation_required"] = (not v5_breakout.episode(assignment.parameters)
                             and not bool(swing_gap.runner_policy(assignment.parameters)))
                         state["target_replenishment_quantity"] = 0.0
                         state["target_replenishment_pending"] = False

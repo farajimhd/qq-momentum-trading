@@ -3,12 +3,18 @@
 Episode state belongs to the ticker; gap samples and protection belong to a
 single acquired position. Only past, causally available levels are used.
 """
-from math import floor, isfinite
+from math import floor, isfinite, isclose
 
 from . import v5_breakout as v5, swing_gap
 from .v5_hod_ladder import target
 
 CONTRACT = 'swing-v5-macd-episode-1'
+
+
+def strictly_below(price, boundary):
+    # Ignore binary floating-point noise, not a trading-price buffer. Bands
+    # retain their sub-tick precision; 3.53 and 3.5300000000000002 are equal.
+    return price < boundary and not isclose(price, boundary, rel_tol=1e-12, abs_tol=0.)
 
 
 def gap_bps(o):
@@ -28,7 +34,7 @@ def acquisition_valid(o, p):
 
 def observe(o, p, state):
     now = o.observed_at.timestamp()
-    d = dict(state.get('v5_breakout_state') or {'contract': CONTRACT})
+    d = dict(state.get('v5_breakout_state') or {'contract': p['v5_breakout_contract']})
     if now < d.get('observed_at', 0):
         return
     gap = gap_bps(o)
@@ -40,12 +46,18 @@ def observe(o, p, state):
     d.update(observed_at=now, macd_open=opened, macd_gap_bps=gap,
              prior_max=d.get('period_max', 0.0), decision_levels=prior, crossed=[])
     closed = o.source_timeframe == '1s' and 'bar_close' in o.evaluation_events
+    if p['v5_breakout_contract'] == v5.MACD_REJECTION_CONTRACT:
+        observe_rejection(o, d, current_levels, closed)
     if closed and now > d.get('closed_at', 0):
         previous = d.get('closed_price')
         # Trade observations must not erase the last completed-bar witnesses
         # when the book changes role at the same close boundary.
         d['crossed'] = [r for r in d.get('closed_levels', prior)
                         if previous is not None and previous <= r['upper'] < o.price]
+        if p['v5_breakout_contract'] == v5.MACD_REJECTION_CONTRACT:
+            d['crossed'] = [r for r in d.get('closed_levels', prior)
+                            if previous is not None and not strictly_below(r['upper'], previous)
+                            and strictly_below(r['upper'], o.price)]
         if opened:
             d['period_max'] = max(d.get('period_max', 0.0), o.bar_open or o.price, o.price)
             # At the close boundary this candle is now part of the past.
@@ -57,6 +69,34 @@ def observe(o, p, state):
         for key in ('position_gaps', 'pending_target', 'fill_stop_initialized'):
             d.pop(key, None)
     state['v5_breakout_state'] = d
+
+
+def observe_rejection(o, d, levels, closed):
+    """Freeze a contacted band until a completed close resolves its attempt.
+
+    Use actual observed prices while holding, not a candle high that might
+    predate acquisition. A removed/role-changed level keeps its touch witness.
+    """
+    if o.position_quantity <= 0:
+        d.pop('resistance_contacts', None)
+        d.pop('resistance_rejection', None)
+        return
+    contacts = dict(d.get('resistance_contacts') or {})
+    now = o.observed_at.timestamp()
+    for level in levels:
+        if not strictly_below(o.price, level['lower']) and not strictly_below(level['upper'], o.price):
+            contacts.setdefault(str(level['unified_level_id']), {
+                'level': dict(level), 'touched_at': o.observed_at.isoformat(), 'touch_price': o.price})
+    if closed and now > d.get('closed_at', 0):
+        rejected = [contact for contact in contacts.values() if strictly_below(o.price, contact['level']['lower'])]
+        if rejected and not d.get('resistance_rejection'):
+            witness = max(rejected, key=lambda row: row['level']['lower'])
+            d['resistance_rejection'] = {**witness, 'confirmed_at': o.observed_at.isoformat(),
+                                         'close_price': o.price, 'timeframe': '1s'}
+        contacts = {key: contact for key, contact in contacts.items()
+                    if not strictly_below(o.price, contact['level']['lower'])
+                    and not strictly_below(contact['level']['upper'], o.price)}
+    d['resistance_contacts'] = contacts
 
 
 def initial_stop(o, p, entry_price):

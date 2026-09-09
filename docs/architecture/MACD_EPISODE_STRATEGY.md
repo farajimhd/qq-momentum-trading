@@ -33,6 +33,30 @@ Numeric policy lives in `v5_breakout` settings: `minimum_macd_gap_bps`,
 `vwap_offset_bps`, `initial_stop_pct`, `initial_target_ordinal`,
 `minimum_selection_score`, `stop_offset_bps`, and `target_offset_ticks`.
 
+## Confirmed rejection and persistent acquisition
+
+Contract `swing-v5-macd-episode-2` retains the episode, stop and target rules
+above and makes these explicit changes. Earlier immutable candidates retain
+their original behavior.
+
+- While holding shares, an observed price inside a qualified resistance band
+  arms a rejection attempt. Freeze the band's identity and boundaries at contact.
+  A completed 1s close strictly below its lower bound exits all held shares.
+  A close inside the band keeps waiting; a close strictly above its upper bound
+  clears the attempt and follows the existing breakout rules. A pre-entry touch
+  does not arm an exit, and a forming candle cannot confirm rejection.
+- After entry approval, OMS keeps the original requested quantity and reprices
+  the unfilled remainder to the current causal ask. Existing persistent execution
+  removes deadline/reprice-count termination and completes partial fills.
+  A subsequent MACD/VWAP entry-gate lapse does not cancel that acquisition.
+- An exit latches acquisition off, cancels the unfilled entry before submitting
+  the exit, and sells the held quantity through the existing managed-exit path.
+  Stops, targets, session controls and Portfolio cash/allocation limits remain
+  authoritative. Insufficient capacity defers and reports the remainder; it
+  never silently shrinks the requested size or raises a protection price to
+  fund acquisition. No execution policy can guarantee fills without liquidity
+  or available capital.
+
 ## Protection and evidence
 
 OMS journals requested and broker-effective protection prices with causal time,
