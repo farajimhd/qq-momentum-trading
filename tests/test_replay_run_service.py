@@ -2876,6 +2876,31 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(source_values["market.spread_bps"]["value"], 20.0)
         self.assertEqual(source_values["volume_rate_ratio@1s"]["value"], 2.0)
 
+    async def test_incremental_liquidity_window_matches_exact_timestamp_reference(self) -> None:
+        controller = ReplayRunController(
+            ReplayRunDefinition(session_date=date(2026, 8, 21), start_time=time(4, 0),
+                configuration_revision=approved_configuration()), runtime_root=Path(tempfile.gettempdir()))
+        start = datetime(2026, 8, 21, 4, 0, tzinfo=NEW_YORK)
+        clocks = []
+        for second in range(126):
+            for micros in (0, 125000, 125000, 999999):
+                stamp = start + timedelta(seconds=second,microseconds=micros)
+                event = _debug_market_events((dict(kind='trade',ticker='CLSK',ts=stamp.isoformat(),price=10.,size=1),))[0]
+                controller._observe_historical_market_quality_event(event)
+                clocks.append(stamp)
+            if second == 70:
+                self.assertGreater(controller._historical_market_quality['CLSK']['trade_bucket_head'],0)
+            if second in (89,125):
+                now = start+timedelta(seconds=second+1)
+                values = {}
+                controller._project_historical_market_quality(ReplayDerivedFrame(
+                    as_of=now,bar={'close':10.},indicator={},sequence=second,ticker='CLSK',timeframe='1s'),values)
+                for seconds in (10,60):
+                    expected = sum(t > now-timedelta(seconds=seconds) for t in clocks)/seconds
+                    self.assertEqual(values[f'market.trade_rate_{seconds}s']['value'],expected)
+                self.assertEqual(values['market.volume']['value'],len(clocks))
+                self.assertEqual(controller._historical_market_quality['CLSK']['trade_bucket_head'],0)
+
     async def test_trade_only_prepared_bar_does_not_override_the_raw_quote_spread(self) -> None:
         controller = ReplayRunController(
             ReplayRunDefinition(

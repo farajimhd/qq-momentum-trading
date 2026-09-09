@@ -2952,16 +2952,23 @@ class ReplayRunController:
         state["dollar_volume"] = float(state.get("dollar_volume") or 0) + event.price * event.size
         state["share_volume"] = float(state.get("share_volume") or 0) + event.size
         cutoff = event.ts - timedelta(seconds=60)
-        trade_buckets = [
-            (clock, count)
-            for clock, count in list(state.get("trade_buckets") or [])
-            if clock > cutoff
-        ]
+        trade_buckets = state.setdefault("trade_buckets", [])
+        head = int(state.get("trade_bucket_head", 0))
+        # Canonical replay is time ordered. Expire each exact timestamp once,
+        # retaining sub-second boundary semantics without copying the entire
+        # sixty-second window on every market trade. Compact amortized, and
+        # keep the list/head representation checkpoint serializable.
+        while head < len(trade_buckets) and trade_buckets[head][0] <= cutoff:
+            head += 1
+        if head and head * 2 >= len(trade_buckets):
+            del trade_buckets[:head]
+            head = 0
         if trade_buckets and trade_buckets[-1][0] == event.ts:
             trade_buckets[-1] = (event.ts, trade_buckets[-1][1] + 1)
         else:
             trade_buckets.append((event.ts, 1))
         state["trade_buckets"] = trade_buckets
+        state["trade_bucket_head"] = head
         second = int(event.ts.timestamp())
         volume_buckets = [
             (bucket, volume)
@@ -4036,6 +4043,7 @@ class ReplayRunController:
                 if clock > frame.as_of - timedelta(seconds=60)
             ]
             state["trade_buckets"] = trade_buckets
+            state["trade_bucket_head"] = 0
             trade_rate_10s = sum(
                 count
                 for clock, count in trade_buckets
@@ -4072,6 +4080,7 @@ class ReplayRunController:
                 ),
             ))
             state["trade_buckets"] = buckets
+            state["trade_bucket_head"] = 0
             trade_rate_10s = sum(
                 count
                 for clock, count in buckets
