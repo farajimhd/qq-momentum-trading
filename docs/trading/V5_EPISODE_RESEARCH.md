@@ -79,6 +79,13 @@ the limiting portfolio constraints; it never silently increases risk limits.
   entry decision and Portfolio approval by identity, hydrates verified journal
   evidence, checks entry thresholds and approved quantities, and measures costs
   and closed-equity drawdown. Whole-candle excursions omit partial holding bars.
+- `scripts/run_strategy_batch.py` executes a frozen JSON list of experiments
+  sequentially, reusing preparation caches within one process. Each row contains
+  a unique directory `name`, `candidate`, `plan`, `baseline_run` list, and optional
+  experiment date/time, simulation-profile or new-order-delay overrides. Existing
+  experiment ledgers remain authoritative for restart. Failed cases are recorded;
+  continuing independent cases requires `--keep-going`. Run at most two batches
+  concurrently for this bounded research workflow.
 - `scripts/benchmark_strategy_moves.py` reads canonical eligible trades and
   produces offline MACD episode extrema and trade-price excursions. It does not
   bypass liquidity, spread or execution constraints in strategy evaluation.
