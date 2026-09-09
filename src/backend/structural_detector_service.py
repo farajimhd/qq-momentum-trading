@@ -37,6 +37,10 @@ class Settings(BaseModel):
     consolidation_body_multiple: float = Field(default=.25, ge=.01, le=2)
     proximity_body_multiple: float = Field(default=1, ge=.1, le=10)
     macd_gap_bps: float = Field(default=25, ge=.1, le=1000)
+    tail_range_fraction: float = Field(default=.5, ge=.1, le=1)
+    indecision_body_fraction: float = Field(default=.2, ge=.01, le=1)
+    expansion_body_multiple: float = Field(default=1.5, ge=.1, le=10)
+    expansion_body_fraction: float = Field(default=.65, ge=.1, le=1)
 
 
 class DetectorRequest(BaseModel):

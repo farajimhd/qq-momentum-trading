@@ -982,7 +982,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const structuralDetectorRef = useRef(structuralDetector);
   structuralDetectorRef.current = structuralDetector;
   const structuralDetectorPrimitiveRef = useRef<StructuralDetectorPrimitive | null>(null);
-  useEffect(() => { drawCurrentRegions(); }, [structuralDetector.rows]);
+  useEffect(() => { drawCurrentRegions(); }, [structuralDetector.rows, structuralDetector.labelRows]);
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null);
   const strategyLifecycles = useMemo(() => [...(payload?.trade_annotations ?? [])]
     .sort((a, b) => a.entryTime - b.entryTime || a.id.localeCompare(b.id)), [payload?.trade_annotations]);
@@ -1393,9 +1393,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const detectorPrimitive = new StructuralDetectorPrimitive();
     candleSeries.attachPrimitive(detectorPrimitive);
     structuralDetectorPrimitiveRef.current = detectorPrimitive;
-    priceChart.subscribeCrosshairMove(event => {
-      if (typeof event.time === 'number' && structuralDetectorRef.current.enabled) structuralDetectorRef.current.inspect(event.time);
-    });
     const volume = priceChart.addSeries(HistogramSeries, {
       base: 0,
       lastValueVisible: false,
@@ -1831,7 +1828,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       currentPayload.candles.at(-1)?.time ?? 0, timeline[0]?.time ?? 0);
     const swingDuration = estimateCandleDuration(timeline);
     structuralDetectorPrimitiveRef.current?.setState(structuralDetectorRef.current.rows,
-      time => xForAnnotationTime(chart, time, timeline, swingDuration));
+      time => xForAnnotationTime(chart, time, timeline, swingDuration), structuralDetectorRef.current.labelRows);
     swingStructurePrimitiveRef.current?.setState(swing.segments,
       (time) => xForAnnotationTime(chart, Math.max(timeline[0]?.time ?? 0,
         Math.min(time, timeline.at(-1)?.time ?? 0)), timeline, swingDuration),

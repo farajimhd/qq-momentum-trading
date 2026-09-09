@@ -158,3 +158,95 @@ def test_http_contract_invalid_order_and_no_strategy_required():
         assert len(response.json()['rows'])==4
         payload['candles'].reverse()
         assert client.post('/api/indicators/structural-detector',json=payload).status_code==422
+
+
+def mirror(bar, center=20):
+    return dict(bar,open=center-bar['open'],close=center-bar['close'],
+                high=center-bar['low'],low=center-bar['high'])
+
+
+def test_bullish_and_bearish_movement_are_mirrors():
+    bars=[candle(i,o,c) for i,(o,c) in enumerate([(10,10.1),(10.1,10.3),(10.3,10.5),
+        (10.5,10.48),(10.48,10.49),(10.49,10.6)])]
+    up,down=StructuralDetector(),StructuralDetector()
+    pairs={'unknown':'unknown','advance':'decline','pullback':'upward_retracement',
+           'recovery':'downward_recovery','consolidation':'consolidation'}
+    for bar in bars:
+        a,b=up.observe(bar),down.observe(mirror(bar))
+        assert pairs[a['state']]==b['state']
+
+
+def test_retest_lifecycle_is_symmetric_and_does_not_repaint():
+    from src.market_engine.structural_evidence import Interactions
+    a,b=Interactions(),Interactions()
+    resistance=level()
+    support=dict(resistance,side=1,lower=20-resistance['upper'],upper=20-resistance['lower'],price=20-resistance['price'])
+    bars=[candle(0,10,10.1),candle(1,10.1,10.3),candle(2,10.3,10.4,10.41,10.3),
+          candle(3,10.4,10.2,10.4,10.2),candle(4,10.2,10.3,10.31,10.2),candle(5,10.3,10.1)]
+    expected=[[],['breakout'],['support_retest_pending'],['support_retest_unresolved'],['support_retest_held'],['resistance_reclaim']]
+    mirrored=[[],['support_failure'],['resistance_retest_pending'],['resistance_retest_unresolved'],['resistance_retest_held'],['support_reclaim']]
+    previous=None
+    saved=[]
+    for i,bar in enumerate(bars):
+        events,_=a.observe(bar,previous,[resistance] if i<2 else [],.05,i)
+        inverse,_=b.observe(mirror(bar),20-previous if previous is not None else None,[support] if i<2 else [],.05,i)
+        assert [e['state'] for e in events]==expected[i]
+        assert [e['state'] for e in inverse]==mirrored[i]
+        saved.append(events)
+        if i==1:
+            witness=deepcopy(events)
+        previous=bar['close']
+    assert saved[1]==witness
+    assert saved[3][0]['encounters']==2  # break contact, departure, new contact
+    assert saved[4][0]['encounters']==2  # consecutive contact is not a new encounter
+
+
+def test_failed_break_without_retest_and_no_touch_break():
+    from src.market_engine.structural_evidence import Interactions
+    tracker=Interactions()
+    def observe(bar,previous):
+        return [e['state'] for e in tracker.observe(bar,previous,[level()],.01,bar['time'])[0]]
+    assert observe(candle(0,10.1,10.21,10.3),10.1)==['testing_resistance']
+    assert observe(candle(1,10.21,10.3),10.21)==['breakout']
+    assert observe(candle(2,10.3,10.1),10.3)==['failed_breakout']
+
+
+def test_candle_shapes_are_geometry_not_reversal_signals():
+    from src.market_engine.structural_evidence import morphology
+    bar=candle(1,10.1,10.12,10.4,10.09)
+    up=morphology(bar,None,.1,DetectorSettings())
+    down=morphology(mirror(bar),None,.1,DetectorSettings())
+    assert 'upper_tail' in up['tags'] and 'lower_tail' in down['tags']
+    assert up['upper_tail_fraction']==pytest.approx(down['lower_tail_fraction'])
+    assert up['close_location']==pytest.approx(1-down['close_location'])
+    engine=StructuralDetector()
+    engine.observe(candle(0,10,10.1))
+    row=engine.observe(bar)
+    assert 'upper_tail' in row['candle_shape']['tags']
+    assert row['state']!='decline'
+
+
+def test_bearish_macd_episode_is_context_only():
+    engine=StructuralDetector(DetectorSettings(macd_gap_bps=.1))
+    rows=[engine.observe(candle(i,10-i*.05,9.96-i*.05)) for i in range(40)]
+    assert rows[-1]['macd']['active']
+    assert rows[-1]['macd']['direction']==-1
+    assert len(rows)==40
+
+
+def test_global_bias_uses_v5_pivot_time_not_price_sorted_input_order():
+    from src.market_engine.structural_evidence import swing_bias
+    levels=[dict(level(11,-1),created_at_ms=1000),dict(level(12,-1),created_at_ms=3000),
+            dict(level(10,1),created_at_ms=2000),dict(level(10.5,1),created_at_ms=4000)]
+    assert swing_bias(levels)=='bullish'
+    assert swing_bias(list(reversed(levels)))=='bullish'
+    assert swing_bias([level(10),level(11),level(9,1),level(8,1)])=='unknown'
+
+
+@pytest.mark.parametrize('event,expected',[('support_reclaim','advance'),('resistance_reclaim','decline')])
+def test_reclaimed_role_updates_local_movement_direction(event,expected):
+    engine=StructuralDetector()
+    engine.observe(candle(0,10,10.1))
+    close=10.2 if expected=='advance' else 10
+    with patch.object(engine.local_interactions,'observe',return_value=([dict(state=event,level=level())],0)):
+        assert engine.observe(candle(1,10.1,close))['state']==expected

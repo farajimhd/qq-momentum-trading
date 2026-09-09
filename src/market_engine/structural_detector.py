@@ -9,8 +9,9 @@ from dataclasses import dataclass, asdict
 from math import isfinite
 
 from .swing_structure import SwingSettings, SwingStructure
+from .structural_evidence import Interactions, morphology, swing_bias
 
-VERSION = 'structural-candle-detector-1'
+VERSION = 'structural-candle-detector-2'
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,10 @@ class DetectorSettings:
     consolidation_body_multiple: float = .25
     proximity_body_multiple: float = 1
     macd_gap_bps: float = 25
+    tail_range_fraction: float = .5
+    indecision_body_fraction: float = .2
+    expansion_body_multiple: float = 1.5
+    expansion_body_fraction: float = .65
 
     def __post_init__(self):
         if any(not isfinite(v) or v <= 0 for v in asdict(self).values()):
@@ -32,34 +37,6 @@ def compact(level):
             'price', 'pivot_at', 'confirmed_at', 'confirmed_at_ms', 'book_version') if k in level}
 
 
-def interaction(bar, previous, levels, proximity):
-    """Compare against levels available before this candle, including broken ones."""
-    events = []
-    for level in levels:
-        lower, upper = level['lower'], level['upper']
-        epsilon = max(abs(lower), abs(upper))*1e-12
-        resistance = level['side'] in (-1, 'resistance')
-        if resistance:
-            if previous is not None and previous <= upper+epsilon and bar['close'] > upper+epsilon:
-                kind = 'breakout'
-            elif bar['high'] >= lower and bar['close'] < lower and bar['close'] < bar['open']:
-                kind = 'rejection'
-            elif bar['high'] >= lower and bar['low'] <= upper:
-                kind = 'testing_resistance'
-            elif 0 < lower-bar['close'] <= proximity:
-                kind = 'approaching_resistance'
-            else:
-                continue
-        else:
-            if previous is not None and previous >= lower-epsilon and bar['close'] < lower-epsilon:
-                kind = 'support_failure'
-            elif bar['low'] <= upper and bar['close'] >= lower:
-                kind = 'testing_support'
-            else:
-                continue
-        events.append(dict(state=kind, level=compact(level)))
-    return events
-
 
 class StructuralDetector:
     def __init__(self, settings=DetectorSettings()):
@@ -68,13 +45,17 @@ class StructuralDetector:
             volatility_multiple=settings.volatility_multiple))
         self.last = None
         self.body = None
-        self.high = None
         self.pullback = None
         self.global_levels = []
-        self.broken = deque(maxlen=32)
         self.sequence = 0
         self.last_support = None
-        self.advanced = False
+        self.last_resistance = None
+        self.trend = 0
+        self.extreme = None
+        self.local_interactions = Interactions()
+        self.global_interactions = Interactions()
+        self.pivots = deque(maxlen=64)
+        self.episode_direction = 0
         self.ema_fast = self.ema_slow = self.signal = None
         self.episode = None
         self.close_times = {}
@@ -97,7 +78,7 @@ class StructuralDetector:
         previous = self.last['close'] if self.last else None
         baseline = self.body or max(abs(bar['close']-bar['open']), bar['close']*self.settings.reversal_bps/10000)
         local_before = [self.local_evidence(l) for l in self.swings.active.values() if l['scale']=='local' and l['state']=='active']
-        local_events = interaction(bar, previous, local_before, baseline*self.settings.proximity_body_multiple)
+        local_events, local_expired = self.local_interactions.observe(bar, previous, local_before, baseline*self.settings.proximity_body_multiple, self.sequence)
         # Use the previous as-of snapshot for crossings. A level can disappear
         # or change side in the current snapshot precisely because it broke.
         available = {str(l.get('unified_level_id', l.get('level_id'))): l for l in self.global_levels}
@@ -106,11 +87,9 @@ class StructuralDetector:
             if known > end:
                 raise ValueError('Future global swing evidence')
             available.setdefault(str(level.get('unified_level_id', level.get('level_id'))), level)
-        global_events = interaction(bar, previous, list(available.values()), baseline*self.settings.proximity_body_multiple) if global_status=='available' else []
-        for event in global_events:
-            if event['state']=='breakout':
-                self.broken.append(dict(event['level'], broken_at=end))
-        held = [l for l in self.broken if bar['close'] > l['upper']]
+        global_events, global_expired = self.global_interactions.observe(bar, previous, list(available.values()), baseline*self.settings.proximity_body_multiple, self.sequence) if global_status=='available' else ([], 0)
+        held = [t['level'] for t in self.global_interactions.tracks.values() if t['phase']!='active' and t['level']['side'] in (-1,'resistance') and bar['close']>t['level']['upper']]
+        below = [t['level'] for t in self.global_interactions.tracks.values() if t['phase']!='active' and t['level']['side'] in (1,'support') and bar['close']<t['level']['lower']]
         # The shared local extractor's temporal constants are interpreted in
         # candles, not wall seconds. This keeps 100ms/minute/daily charts causal
         # and prevents every daily level from expiring on the next daily bar.
@@ -124,44 +103,59 @@ class StructuralDetector:
             level.pop('segment', None)
         new_local = [self.local_evidence(l) for l in self.swings.active.values() if l['scale']=='local' and l['confirmed_at']==local_time]
         for level in new_local:
-            kind = 'resistance_confirmed' if level['side']=='resistance' else ('higher_low_confirmed' if self.last_support is not None and level['price']>self.last_support else 'swing_low_confirmed')
+            if level['side']=='resistance':
+                kind = 'lower_high_confirmed' if self.last_resistance is not None and level['price']<self.last_resistance else 'swing_high_confirmed'
+                self.last_resistance = level['price']
+            else:
+                kind = 'higher_low_confirmed' if self.last_support is not None and level['price']>self.last_support else 'swing_low_confirmed'
             local_events.append(dict(state=kind, level=level))
             if level['side']=='support':
                 self.last_support = level['price']
+        self.pivots.extend(new_local)
         forming = self.swings.detectors[0]
-        high = forming.get('high')
-        retreat = previous is not None and bar['close'] < previous
-        # A developing ceiling needs a previously observed extreme and a
-        # meaningful retreat. The current candle cannot confirm its own wick.
-        ceiling = high and high[1] < local_time and high[0]-bar['close'] >= baseline and retreat
-        if ceiling:
-            local_events.append(dict(state='resistance_forming', level=dict(price=high[0], pivot_at=self.close_times[high[1]], confirmed_at=None)))
-        support_failed = any(e['state']=='support_failure' for e in local_events)
+        for side, sign, name in [('high',1,'resistance_forming'),('low',-1,'support_forming')]:
+            extreme = forming.get(side)
+            if extreme and extreme[1]<local_time and sign*(extreme[0]-bar['close'])>=baseline and previous is not None and sign*(bar['close']-previous)<0:
+                local_events.append(dict(state=name,level=dict(price=extreme[0],pivot_at=self.close_times[extreme[1]],confirmed_at=None)))
+        local_bias = swing_bias(list(self.pivots))
+        global_bias = swing_bias(list(available.values())) if global_status=='available' else 'unknown'
+        delta = bar['close']-previous if previous is not None else 0
+        broken_up = any(e['state'] in ('breakout','support_reclaim') for e in local_events)
+        broken_down = any(e['state'] in ('support_failure','resistance_reclaim') for e in local_events)
+        if broken_up != broken_down:
+            self.trend = 1 if broken_up else -1
+            self.extreme = bar['close']
+            self.pullback = None
+        elif new_local and local_bias in ('bullish','bearish'):
+            structural_trend = 1 if local_bias=='bullish' else -1
+            if structural_trend != self.trend:
+                self.trend = structural_trend
+                self.extreme = bar['close']
+                self.pullback = None
         if previous is None:
-            state, reason = 'unknown', 'insufficient_history'
-        elif support_failed:
-            state, reason = 'decline', 'local_support_failed'
-        elif retreat:
-            state, reason = ('pullback', 'retreat_with_local_support_intact') if self.advanced else ('decline', 'lower_close_without_prior_advance')
-            if self.pullback is None:
-                self.pullback = dict(high=max(self.high or previous, previous), low=bar['low'])
-            else:
-                self.pullback['low'] = min(self.pullback['low'], bar['low'])
-        elif self.pullback and bar['close'] <= self.pullback['high']:
-            if bar['close'] > previous:
-                self.pullback['recovering'] = True
-            state, reason = ('recovery', 'recovering_below_prior_high') if self.pullback.get('recovering') else ('pullback', 'pullback_not_yet_recovering')
-        elif abs(bar['close']-previous) <= baseline*self.settings.consolidation_body_multiple and abs(bar['close']-bar['open']) <= baseline*self.settings.consolidation_body_multiple:
-            state, reason = 'consolidation', 'small_body_and_close_change'
+            state, reason = 'unknown','insufficient_history'
         else:
-            state, reason = 'advance', 'prior_high_reclaimed' if self.pullback else 'rising_close'
-            self.pullback = None
-            self.advanced = True
-        if support_failed:
-            self.advanced = False
-            self.high = bar['close']
-            self.pullback = None
-        self.high = max(self.high or bar['close'], bar['open'], bar['close'])
+            if self.trend==0 and delta!=0:
+                self.trend = 1 if delta>0 else -1
+                self.extreme = previous
+            sign = self.trend or 1
+            if sign*delta<0:
+                state = 'pullback' if sign==1 else 'upward_retracement'
+                reason = 'countertrend_close_without_confirmed_local_break'
+                if self.pullback is None:
+                    self.pullback = dict(reference=self.extreme, direction=sign)
+            elif abs(delta)<=baseline*self.settings.consolidation_body_multiple and abs(bar['close']-bar['open'])<=baseline*self.settings.consolidation_body_multiple and not self.pullback:
+                state,reason = 'consolidation','small_body_and_close_change'
+            elif self.pullback and sign*(bar['close']-self.pullback['reference'])<=0:
+                state = 'recovery' if sign==1 else 'downward_recovery'
+                reason = 'recovering_toward_prior_extreme'
+            else:
+                state = 'advance' if sign==1 else 'decline'
+                reason = 'prior_extreme_reclaimed' if self.pullback else 'directional_close'
+                self.pullback = None
+            if self.extreme is None or sign*(bar['close']-self.extreme)>0:
+                self.extreme = bar['close']
+        shape = morphology(bar,self.last,baseline,self.settings)
         alpha = 1-2**(-1/self.settings.body_half_life)
         self.body = abs(bar['close']-bar['open']) if self.body is None else self.body+alpha*(abs(bar['close']-bar['open'])-self.body)
         self.ema_fast = bar['close'] if self.ema_fast is None else self.ema_fast+2/13*(bar['close']-self.ema_fast)
@@ -170,20 +164,25 @@ class StructuralDetector:
         self.signal = macd if self.signal is None else self.signal+2/10*(macd-self.signal)
         self.sequence += 1
         histogram_bps = (macd-self.signal)/bar['close']*10000
-        active = self.sequence>=26 and histogram_bps>=self.settings.macd_gap_bps
+        episode_direction = (1 if histogram_bps>=self.settings.macd_gap_bps else -1 if histogram_bps<=-self.settings.macd_gap_bps else 0) if self.sequence>=26 else 0
+        active = episode_direction!=0
         if not active:
             self.episode = None
-        elif self.episode is None:
+        elif self.episode is None or episode_direction!=self.episode_direction:
             self.episode = end
+        self.episode_direction = episode_direction
         result = dict(contract=VERSION, sequence=self.sequence, time=start, effective_at=end,
-            state=state, reason=reason, local_events=local_events, global_events=global_events,
-            global_context=('above_broken_resistance' if held else 'between_levels') if global_status=='available' else 'unavailable',
+            state=state, reason=reason, direction=('bullish' if self.trend==1 else 'bearish' if self.trend==-1 else 'unknown'),
+            local_bias=local_bias, global_bias=global_bias, candle_shape=shape,
+            expired_interactions=dict(local=local_expired,global_count=global_expired), local_events=local_events, global_events=global_events,
+            global_context=('mixed_breaks' if held and below else 'above_broken_resistance' if held else 'below_broken_support' if below else 'between_levels') if global_status=='available' else 'unavailable',
             global_status=global_status, local_swings=local_before, confirmed_swings=new_local,
             broken_resistance=compact(max(held, key=lambda l:l['upper'])) if held else None,
+            broken_support=compact(min(below,key=lambda l:l['lower'])) if below else None,
             body_baseline=baseline, pullback=deepcopy(self.pullback),
             developing_swings={side:dict(price=forming[side][0], pivot_at=self.close_times[forming[side][1]], confirmed=False)
                 for side in ('high', 'low') if forming.get(side)},
-            macd=dict(histogram_bps=histogram_bps, warmup=self.sequence<26, active=active, episode_started_at=self.episode),
+            macd=dict(histogram_bps=histogram_bps, warmup=self.sequence<26, active=active, direction=episode_direction, episode_started_at=self.episode),
             candle=dict(bar), gap_before=bool(self.last and start>self.last['end']))
         self.last = dict(bar)
         self.global_levels = deepcopy(levels or []) if global_status=='available' else []

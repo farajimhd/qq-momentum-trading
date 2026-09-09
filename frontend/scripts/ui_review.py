@@ -2497,11 +2497,8 @@ def capture(args: argparse.Namespace) -> int:
                             const {default:ReactDOM}=await import('/node_modules/.vite/deps/react-dom_client.js');const {createRoot}=ReactDOM;
                             const {ChartPanel}=await import('/src/app/components/ChartPanel.tsx');
                             const host=document.createElement('div');host.id='structural-indicator-fixture';
-                            host.className='app-shell';host.style.cssText='position:fixed;inset:0;z-index:9999;background:var(--surface);height:var(--app-zoomed-viewport-height);';
+                            host.className='app-shell';host.style.cssText='position:fixed;inset:0;z-index:100;background:var(--surface);height:var(--app-zoomed-viewport-height);';
                             document.body.append(host);
-                            window.__detectorPaint=[];
-                            const fill=CanvasRenderingContext2D.prototype.fillText;
-                            CanvasRenderingContext2D.prototype.fillText=function(text,...args){window.__detectorPaint.push(String(text));return fill.call(this,text,...args);};
                             localStorage.removeItem('review.structural.structural-detector');
                             const payload={candles:rows.map(r=>({...r.candle,endTime:r.effective_at})),markers:[],
                                 overlay_series:[],oscillator_series:[],price_zones:[],regions:[],volume:[]};
@@ -2515,19 +2512,32 @@ def capture(args: argparse.Namespace) -> int:
                         panel.get_by_role('button', name=re.compile(r'^Indicators(?:\s+\d+)?$')).click()
                         page.get_by_role('checkbox', name='Structural detector', exact=True).check()
                         panel.get_by_role('button', name=re.compile(r'^Indicators(?:\s+\d+)?$')).click()
-                        page.wait_for_function("window.__detectorPaint.some(t=>/^(A|PB|REC|C|D)(·|$)/.test(t))", timeout=args.timeout_ms)
+                        page.wait_for_function("document.querySelectorAll('.structural-label-layer .structural-candle-label').length>0", timeout=args.timeout_ms)
                         panel.get_by_role('button', name='Structural detector', exact=True).click()
-                        page.evaluate('window.__detectorPaint=[]')
-                        page.wait_for_timeout(700)
-                        if page.evaluate("window.__detectorPaint.some(t=>/^(A|PB|REC|C|D)(·|$)/.test(t))"):
-                            raise RuntimeError('Disabled structural labels still render')
+                        page.wait_for_function("document.querySelectorAll('.structural-label-layer .structural-candle-label').length===0", timeout=args.timeout_ms)
                         panel.get_by_role('button', name='Structural detector', exact=True).click()
-                        page.wait_for_function("window.__detectorPaint.some(t=>/^(A|PB|REC|C|D)(·|$)/.test(t))", timeout=args.timeout_ms)
+                        page.wait_for_function("document.querySelectorAll('.structural-label-layer .structural-candle-label').length>0", timeout=args.timeout_ms)
+                        page.wait_for_timeout(300)
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__labels.png')),full_page=True)
-                        panel.get_by_role('button', name='Structural detector details and settings').click()
-                        page.get_by_role('slider', name='Inspect detector candle').focus()
-                        page.get_by_role('slider', name='Inspect detector candle').press('Home')
-                        page.get_by_role('slider', name='Inspect detector candle').press('ArrowRight')
+                        panel.get_by_role('button', name='Structural detector settings', exact=True).click()
+                        dialog=page.get_by_role('dialog',name='Structural detector settings',exact=True)
+                        dialog.get_by_role('checkbox',name='Row 1: Direction',exact=True).check()
+                        dialog.get_by_role('checkbox',name='Row 2: Local interactions',exact=True).uncheck()
+                        dialog.get_by_role('button',name='Add row',exact=True).click()
+                        dialog.get_by_role('checkbox',name='Row 5: MACD context',exact=True).check()
+                        layout=page.evaluate("JSON.parse(localStorage.getItem('review.structural.structural-detector')).labelRows")
+                        if layout[0]!=['state','direction'] or layout[1] or layout[4]!=['macd']:
+                            raise RuntimeError('Label row selections did not persist')
+                        dialog.get_by_role('button',name='Done',exact=True).click()
+                        page.wait_for_function("[...document.querySelectorAll('.structural-label-layer .structural-candle-label')].some(n=>n.textContent.includes('MACD'))")
+                        page.mouse.move(500,350)
+                        if page.get_by_role('dialog',name='Structural detector settings',exact=True).count():
+                            raise RuntimeError('Hover opened detector inspection')
+                        panel.get_by_role('button',name='Structural detector settings',exact=True).click()
+                        if not dialog.get_by_role('checkbox',name='Row 5: MACD context',exact=True).is_checked():
+                            raise RuntimeError('Reopened configuration lost row settings')
+                        dialog.get_by_role('button',name='Reset label rows',exact=True).click()
+                        dialog.get_by_role('checkbox',name='Row 1: Movement',exact=True).focus()
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__detector-details.png')),full_page=True)
                         if page.get_by_text('Chart renderer stopped', exact=True).count():
                             raise RuntimeError('Independent structural chart failed')

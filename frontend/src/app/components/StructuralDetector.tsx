@@ -1,39 +1,62 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { IChartApi, ISeriesApi, ISeriesPrimitive, IPrimitivePaneView, Time } from 'lightweight-charts';
 import { api } from '../../api/client';
-import { HindsightDetails } from './HindsightPositions';
+import { createRoot, type Root } from 'react-dom/client';
+import { Modal } from './Modal';
+import { Button } from './Button';
+// The shared Modal styles currently live in the table stylesheet. Indicators
+// must also work on chart-only pages where no table has loaded that stylesheet.
+import './DataTable.css';
 import './structuralDetector.css';
 
 type Candle = { time: number; endTime?: number; open: number; high: number; low: number; close: number };
 type Event = { state: string; level: Record<string, unknown> };
 export type StructuralState = { time: number; effective_at: number; state: string; reason: string;
   global_context: string; global_status: string; local_events: Event[]; global_events: Event[];
+  direction?: string; local_bias?: string; global_bias?: string; candle_shape?: { tags: string[] };
   body_baseline: number; candle: Candle; local_swings: Record<string, unknown>[];
   confirmed_swings: Record<string, unknown>[]; developing_swings?: Record<string, unknown>;
-  macd: { histogram_bps: number; warmup: boolean; active?: boolean; episode_started_at?: number | null }; gap_before: boolean };
+  macd: { histogram_bps: number; warmup: boolean; active?: boolean; direction?: number; episode_started_at?: number | null }; gap_before: boolean };
 type Result = { rows: StructuralState[]; pending_count: number; global_available_count: number;
   global_book: { id: string; fingerprint: string } | null; context_start: number | null };
 const defaults = { reversal_bps: 50, volatility_multiple: 2, body_half_life: 5,
-  consolidation_body_multiple: .25, proximity_body_multiple: 1, macd_gap_bps: 25 };
+  consolidation_body_multiple: .25, proximity_body_multiple: 1, macd_gap_bps: 25, tail_range_fraction: .5, indecision_body_fraction: .2, expansion_body_multiple: 1.5, expansion_body_fraction: .65 };
 const fields = [ ['reversal_bps', 'Minimum local reversal (bps)', 1, 1000, 1],
   ['volatility_multiple', 'Local volatility multiple', .1, 10, .1],
   ['body_half_life', 'Body average half-life (candles)', 1, 100, 1],
   ['consolidation_body_multiple', 'Consolidation body multiple', .01, 2, .05],
-  ['proximity_body_multiple', 'Resistance proximity body multiple', .1, 10, .1],
-  ['macd_gap_bps', 'MACD episode gap (bps; context only)', .1, 1000, 1] ] as const;
-const codes: Record<string, string> = { advance: 'A', pullback: 'PB', recovery: 'REC', consolidation: 'C', decline: 'D', unknown: '?' };
-const eventCodes: Record<string, string> = { resistance_forming: 'RF', resistance_confirmed: 'R',
-  higher_low_confirmed: 'HL', swing_low_confirmed: 'L', breakout: 'BO', rejection: 'REJ', support_failure: 'SF',
-  testing_resistance: 'TR', testing_support: 'TS', approaching_resistance: 'AR' };
-const priority = ['support_failure', 'rejection', 'breakout', 'resistance_forming', 'resistance_confirmed', 'higher_low_confirmed', 'swing_low_confirmed', 'testing_resistance', 'testing_support', 'approaching_resistance'];
-export const structuralLabel = (row: StructuralState) => {
-  const events = [...row.local_events, ...row.global_events];
-  const event = priority.find(state => events.some(e => e.state === state));
-  return (codes[row.state] || '?') + (event ? '·' + eventCodes[event] : '');
-};
+  ['proximity_body_multiple', 'Level proximity body multiple', .1, 10, .1],
+  ['macd_gap_bps', 'MACD episode gap (bps; context only)', .1, 1000, 1],
+  ['tail_range_fraction', 'Tail minimum fraction of range', .1, 1, .05],
+  ['indecision_body_fraction', 'Indecision maximum body fraction', .01, 1, .05],
+  ['expansion_body_multiple', 'Expansion recent-body multiple', .1, 10, .1],
+  ['expansion_body_fraction', 'Expansion minimum body fraction', .1, 1, .05] ] as const;
 const human = (s: string) => s.replaceAll('_', ' ');
-const price = (value: unknown) => typeof value === 'number' ? value.toLocaleString('en-US', { maximumFractionDigits: 4 }) : '—';
-const clock = (t: number) => new Date(t*1000).toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false });
+const labelFields = { state: 'Movement', direction: 'Direction', local: 'Local interactions', global: 'Global interactions',
+  localBias: 'Local swing trend', globalBias: 'Global swing trend', shape: 'Candle shape', macd: 'MACD context', body: 'Recent body size', source: 'Global availability' };
+type LabelField = keyof typeof labelFields;
+export type LabelRows = LabelField[][];
+const defaultRows: LabelRows = [['state'], ['local'], ['global'], ['shape']];
+const eventText = (events: Event[]) => [...new Set(events.map(e => human(e.state)))].join(' · ') || '·';
+export function structuralLabelRows(row: StructuralState, rows: LabelRows) {
+  const values: Record<LabelField,string> = { state: human(row.state), direction: row.direction || 'unknown',
+    local: 'L: '+eventText(row.local_events), global: 'G: '+eventText(row.global_events),
+    localBias: 'Local: '+(row.local_bias || 'unknown'), globalBias: 'Global: '+(row.global_bias || 'unknown'),
+    shape: (row.candle_shape?.tags || ['unavailable']).map(human).join(' · '),
+    macd: row.macd.warmup ? 'MACD warming up' : `MACD ${row.macd.histogram_bps.toFixed(1)} bps`,
+    body: `Body ${row.body_baseline.toFixed(4)}`, source: human(row.global_status) };
+  return rows.filter(fields => fields.length).map(fields => fields.map(field => values[field]).join(' · '));
+}
+function readRows(value: unknown): LabelRows {
+  return Array.isArray(value) ? value.slice(0,10).map(row => Array.isArray(row) ? row.filter((key): key is LabelField => typeof key==='string' && key in labelFields) : []) : defaultRows;
+}
+/** The same label component is used on candles and in the settings preview. */
+export function StructuralCandleLabel({ row, layout }: { row: StructuralState; layout: LabelRows }) {
+  if (!layout.some(fields => fields.length)) return null;
+  return <div className="structural-candle-label" data-direction={row.direction} data-candle-time={row.time}>
+    {structuralLabelRows(row,layout).map((text,index) => <div className="structural-candle-label-row" key={index}>{text}</div>)}
+  </div>;
+}
 const EMPTY: StructuralState[] = [];
 function duration(timeframe: string) {
   if (timeframe === '1M' || timeframe === '1Y') return 86400;
@@ -49,18 +72,17 @@ function candleEnd(candle: Candle, timeframe: string, seconds: number) {
 }
 
 export function useStructuralDetector(ticker: string, timeframe: string, candles: Candle[], asOf: string | undefined, storageKey: string, splitAdjusted: boolean) {
-  const [stored, setStored] = useState<{ key: string; enabled: boolean; settings: typeof defaults }>({ key: '', enabled: false, settings: defaults });
+  const [stored, setStored] = useState<{ key: string; enabled: boolean; settings: typeof defaults; labelRows: LabelRows }>({ key: '', enabled: false, settings: defaults, labelRows: defaultRows });
   useEffect(() => {
     try {
       const value = JSON.parse(localStorage.getItem(storageKey+'.structural-detector') || '{}');
-      setStored({ key: storageKey, enabled: value.enabled === true, settings: { ...defaults, ...value.settings } });
-    } catch { setStored({ key: storageKey, enabled: false, settings: defaults }); }
+      setStored({ key: storageKey, enabled: value.enabled === true, settings: { ...defaults, ...value.settings }, labelRows: readRows(value.labelRows) });
+    } catch { setStored({ key: storageKey, enabled: false, settings: defaults, labelRows: defaultRows }); }
   }, [storageKey]);
   const enabled = stored.key === storageKey && stored.enabled;
   const change = (next: typeof stored) => { setStored(next); localStorage.setItem(storageKey+'.structural-detector', JSON.stringify(next)); };
   const [state, setState] = useState<{ identity: string; result?: Result; error?: string; busy?: boolean }>({ identity: '' });
-  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
-  const [selectedTime, setSelectedTime] = useState<number | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const seconds = duration(timeframe);
   const rawCutoff = asOf && Number.isFinite(Date.parse(asOf)) ? Math.min(Date.now(), Date.parse(asOf))/1000 : Date.now()/1000;
   const cutoff = Math.min(rawCutoff, candles.length ? candleEnd(candles.at(-1)!, timeframe, seconds) : rawCutoff);
@@ -97,78 +119,106 @@ export function useStructuralDetector(ticker: string, timeframe: string, candles
     const times = new Set(closed.map(c => c.time));
     return enabled ? (result?.rows || EMPTY).filter(row => row.effective_at <= cutoff && times.has(row.time)) : EMPTY;
   }, [enabled, result, cutoff, closed]);
-  const rowMap = useMemo(() => new Map(rows.map(row => [row.time, row])), [rows]);
-  const selected = selectedTime == null ? rows.at(-1) : rowMap.get(selectedTime) || rows.at(-1);
   const status = !seconds ? 'Unsupported candle duration' : state.error || (state.busy ? 'Updating candle states…' :
     result ? `${rows.length} closed candles · ${candles.length-closed.length} pending · V5 context ${result.global_available_count}/${rows.length}` : 'Enable to classify loaded candles');
   const checkbox = <label className="chart-setting-row structural-detector-option"><span>Structural detector <small>Local swings + global V5 context · every closed candle</small></span>
     <input type="checkbox" aria-label="Structural detector" checked={enabled} onChange={e => change({ ...stored, key: storageKey, enabled: e.target.checked })} /></label>;
   const controls = <>
     <button type="button" className="toolbar-button structural-detector-toolbar" aria-pressed={enabled} onClick={() => change({ ...stored, key: storageKey, enabled: !enabled })}>Structural detector</button>
-    <button type="button" className="toolbar-button structural-detector-toolbar" aria-label="Structural detector details and settings" onClick={e => setAnchor(anchor ? null : e.currentTarget)}>States & settings</button>
-    {enabled ? <span className="chart-data-status" role="status" title={status}>{state.error ? 'Detector unavailable' : state.busy ? 'Detecting…' : `${rows.length} states${result?.global_available_count ? ' · V5' : ' · global unavailable'}`}</span> : null}
-    {anchor ? <HindsightDetails anchor={anchor} onClose={() => setAnchor(null)} title="Structural detector">
-      {checkbox}<p role="status">{status}</p>
-      <p className="chart-settings-help">A advance · PB pullback · REC recovery · C consolidation · D decline. RF forming resistance · R confirmed resistance · BO breakout · REJ rejection · SF support failure. Hover a candle to inspect it. ET times.</p>
-      {result?.context_start ? <p className="chart-settings-help">Context begins {clock(result.context_start)}. Loading earlier candles or changing settings recalculates this indicator; future candles do not revise earlier decisions.</p> : null}
-      {result?.global_book ? <p className="chart-settings-help">V5 book {result.global_book.id}</p> : null}
-      {selected ? <>
-        <label className="chart-setting-row">Inspect closed candle <input aria-label="Inspect detector candle" type="range" min={0} max={Math.max(0, rows.length-1)} value={rows.indexOf(selected)} onChange={e => setSelectedTime(rows[e.target.valueAsNumber].time)} /></label>
-        <p>{clock(selected.time)} · {structuralLabel(selected)}</p>
-        <div className="structural-detector-evidence"><strong>{human(selected.state)} · {human(selected.global_context)}</strong><p>{human(selected.reason)}</p>
-          <p>Known at {clock(selected.effective_at)} · {human(selected.global_status)}</p>
-          {[...selected.local_events.map(e => ({ ...e, scope: 'Local' })), ...selected.global_events.map(e => ({ ...e, scope: 'Global' }))].map((e, i) =>
-            <p key={i}>{e.scope}: {human(e.state)} · {price(e.level.lower ?? e.level.price)}{e.level.upper != null ? '–'+price(e.level.upper) : ''}</p>)}
-          <p>Recent body {selected.body_baseline.toFixed(4)} · MACD gap {selected.macd.histogram_bps.toFixed(1)} bps{selected.macd.warmup ? ' (warming up)' : ''}{selected.gap_before ? ' · gap before this candle' : ''}</p>
-          <p>MACD context: {selected.macd.warmup ? 'insufficient history' : selected.macd.active ? 'active episode since '+clock(selected.macd.episode_started_at!) : 'outside episode'}</p>
-          <details><summary>Swing evidence</summary><pre>{JSON.stringify({ developing: selected.developing_swings, prior_local_swings: selected.local_swings, confirmed_this_close: selected.confirmed_swings }, null, 2)}</pre></details>
-        </div>
-      </> : null}
-      <details><summary>Detector parameters</summary>{fields.map(([key, label, min, max, step]) => <label className="chart-setting-row" key={key}>{label}<input aria-label={label} type="number" min={min} max={max} step={step} value={stored.settings[key]} onChange={e => {
-        const value = e.target.valueAsNumber; if (Number.isFinite(value) && value >= min && value <= max) change({ ...stored, settings: { ...stored.settings, [key]: value } });
-      }} /></label>)}</details>
-    </HindsightDetails> : null}
+    <button type="button" className="toolbar-button structural-detector-toolbar" aria-label="Structural detector settings" onClick={() => setSettingsOpen(true)}>Detector settings</button>
+    {enabled ? <span className="chart-data-status" role="status">{state.error ? 'Detector unavailable' : state.busy ? 'Detecting·' : `${rows.length} states${result?.global_available_count ? ' · V5' : ' · global unavailable'}`}</span> : null}
+    {settingsOpen ? <Modal className="structural-detector-settings" title="Structural detector settings" onClose={() => setSettingsOpen(false)}>
+      <div className="structural-detector-settings-body">
+        {checkbox}<p className="chart-settings-help" role="status">{status}</p>
+        <section className="chart-settings-section"><h3>Candle labels</h3>
+          <p className="chart-settings-help">Choose the contents of each row. Labels appear below completed candles without hovering. Zoom in to separate dense labels. Empty rows are hidden.</p>
+          {stored.labelRows.map((row,index) => <fieldset className="structural-label-row-config" key={index}>
+            <legend>Row {index+1}</legend>
+            <div className="structural-label-fields">{Object.entries(labelFields).map(([key,label]) => <label className="chart-setting-toggle" key={key}>
+              <input type="checkbox" aria-label={`Row ${index+1}: ${label}`} checked={row.includes(key as LabelField)} onChange={e => change({ ...stored,
+                labelRows: stored.labelRows.map((current,i) => i!==index ? current : e.target.checked ? [...current,key as LabelField] : current.filter(v => v!==key)) })} />{label}
+            </label>)}</div>
+            <Button variant="ghost" onClick={() => change({ ...stored,labelRows: stored.labelRows.filter((_,i) => i!==index) })}>Remove row {index+1}</Button>
+          </fieldset>)}
+          <div className="structural-label-actions"><Button disabled={stored.labelRows.length>=10} onClick={() => change({ ...stored,labelRows: [...stored.labelRows,[]] })}>Add row</Button>
+            <Button variant="ghost" onClick={() => change({ ...stored,labelRows: defaultRows })}>Reset label rows</Button></div>
+          {rows.length ? <div className="structural-label-preview"><span>Preview · latest completed candle</span><StructuralCandleLabel row={rows.at(-1)!} layout={stored.labelRows} /></div> : null}
+        </section>
+        <section className="chart-settings-section"><h3>Detection</h3>
+          <p className="chart-settings-help">Local swings and available global V5 structure are evaluated at every close, in both directions. Candle shapes are evidence, not automatic reversal signals. Changes recalculate the loaded history.</p>
+          {fields.map(([key,label,min,max,step]) => <label className="chart-setting-row" key={key}>{label}<input aria-label={label} type="number" min={min} max={max} step={step} value={stored.settings[key]} onChange={e => {
+            const value=e.target.valueAsNumber; if (Number.isFinite(value) && value>=min && value<=max) change({ ...stored,settings: { ...stored.settings,[key]:value } });
+          }} /></label>)}
+        </section>
+      </div>
+      <div className="structural-label-actions"><Button variant="primary" onClick={() => setSettingsOpen(false)}>Done</Button></div>
+    </Modal> : null}
   </>;
-  return { rows, checkbox, controls, enabled, status, inspect: setSelectedTime };
+  return { rows, checkbox, controls, enabled, status, labelRows: stored.labelRows };
 }
 
-/** Independent paint layer: labels cannot be hidden by trade marker selection. */
+/** Chart primitive supplies coordinates; React owns the reusable label component. */
 export class StructuralDetectorPrimitive implements ISeriesPrimitive<Time> {
   private series: ISeriesApi<'Candlestick'> | null = null;
   private chart: IChartApi | null = null;
   private update?: () => void;
   private rows: StructuralState[] = EMPTY;
-  private coordinate: (t: number) => number | null = () => null;
-  private colors: Record<string, string> = {};
-  private background = '';
+  private layout: LabelRows = defaultRows;
+  private coordinate: (t:number) => number | null = () => null;
+  private host?: HTMLDivElement;
+  private root?: Root;
+  private frame = 0;
   private readonly view: IPrimitivePaneView = { zOrder: () => 'top', renderer: () => ({ draw: target => {
-    if (!this.series || !this.chart) return;
-    const range = this.chart.timeScale().getVisibleRange();
-    target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
-      ctx.save(); ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      let right = -Infinity;
-      for (const row of this.rows) {
-        if (range && typeof range.from === 'number' && row.time < range.from) continue;
-        if (range && typeof range.to === 'number' && row.time > range.to) break;
-        const x = this.coordinate(row.time), priceY = this.series!.priceToCoordinate(row.candle.low);
-        if (x == null || priceY == null || x < 0 || x > mediaSize.width) continue;
-        const label = structuralLabel(row), width = ctx.measureText(label).width+4;
-        if (x-width/2 < right+2) continue;
-        const y = Math.min(mediaSize.height-14, Math.max(0, priceY+8));
-        ctx.fillStyle = this.background; ctx.fillRect(x-width/2, y-1, width, 13);
-        ctx.fillStyle = this.colors[row.state] || this.colors.unknown;
-        ctx.fillText(label, x, y); right = x+width/2;
+    target.useMediaCoordinateSpace(({mediaSize}) => {
+      if (!this.series || !this.chart) return;
+      if (this.host) {
+        this.host.style.left=`${this.chart.priceScale('left').width()}px`;
+        this.host.style.right=`${this.chart.priceScale('right').width()}px`;
+        this.host.style.height=`${mediaSize.height}px`;
       }
-      ctx.restore();
+      const range=this.chart.timeScale().getVisibleRange();
+      const labels: { row: StructuralState; x:number; y:number }[]=[];
+      for (const row of this.rows) {
+        if (range && typeof range.from==='number' && row.time<range.from) continue;
+        if (range && typeof range.to==='number' && row.time>range.to) break;
+        const x=this.coordinate(row.time), y=this.series.priceToCoordinate(row.candle.low);
+        if (x!=null && y!=null && x>=0 && x<=mediaSize.width && y>=0 && y<mediaSize.height) labels.push({row,x,y:y+8});
+      }
+      cancelAnimationFrame(this.frame);
+      this.frame=requestAnimationFrame(() => {
+        this.root?.render(<>{labels.map(({row,x,y}) => <div className="structural-label-anchor" key={row.time} style={{left:x,top:y}}><StructuralCandleLabel row={row} layout={this.layout} /></div>)}</>);
+        // React commits before the next frame. Cull overlapping cards only;
+        // all candle decisions remain retained and become visible on zoom.
+        this.frame=requestAnimationFrame(() => {
+          if (!this.host) return;
+          const width=this.host.clientWidth;
+          // Batch layout reads before writes; dragging must not force one
+          // browser layout per candle. All coordinates honor the app zoom.
+          const boxes=Array.from(this.host.querySelectorAll<HTMLElement>('.structural-label-anchor'),node =>
+            ({node,width:node.offsetWidth,height:node.offsetHeight,x:parseFloat(node.style.left),y:parseFloat(node.style.top)}));
+          const occupied: {left:number;right:number;top:number;bottom:number}[]=[];
+          boxes.forEach(box => {
+            const x=Math.max(box.width/2,Math.min(width-box.width/2,box.x));
+            const rect={left:x-box.width/2,right:x+box.width/2,top:box.y,bottom:box.y+box.height};
+            const overlap=occupied.some(r => rect.left<r.right+2 && rect.right>r.left-2 && rect.top<r.bottom+2 && rect.bottom>r.top-2);
+            box.node.style.left=`${x}px`;
+            box.node.style.visibility=overlap?'hidden':'visible';
+            if (!overlap) occupied.push(rect);
+          });
+        });
+      });
     });
   } }) };
-  attached({ series, chart, requestUpdate }: Parameters<NonNullable<ISeriesPrimitive<Time>['attached']>>[0]) { this.series = series as ISeriesApi<'Candlestick'>; this.chart = chart; this.update = requestUpdate; }
-  detached() { this.series = null; this.chart = null; this.update = undefined; }
-  paneViews() { return [this.view]; }
-  setState(rows: StructuralState[], coordinate: (t: number) => number | null) {
-    this.rows = rows; this.coordinate = coordinate;
-    const css = getComputedStyle(document.documentElement), color = (name: string) => css.getPropertyValue(name).trim();
-    this.colors = { advance: color('--success'), pullback: color('--warning'), recovery: color('--primary'), decline: color('--danger'), consolidation: color('--text-muted'), unknown: color('--text-muted') };
-    this.background = color('--surface'); this.update?.();
+  attached({series,chart,requestUpdate}: Parameters<NonNullable<ISeriesPrimitive<Time>['attached']>>[0]) {
+    this.series=series as ISeriesApi<'Candlestick'>; this.chart=chart; this.update=requestUpdate;
+    this.host=document.createElement('div'); this.host.className='structural-label-layer';
+    chart.chartElement().appendChild(this.host); this.root=createRoot(this.host);
   }
+  detached() { cancelAnimationFrame(this.frame); this.root?.unmount(); this.host?.remove(); this.root=undefined; this.host=undefined; this.series=null; this.chart=null; this.update=undefined; }
+  paneViews() { return [this.view]; }
+  autoscaleInfo() {
+    if (!this.rows.length || !this.layout.some(fields => fields.length)) return null;
+    return { priceRange: null, margins: { above: 0, below: Math.min(180,this.layout.filter(fields=>fields.length).length*28) } };
+  }
+  setState(rows:StructuralState[],coordinate:(t:number)=>number|null,layout:LabelRows) { this.rows=rows; this.coordinate=coordinate; this.layout=layout; this.update?.(); }
 }
