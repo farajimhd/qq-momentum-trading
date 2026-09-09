@@ -46,8 +46,9 @@ async def run(args):
                 if opened is not None and t > opened:
                     intervals.append((opened,t,direction))
                 opened, direction = (t if new else None), new
-    if opened is not None and opened < timestamp(run['session_end']):
-        intervals.append((opened,timestamp(run['session_end']),direction))
+    label_end = min(timestamp(run['session_end']), timestamp(audit.get('frame_evaluation_end', run['session_end'])))
+    if opened is not None and opened < label_end:
+        intervals.append((opened,label_end,direction))
     benchmark = labels.result(intervals)
     excursions = []
     for p in results['position_lifecycles']:
@@ -60,6 +61,7 @@ async def run(args):
             mae_bps=(min(prices)/entry-1)*10000 if prices else None))
     save(args.output, dict(hindsight_only=True, run_id=run['run_id'], symbol=audit['symbol'],
         requested_start=run['requested_start'], session_end=run['session_end'],
+        label_coverage_end=datetime.fromtimestamp(label_end, datetime.fromisoformat(run['session_end']).tzinfo).isoformat(),
         objective='Price-only MACD direction episode extrema; not executable profit',
         source_revision=source.source_revision, benchmark=benchmark, excursions=excursions,
         eligible_trade_times=list(labels.times), eligible_trade_prices=list(labels.prices)))

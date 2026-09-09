@@ -45,7 +45,9 @@ def check_completed_range(gate, frames, session_start, requested):
 
 
 def audit(results, runtime_root):
-    from src.backend.replay_run_service import _prepared_frame_cache_path, _STRATEGY_INDICATOR_FIELDS
+    from src.backend.replay_run_service import (
+        _prepared_frame_cache_path, _STRATEGY_INDICATOR_FIELDS,
+        _definition_from_manifest, _strategy_evaluation_end)
     from src.trading_runtime.journal_evidence import decode_evidence
     run = results['run']
     positions = sorted(results['position_lifecycles'], key=lambda p: p['opened_at'])
@@ -56,9 +58,13 @@ def audit(results, runtime_root):
     source = dict(run['data_authority']['sources'].get('prepared_strategy_frame_source') or {})
     source['token'] = source.get('revision_token', '')
     ny = ZoneInfo('America/New_York')
+    run_dir = runtime_root / run['run_id']
+    definition = _definition_from_manifest(json.loads((run_dir/'manifest.json').read_text()), run_dir=run_dir)
+    evaluation_end = _strategy_evaluation_end(definition.configuration_revision['payload'],
+        session_start=definition.session_start, session_end=definition.session_end)
     cache = _prepared_frame_cache_path(runtime_root,
         start=datetime.fromisoformat(run['session_start']).astimezone(ny),
-        end=datetime.fromisoformat(run['session_end']).astimezone(ny),
+        end=evaluation_end,
         requests=[(symbol, '1s')], indicator_columns=tuple(sorted(_STRATEGY_INDICATOR_FIELDS)),
         source_revision=source)
     frames = []
@@ -155,7 +161,8 @@ def audit(results, runtime_root):
         recorded_wait_reasons=wait_reasons,
         exit_reasons=dict(Counter(r['exit_reason'] for r in rows)))
     return dict(schema_version=1, run_id=run['run_id'], symbol=symbol,
-        frame_cache=str(cache), data_authority=run['data_authority'], summary=summary, positions=rows,
+        frame_cache=str(cache), frame_evaluation_end=evaluation_end.isoformat(),
+        data_authority=run['data_authority'], summary=summary, positions=rows,
         limitations=['Excursions omit partial entry and exit candles.',
                       'Closed-equity drawdown excludes unrealized intratrade drawdown.',
                       'Next-minute high is hindsight only; it is not an executable exit.'])
