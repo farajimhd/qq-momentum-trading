@@ -29,7 +29,7 @@ def test_equity_slices_preserve_carried_inventory_and_boundary_fees():
 def test_equity_never_uses_future_mark_for_held_inventory():
     base = stamp('2026-01-01T00:00:00Z')
     executions = [fill('entry', 1, 'BUY', 100, 10)]
-    with pytest.raises(ValueError, match='causal trade mark'):
+    with pytest.raises(ValueError, match='causal price mark'):
         measure(executions, [base+2], [12], base, base+3)
     report = measure(executions, [base], [10], base, base+30)
     assert report['closing_mark_age_seconds'] == 30

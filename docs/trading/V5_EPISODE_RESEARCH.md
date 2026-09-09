@@ -89,6 +89,11 @@ the limiting portfolio constraints; it never silently increases risk limits.
 - `scripts/benchmark_strategy_moves.py` reads canonical eligible trades and
   produces offline MACD episode extrema and trade-price excursions. It does not
   bypass liquidity, spread or execution constraints in strategy evaluation.
+- `scripts/benchmark_strategy_quotes.py` reads the same canonical quote authority
+  for offline contemporaneous bid marks, recording invalid/crossed quote counts
+  and zero displayed sizes. `measure_strategy_equity.py --mark-source bid` uses
+  those marks to compare spread-sensitive inventory drawdown. This is top-of-book
+  valuation, not a claim that all inventory can be liquidated at that bid.
 - `scripts/render_strategy_audit.py` renders actual fills and effective protection
   paths against the eligible-price stream, including an offline large-move inset.
 - `scripts/summarize_strategy_research.py` consolidates every experiment and
