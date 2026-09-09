@@ -18,6 +18,7 @@ import json
 import time
 
 import prototype_structure_book_clickhouse as P
+from swing_book_paths import WORKSTATION_ENV_FILE, validate_runtime_root
 from build_structure_book_clickhouse import canonical_splits
 from src.backend.swing_book_source import read_session, session_bounds, NY, HISTORICAL_POLICY
 from src.market_engine.swing_book import INTRADAY_VERSION as VERSION, SwingBook, project, PRICE_STATE_FIELDS
@@ -64,11 +65,7 @@ def run(ticker, args):
         from src.market_engine.swing_book_v6 import VERSION as version, StreamingSwingBookV6, project_survivor
         engine_type=StreamingSwingBookV6
         project_level=project_survivor
-    root = args.runtime.resolve()
-    if not root.is_relative_to(Path(r'D:\TradingML\runtimes')):
-        raise ValueError('Runtime must be under D:\\TradingML\\runtimes')
-    if not Path(r'D:\TradingML\runtimes').is_dir():
-        raise ValueError('Required runtime root unavailable')
+    root = validate_runtime_root(args.runtime)
     folder = root / ticker.lower()
     folder.mkdir(parents=True, exist_ok=True)
     client = P.Client(args.env_file, args.threads)
@@ -206,7 +203,7 @@ def main():
     parser.add_argument('--end',default=date.today().isoformat())
     parser.add_argument('--runtime',type=Path,required=True)
     parser.add_argument('--threads',type=int,default=4)
-    parser.add_argument('--env-file',type=Path,default=Path(r'\\DESKTOP-SAAI85T\Workstation-D\TradingML\secrets\.env'))
+    parser.add_argument('--env-file',type=Path,default=WORKSTATION_ENV_FILE)
     args = parser.parse_args()
     if len(set(args.tickers))!=len(args.tickers) or len(args.tickers)>2 or not 1<=args.threads<=8:
         parser.error('Use at most two unique tickers and 1..8 ClickHouse threads')

@@ -4,14 +4,22 @@ Run `scripts/build_swing_book_campaign.py` from the repository on the execution
 host. It builds V6 directly from canonical seconds, with selected daily survivors
 as the only carry. It does not create a V4 candidate history or a V5 conversion.
 
-On the workstation, use its synchronized checkout at
-`D:\TradingML\codes\quant-research-workbench` and its configured Python environment.
-The default secret file is `D:\TradingML\secrets\.env`; override `--env-file` if
-needed. Source synchronization is separate from campaign execution.
+Run on the workstation using its configured Python environment and synchronized
+checkout under `\\DESKTOP-SAAI85T\Workstation-D\TradingML\codes` (the source root
+specified in `AGENTS.md`). Set the working directory to that checkout, containing
+`scripts/build_swing_book_campaign.py`. Source synchronization is separate from
+campaign execution and follows laptop validation, commit and push.
+The default secret file is
+`\\DESKTOP-SAAI85T\Workstation-D\TradingML\secrets\.env`.
+Both the controller and ticker workers accept the workstation runtime UNC root
+below. They also accept the documented laptop runtime root for explicit local
+validation. An unavailable requested root fails; there is no fallback.
+Using a workstation UNC destination does not move execution to the workstation:
+the Python command must run on that machine to use its CPUs and memory.
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
-$campaign='D:/TradingML/runtimes/structure-validation/v6-tradable-20250101-20260904'
+$campaign='\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\structure-validation\v6-tradable-20250101-20260904'
 python -B scripts/build_swing_book_campaign.py plan --runtime $campaign --start 2025-01-01 --end 2026-09-04 --workers 4 --threads 2
 python -B scripts/build_swing_book_campaign.py run --runtime $campaign
 ```

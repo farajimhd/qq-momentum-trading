@@ -10,6 +10,7 @@ from concurrent.futures import ProcessPoolExecutor
 from datetime import date
 import re
 from build_swing_structure_book import run
+from swing_book_paths import WORKSTATION_ENV_FILE
 
 
 def main():
@@ -17,7 +18,7 @@ def main():
     p.add_argument('--tickers',nargs='+',required=True)
     p.add_argument('--start',default='2025-01-01');p.add_argument('--end',default=date.today().isoformat())
     p.add_argument('--runtime',type=Path,required=True)
-    p.add_argument('--env-file',type=Path,default=Path(r'D:\TradingML\secrets\.env'))
+    p.add_argument('--env-file',type=Path,default=WORKSTATION_ENV_FILE)
     p.add_argument('--threads',type=int,default=2);p.add_argument('--workers',type=int,default=2)
     p.add_argument('--stop-file',type=Path,help='If this file exists, stop at the next session boundary and retain completed checkpoints')
     a=p.parse_args();a.survivor_only=True

@@ -20,8 +20,8 @@ from types import SimpleNamespace
 
 import prototype_structure_book_clickhouse as P
 from build_swing_structure_book import policy
+from swing_book_paths import WORKSTATION_ENV_FILE, validate_runtime_root
 
-RUNTIME=Path(r'D:\TradingML\runtimes')
 MAX_WORKERS=64
 MAX_QUERY_THREADS=128
 
@@ -32,6 +32,7 @@ def validate_concurrency(workers, threads):
 
 
 TRACKED=('scripts/build_swing_book_campaign.py','scripts/build_swing_structure_book.py',
+ 'scripts/swing_book_paths.py','src/runtime_paths.py',
  'src/market_engine/swing_book_v6.py','src/market_engine/swing_book.py',
  'src/market_engine/swing_structure.py','src/market_engine/swing_level_index.py',
  'src/market_engine/swing_book_v5.py','src/market_engine/resistance_selection.py',
@@ -238,14 +239,15 @@ def parser():
     p.add_argument('--progress-seconds',type=int,default=1);p.add_argument('--retry-failed',action='store_true')
     p.add_argument('--ticker')
     p.add_argument('--tickers',nargs='+',help='Explicit subset for a pilot; omitted means every published tradable ticker')
-    p.add_argument('--env-file',type=Path,default=Path(r'D:\TradingML\secrets\.env'))
+    p.add_argument('--env-file',type=Path,default=WORKSTATION_ENV_FILE)
     return p
 
 
 def main():
     p=parser()
-    args=p.parse_args();args.runtime=args.runtime.resolve()
-    if not RUNTIME.is_dir() or not args.runtime.is_relative_to(RUNTIME):p.error('Use the required D:/TradingML/runtimes root')
+    args=p.parse_args()
+    try:args.runtime=validate_runtime_root(args.runtime)
+    except ValueError as exc:p.error(str(exc))
     try:validate_concurrency(args.workers,args.threads)
     except ValueError as exc:p.error(str(exc))
     if args.progress_seconds<1 or date.fromisoformat(args.start)>date.fromisoformat(args.end):p.error('Invalid dates or progress interval')
