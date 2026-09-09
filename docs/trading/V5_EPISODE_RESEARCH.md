@@ -77,6 +77,9 @@ the limiting portfolio constraints; it never silently increases risk limits.
   paths against the eligible-price stream, including an offline large-move inset.
 - `scripts/summarize_strategy_research.py` consolidates every experiment and
   audited position without selecting a winner or treating active cases as zero returns.
+- `scripts/measure_strategy_move_capture.py` marks actual execution inventory
+  across offline large-move intervals. Its marked interval P&L is not an
+  executable liquidation return, and those hindsight extrema never enter strategy inputs.
 
 Use each script's `--help` for required inputs. All generated evidence belongs
 under the designated machine runtime root, never the source repository. Keep
