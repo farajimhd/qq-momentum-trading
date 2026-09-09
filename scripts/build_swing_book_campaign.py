@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import prototype_structure_book_clickhouse as P
 from build_swing_structure_book import policy
 from swing_book_paths import WORKSTATION_ENV_FILE, validate_runtime_root
+from swing_campaign_dashboard import Dashboard
 
 MAX_WORKERS=64
 MAX_QUERY_THREADS=128
@@ -41,6 +42,23 @@ TRACKED=('scripts/build_swing_book_campaign.py','scripts/build_swing_structure_b
 
 def code_hash():
     return P.digest({p:sha256((ROOT/p).read_bytes()).hexdigest() for p in TRACKED})
+
+
+def compatible_code_hash(value):
+    hashes={p:sha256((ROOT/p).read_bytes()).hexdigest() for p in TRACKED}
+    if value==P.digest(hashes):return True
+    # The df562ae5 controller has identical execution semantics; only its
+    # progress rendering changed. Every other pinned file must still match.
+    for controller in LEGACY_DISPLAY_CONTROLLERS:
+        hashes['scripts/build_swing_book_campaign.py']=controller
+        if value==P.digest(hashes):return True
+    return False
+
+
+LEGACY_DISPLAY_CONTROLLERS=(
+    '883be0cc9a43aa2087ff6f655b317a93dc7b33fc60d2b1e015d5524257b50e6b',
+    '7993266343d422a845743c49d1a733a7d48b79d163446cdf5596c7eb5a920e02',
+)
 
 
 def now():
@@ -149,7 +167,7 @@ def worker(args):
     import build_swing_structure_book as builder
     m=json.loads((args.runtime/'manifest.json').read_text())
     if m.get('schema_version')!=2 or m.get('book_version')!='causal-swing-closing-book-6':raise ValueError('Not a V6 campaign plan')
-    if m['code_hash']!=code_hash():raise ValueError('Worker code differs from frozen plan')
+    if not compatible_code_hash(m['code_hash']):raise ValueError('Worker code differs from frozen plan')
     row=next(r for r in m['rows'] if r['ticker']==args.ticker)
     progress=Path(row['progress_file']);progress.parent.mkdir(parents=True,exist_ok=True)
     started=time.perf_counter()
@@ -176,7 +194,7 @@ def run(args):
     root=args.runtime;m=json.loads((root/'manifest.json').read_text())
     validate_concurrency(m['workers'],m['threads'])
     if m.get('schema_version')!=2 or m.get('book_version')!='causal-swing-closing-book-6':raise ValueError('Not a V6 campaign plan')
-    if m['code_hash']!=code_hash():raise ValueError('Code changed since plan; create a new campaign directory')
+    if not compatible_code_hash(m['code_hash']):raise ValueError('Code changed since plan; create a new campaign directory')
     if P.digest(m['universe'])!=m['universe_hash']:raise ValueError('Frozen universe hash mismatch')
     # A crashed controller may leave a worker finishing its session. Never
     # reset its progress or start a duplicate writer while it still owns a lock.
@@ -188,6 +206,8 @@ def run(args):
     for row in m['rows']:
         if row['status'] in ('active','interrupted') or args.retry_failed and row['status']=='failed':row['status']='queued'
     active={};last=0.;stopping=False
+    dashboard=Dashboard(m)
+    dashboard.start()
     try:
         while active or any(r['status']=='queued' for r in m['rows']):
             stopping=stopping or (root/'STOP').exists()
@@ -201,6 +221,7 @@ def run(args):
                 process=subprocess.Popen(command,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
                 row.update(status='active',started_epoch=time.time(),pid=process.pid)
+                dashboard.bind(m)
                 active[process.pid]=(process,row,log);save(root,m)
             for pid,(process,row,log) in list(active.items()):
                 result=process.poll()
@@ -211,22 +232,22 @@ def run(args):
                 row.update(status=status,elapsed_seconds=time.time()-row['started_epoch'],exit_code=result,
                     reason=progress.get('error','' if status=='completed' else 'See worker.log'),database=progress.get('database'))
                 active.pop(pid);save(root,m)
-                print(f'{row["ticker"]}: {status} | {duration(row["elapsed_seconds"])} | {row["reason"]}',flush=True)
+                dashboard.event(f'{row["ticker"]}: {status} | {duration(row["elapsed_seconds"])} | {row["reason"]}')
             if time.monotonic()-last>=args.progress_seconds:
                 # State transitions already persist the manifest. A display
                 # heartbeat must not rewrite the frozen universe every second.
-                show(m);last=time.monotonic()
+                dashboard.update(m,stopping);last=time.monotonic()
             if stopping and not active:break
             try:time.sleep(.5)
             except KeyboardInterrupt:
                 (root/'STOP').touch();stopping=True
-                print('Stopping at session boundaries; waiting for workers to checkpoint.',flush=True)
+                dashboard.event('Stopping at session boundaries; waiting for workers to checkpoint.')
     finally:
         if active:
             (root/'STOP').touch()
             for process,row,log in active.values():process.wait();log.close();row['status']='interrupted'
-        save(root,m)
-    show(m)
+        try:save(root,m)
+        finally:dashboard.stop(m)
     return 1 if any(r['status']=='failed' for r in m['rows']) else 130 if stopping else 2 if any(r['status']=='deferred' for r in m['rows']) else 0
 
 
