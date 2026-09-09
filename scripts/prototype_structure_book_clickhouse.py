@@ -41,9 +41,28 @@ def digest(value):
 
 
 def save(path, value):
-    temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(value, indent=2), encoding='utf-8')
-    temporary.replace(path)
+    # Windows/SMB readers can briefly deny replacement while opening JSON.
+    # Never truncate the published file or delete it to force a replacement.
+    temporary = path.with_name(f'.{path.name}.{uuid.uuid4().hex}.tmp')
+    try:
+        with temporary.open('x', encoding='utf-8') as stream:
+            json.dump(value, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        deadline = time.monotonic() + 5.0
+        delay = .02
+        while True:
+            try:
+                temporary.replace(path)
+                break
+            except PermissionError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                time.sleep(min(delay, remaining))
+                delay = min(delay * 2, .25)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class Client:
