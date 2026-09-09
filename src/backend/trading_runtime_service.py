@@ -553,6 +553,7 @@ def strategy_activity_payload(
         gate_snapshot = _compact_strategy_gate_snapshot({
             key: metadata.get(key)
             for key in (
+                "continuation_detector",
                 "entry_rules",
                 "execution_quality",
                 "liquidity_admission",
@@ -948,6 +949,9 @@ def _strategy_gate_summary(gate_snapshot: dict[str, Any]) -> str:
         return not bool(gate.get("failed"))
 
     labels: list[str] = []
+    detector = gate_snapshot.get('continuation_detector') or {}
+    if detector:
+        labels.append(f"detector:{detector.get('state')} ({detector.get('reason')})")
     entry_rules = dict(gate_snapshot.get("entry_rules") or {})
     for name in ("trigger", "confirmation", "veto"):
         gate = dict(entry_rules.get(name) or {})

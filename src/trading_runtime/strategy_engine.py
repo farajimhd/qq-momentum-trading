@@ -3980,15 +3980,22 @@ class LongMomentumStrategyEngine:
                 "mechanism": "protective_stop",
                 "position_fraction": 1.0,
             }
+        elif ((parameters.get('episode_management') or {}).get('continuation_detector_enabled')
+              and (state.get('v5_breakout_state', {}).get('continuation_detector') or {}).get('state') == 'rejection'):
+            evidence = state['v5_breakout_state']['continuation_detector']['decision']
+            exit_route = dict(route_id='continuation-rejected', name='Continuation rejected',
+                             mechanism=evidence['reason'], position_fraction=1.0, evidence=evidence)
         elif ((parameters.get('episode_management') or {}).get('defensive_structure_enabled')
               and (state.get('v5_breakout_state', {}).get('defensive_structure_failure')
-                   or (state.get('v5_breakout_state', {}).get('position_structure') or {}).get('resistance'))):
+                   or (not (parameters.get('episode_management') or {}).get('continuation_detector_enabled')
+                       and (state.get('v5_breakout_state', {}).get('position_structure') or {}).get('resistance')))):
             data = state['v5_breakout_state']
             evidence = data.get('defensive_structure_failure') or dict(
                 data['position_structure']['resistance'], reason='forming_resistance')
             exit_route = dict(route_id='v5-defensive-structure', name='Defensive structure exit',
                              mechanism=evidence['reason'], position_fraction=1.0, evidence=evidence)
-        elif state.get('v5_breakout_state', {}).get('position_structure_failure'):
+        elif (not (parameters.get('episode_management') or {}).get('continuation_detector_enabled')
+              and state.get('v5_breakout_state', {}).get('position_structure_failure')):
             evidence = state['v5_breakout_state']['position_structure_failure']
             exit_route = dict(route_id='v5-position-structure-failure', name='Position structure failed',
                              mechanism=evidence['reason'], position_fraction=1.0, evidence=evidence)
@@ -5150,6 +5157,11 @@ class LongMomentumStrategyEngine:
     ) -> StrategyEngineResult:
         event_id = str(uuid4())
         resolved_metadata = dict(metadata or {})
+        if (assignment.parameters.get('episode_management') or {}).get('continuation_detector_enabled'):
+            detector = state.get('v5_breakout_state', {}).get('continuation_detector', {}).get('decision')
+            if detector:
+                resolved_metadata['continuation_detector'] = dict(detector, assignment_id=assignment.assignment_id,
+                    strategy_action=action, strategy_reason=reason)
         if v5_breakout.enabled(assignment.parameters):
             if v5_breakout.continuous(assignment.parameters):
                 resolved_metadata['v5_gate_evidence'] = v5_breakout.evidence(observation, state)

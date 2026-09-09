@@ -1066,6 +1066,8 @@ class TradingJournal:
                 "entity_type <> 'strategy_assignment_state' AND "
                 "lower(coalesce(json_extract(payload_json, '$.action'), '')) "
                 "NOT IN ('', 'wait')) OR "
+                "(category = 'strategy_decision' AND "
+                "json_extract(payload_json, '$.metadata.continuation_detector.sequence') IS NOT NULL) OR "
                 "(entity_type = 'strategy_assignment_state' AND "
                 "json_extract(payload_json, '$.state.active_stop') IS NOT NULL AND "
                 "(json_extract(payload_json, '$.state.initial_stop') IS NULL OR "

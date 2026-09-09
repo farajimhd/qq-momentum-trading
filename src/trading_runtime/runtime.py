@@ -101,6 +101,7 @@ def _wait_decision_signature(signal: StrategySignal) -> tuple[Any, ...]:
         str(metadata.get("reason_code") or signal.reason),
         str(metadata.get("status") or ""),
         tuple(sorted(failed_conditions)),
+        (metadata.get('continuation_detector') or {}).get('sequence'),
         metadata.get("trigger_threshold_price"),
         signal.invalidation_price,
     )

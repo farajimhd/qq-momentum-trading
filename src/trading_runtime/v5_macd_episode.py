@@ -159,6 +159,9 @@ def observe(o, p, state):
         for key in ('position_gaps', 'pending_target', 'fill_stop_initialized', 'profit_trail', 'expansion_stop',
                     'defensive_structure_failure'):
             d.pop(key, None)
+    if (p.get('episode_management') or {}).get('continuation_detector_enabled'):
+        from .continuation_detector import observe as observe_detector
+        observe_detector(o, d, p['episode_management'])
     state['v5_breakout_state'] = d
 
 

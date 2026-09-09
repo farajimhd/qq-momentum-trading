@@ -1,0 +1,8 @@
+.detector-timeline { flex: 0 0 auto; min-width: 0; }
+.detector-timeline summary { cursor: pointer; padding: .4rem .6rem; font-weight: 600; }
+.detector-timeline-controls { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; padding: .4rem; }
+.detector-timeline p { margin: .4rem; color: var(--muted-foreground); }
+.detector-timeline-table { overflow: auto; max-height: 16rem; }
+.detector-timeline table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+.detector-timeline th, .detector-timeline td { text-align: left; vertical-align: top; padding: .4rem .6rem; border-bottom: 1px solid var(--border); }
+.detector-timeline td:first-child { white-space: nowrap; }

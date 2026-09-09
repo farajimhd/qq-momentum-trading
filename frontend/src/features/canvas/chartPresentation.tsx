@@ -1,6 +1,7 @@
 import { Activity } from "lucide-react";
 import { entryStructurePresentation } from "./entryStructurePresentation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { DetectorTimeline, detectorRows } from "./DetectorTimeline";
 import type { UTCTimestamp } from "lightweight-charts";
 
 import { usePollingTask } from "../../app/hooks/usePollingTask";
@@ -235,6 +236,7 @@ export function ChartPreview({
     [chartTrading, linkContext.symbol, strategyPresentationAvailable],
   );
   const payload = useMemo<ChartPayload>(() => {
+    // Detector decisions are projected from the same durable activity as trades.
     const marketSignalMarkers = qmdMarketSignalChartMarkers(
       liveChart.marketSignalEvents,
       liveChart.bars,
@@ -393,7 +395,11 @@ export function ChartPreview({
       setBarGptInferring(false);
     }
   }
+  const detectorDecisions = useMemo(() => strategyPresentationAvailable
+    ? detectorRows(chartTrading?.strategy_chart_activity ?? [], linkContext.symbol, trading?.as_of || changeAsOf) : [],
+    [chartTrading, linkContext.symbol, strategyPresentationAvailable, trading?.as_of, changeAsOf]);
   return <div className={`canvas-chart-with-model ${fillHeight ? "is-fill-height" : ""}`}>
+    <DetectorTimeline rows={detectorDecisions} />
     {showBarGpt ? <div className="canvas-bar-gpt-controls" data-state={!barGptView ? "unsupported" : barGptDetail ? "error" : barGptReady ? "ready" : "warming"}>
       <div className="canvas-bar-gpt-state"><Activity size={13} /><span>BarGPT</span><strong>{barGptState}</strong>{barGptDetail ? <small title={barGptDetail}>{barGptDetail}</small> : !barGptView ? <small>Next-bar candles exist only for trained model views.</small> : null}</div>
       <label><span>Model</span><select aria-label="BarGPT model version" onChange={(event) => onChartSettingsChange({ ...chartSettings, barGptVersion: event.target.value as BarGptChartVersion })} value={barGptVersion}><option value="v2">V2</option><option value="v3">V3</option></select></label>

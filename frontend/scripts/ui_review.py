@@ -2544,6 +2544,18 @@ def capture(args: argparse.Namespace) -> int:
                             if(zones.length!==2 || zones[0].end!==t+30 || zones[1].start!==t+30 ||
                                zones[1].borderStyle!=='dashed' || !zones[1].latest || !zones[1].label.includes('awaiting retest'))
                                 throw Error('Broken resistance disappeared or its prior active interval was rewritten: '+JSON.stringify(zones));
+                            const {detectorRows}=await import('/src/features/canvas/DetectorTimeline.tsx');
+                            const detectorEvents=['advance','pullback','recovery','rejection','continuation'].map((state,i)=>({
+                                ticker:'TEST',strategy_id:'fixture',strategy_revision:1,sequence:100+i,event_time:iso(10+i*10),
+                                chart_plan:{continuation_detector:{sequence:i+1,effective_at:iso(10+i*10),state,
+                                    action:i===3?'exit':'hold',reason:['completed_high_reclaimed','retreat_support_unbroken',
+                                      'support_held_recovery_attempt','failed_recovery_support_break','episode_body_high_reclaimed'][i],
+                                    strategy_action:i===3?'exit':i===4?'wait':'hold',strategy_reason:i===4?'pending_exit_quantity':'detector_evidence',
+                                    reference_price:10.5,advance_high:10.8,pullback_low:10.3,recovery_floor:10.3,
+                                    entry_threshold:10.82,resistance:{lower:10.79,upper:10.81}}}}));
+                            if(detectorRows(detectorEvents,'TEST',iso(25)).length!==2)throw Error('Detector leaked future state');
+                            if(detectorRows(detectorEvents,'OTHER',iso(65)).length)throw Error('Detector mixed tickers');
+                            preview.strategy_chart_activity.push(...detectorEvents);
                             const host=document.createElement('div');host.id='staged-strategy-fixture';host.style.cssText='position:fixed;inset:0;z-index:9999;background:var(--surface);';
                             window.__openProtectionLabels=[];
                             const originalFillText=CanvasRenderingContext2D.prototype.fillText;
@@ -2612,6 +2624,14 @@ def capture(args: argparse.Namespace) -> int:
                         })""")
                         if page.evaluate('window.__duplicateEvidenceRequests') != 0:
                             raise RuntimeError('Chart discarded atomic canvas evidence for a second request')
+                        page.locator('.detector-timeline summary').click()
+                        if page.locator('.detector-timeline tbody tr').count() != 5:
+                            raise RuntimeError('Detector intervals missing from strategy presentation')
+                        page.get_by_label('Detector from ET').fill('07:00:31')
+                        page.get_by_label('Detector to ET').fill('07:00:39')
+                        if page.locator('.detector-timeline tbody tr').count() != 1:
+                            raise RuntimeError('Detector period filter must retain the state spanning the period')
+                        page.get_by_role('button', name='Full period', exact=True).click()
 
                     if args.structure_time_placement:
                         page.evaluate("""async () => {
