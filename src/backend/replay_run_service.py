@@ -421,9 +421,15 @@ class ReplayRunDefinition:
             _ticker(value) for value in self.tickers if str(value).strip()
         ))
         object.__setattr__(self, "tickers", normalized_tickers)
+        recovery = (self.configuration_revision.get('payload', {}).get('strategy', {})
+                    .get('parameters', {}).get('structural_recovery_contract'))
+        if recovery and not self.experimental_structure_book:
+            raise ValueError('Structural recovery requires an explicitly selected certified V6 swing book')
         if self.experimental_structure_book:
             from src.backend.experimental_structure_book import resolve
             build = resolve(self.experimental_structure_book)
+            if recovery and build['version'] != 'causal-swing-closing-book-6':
+                raise ValueError('Structural recovery requires swing book V6')
             if self.mode != RunMode.BACKTEST or normalized_tickers != (build['ticker'],):
                 raise ValueError('Experimental level book requires a Backtest with its single covered ticker')
             if not (build['start'] <= self.session_date.isoformat() <=
@@ -3019,6 +3025,25 @@ class ReplayRunController:
     async def _observe_episode_candle(self, frame: ReplayDerivedFrame) -> None:
         configuration = self.definition.configuration_revision['payload'].get('strategy') or {}
         parameters = configuration.get('parameters') or {}
+        if frame.timeframe == '1s' and parameters.get('structural_recovery_contract'):
+            from src.trading_runtime.structural_recovery import observe_market, BOOK_VERSION
+            from src.backend.experimental_structure_book import resolve
+            if not self.definition.experimental_structure_book:
+                raise ValueError('Candidate 180 requires an explicitly selected certified V6 swing book')
+            if not getattr(self, '_recovery_book_identity', None):
+                build = resolve(self.definition.experimental_structure_book)
+                if build['version'] != BOOK_VERSION:
+                    raise ValueError('Structural recovery requires swing book V6')
+                self._recovery_book_identity = {k:build[k] for k in ('id','fingerprint','version')}
+            snapshot = await self._experimental_structure_snapshot(frame.ticker, frame.as_of, 'frame')
+            end = frame.as_of.timestamp()
+            bar = dict(time=end-1, end=end, **{k:frame.bar[k] for k in ('open','high','low','close')},
+                       volume=frame.bar.get('volume'))
+            saved = self._candle_detector_states.get(frame.ticker, {}).get('structural_recovery') or {}
+            market = observe_market(bar, snapshot['unified_levels'], self._recovery_book_identity,
+                                    saved, parameters.get('structural_detector_settings'))
+            self._candle_detector_states[frame.ticker] = {'structural_recovery':market}
+            return
         if frame.timeframe != '1s' or not (parameters.get('episode_management') or {}).get('detector_candle_states_enabled'):
             return
         from src.trading_runtime.candle_state_detector import observe_stream
@@ -3431,8 +3456,18 @@ class ReplayRunController:
                 source_values=deepcopy(source_cache),
             )
         if frame.ticker in getattr(self, '_candle_detector_states', {}):
-            base = replace(base, candle_detector_state=deepcopy(
-                self._candle_detector_states[frame.ticker]['continuation_detector']))
+            detector_stream = self._candle_detector_states[frame.ticker]
+            if 'structural_recovery' in detector_stream:
+                market = detector_stream['structural_recovery']
+                values = dict(base.source_values)
+                values['market.spread_bps'] = {
+                    'observed_at': quote.ts.isoformat() if quote else '',
+                    'value': (quote.ask_price-quote.bid_price)/quote.midpoint*10000
+                        if quote and quote.midpoint > 0 else None}
+                base = replace(base, structural_detector_state=deepcopy(
+                    {k:v for k,v in market.items() if k != 'checkpoint'}),source_values=values)
+            else:
+                base = replace(base, candle_detector_state=deepcopy(detector_stream['continuation_detector']))
         self._latest_strategy_observations[frame.ticker] = base
         await self._evaluate_strategy_observation(base, ticker_assignments)
         self._frame_cursor = {
@@ -4873,6 +4908,8 @@ class ReplayRunController:
 
     def _historical_watchlist_projection_tickers(self) -> list[str] | None:
         configuration = self.definition.configuration_revision["payload"]
+        if configuration.get('strategy', {}).get('parameters', {}).get('structural_recovery_contract'):
+            return list(self.definition.tickers)
         activation = dict(configuration.get("signal_activation") or {})
         enabled_streams = [
             dict(stream)

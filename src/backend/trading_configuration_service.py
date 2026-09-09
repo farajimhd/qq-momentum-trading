@@ -508,10 +508,10 @@ def create_test_candidate(
         run_plan_id=run_plan_id,
         strategy_profile_id=strategy_profile_id,
     )
-    existing = configuration_candidates()
+    existing = trading_journal().trading_configuration_candidate_summaries()
     same = next((row for row in existing if row["content_hash"] == content_hash), None)
     if same is not None:
-        return same
+        return trading_journal().trading_configuration_candidate(same["candidate_id"])
     candidate_revision = int(existing[0]["candidate_revision"]) + 1 if existing else 1
     return trading_journal().save_trading_configuration_candidate(
         candidate_id=str(uuid4()),
@@ -7475,7 +7475,7 @@ def _validate_strategy_lifecycle(
     _validate_order_intent(dict(reentry.get("order_intent") or {}), "Reentry")
     routes = list(dict(lifecycle["exit"]).get("rule_sets") or [])
     _unique_ids(routes, "rule_set_id", "Strategy exit rule set")
-    if not routes:
+    if not routes and engine_parameters.get('structural_recovery_contract') != 'v6-structural-recovery-1':
         raise ValueError("Strategy exit requires at least one rule set")
     for route in routes:
         if str(route.get("action") or "") not in {"close", "reduce"}:

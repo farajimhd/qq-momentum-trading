@@ -362,6 +362,7 @@ class StrategyObservation:
     source_values: dict[str, Any] = field(default_factory=dict)
     completed_range_context: dict[str, Any] = field(default_factory=dict)
     candle_detector_state: dict[str, Any] | None = None
+    structural_detector_state: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.observed_at.tzinfo is None:
@@ -867,6 +868,9 @@ def resolve_long_momentum_parameters(
         swing_gap.configure(parameters)
     if parameters.get('v5_breakout_contract'):
         v5_breakout.configure(parameters)
+    if parameters.get('structural_recovery_contract'):
+        from .structural_recovery import configure
+        configure(parameters)
     execution = dict(parameters.get("execution") or {})
     slope_policy = parameters["momentum_management"].get("histogram_slope_exit")
     if slope_policy is not None:
@@ -2699,6 +2703,9 @@ class LongMomentumStrategyEngine:
             assignment.parameters,
             revision=self.revision,
         )
+        if parameters.get('structural_recovery_contract'):
+            from .structural_recovery import evaluate
+            return evaluate(self, assignment, observation, parameters, state)
         if swing_gap.tracks_reclaims(parameters):
             gap_continuation.observe(observation, parameters, state, swing_gap.levels(observation, parameters['swing_gap']))
         if entry_body.enabled(parameters):
@@ -5351,6 +5358,15 @@ class LongMomentumStrategyEngine:
             intents = tuple(replace(i, execution_policy=replace(i.resolved_execution_policy(),
                 envelope=replace(i.resolved_execution_policy().envelope, maximum_buy_price=ceiling)),
                 metadata={**i.metadata, 'gap_entry_ceiling': ceiling}) for i in intents)
+        if action == 'enter_long' and assignment.parameters.get('structural_recovery_contract') and intents:
+            ceiling = state['recovery_entry']['maximum_buy_price']
+            intents = tuple(replace(i, reference_price=observation.ask,
+                execution_policy=replace(i.resolved_execution_policy(),
+                    envelope=replace(i.resolved_execution_policy().envelope, maximum_buy_price=ceiling,
+                        persist_until_cancelled=False,
+                        deadline_ms=max(1,int(assignment.parameters['structural_recovery']['confirmation_lifetime_ms']
+                            -(observation.observed_at.timestamp()-state['recovery_entry']['confirmed_at'])*1000)))))
+                for i in intents)
         if action == 'enter_long' and assignment.parameters.get('gap_require_valid_stop_on_entry'):
             intents = tuple(replace(i, metadata={**i.metadata, 'gap_require_valid_stop_on_entry': True}) for i in intents)
         if action == 'enter_long' and assignment.parameters.get('entry_body_breakout', {}).get('enabled'):
@@ -5571,7 +5587,8 @@ def _protection_profile_from_phase(
         dict(parameters.get("protection_profile_catalog") or {}).get(reference)
         or {}
     )
-    mandatory_target = (parameters.get('episode_management') or {}).get('position_structure_enabled', False)
+    mandatory_target = bool(parameters.get('structural_recovery_contract') or
+        (parameters.get('episode_management') or {}).get('position_structure_enabled', False))
     if mandatory_target and action in {'enter_long', 'add_long'} and not configured:
         raise ValueError('Position structure requires an explicit broker protection profile')
     if not configured:
@@ -5586,7 +5603,7 @@ def _protection_profile_from_phase(
         if isinstance(value, (int, float)) and float(value) > 0
     ]
     configured_slices = [dict(raw) for raw in configured.get("slices") or []]
-    if parameters.get('swing_gap_contract') or v5_breakout.enabled(parameters):
+    if parameters.get('swing_gap_contract') or v5_breakout.enabled(parameters) or parameters.get('structural_recovery_contract'):
         configured_slices = [dict(configured_slices[0])] if configured_slices else []
         for raw in configured_slices:
             raw.update(quantity_fraction=1., strategy_profit_target_index=0,
