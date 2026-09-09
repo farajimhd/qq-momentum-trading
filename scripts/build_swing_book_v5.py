@@ -23,9 +23,18 @@ from src.market_engine.resistance_selection import select_areas
 
 def run(ticker,args):
     start=perf_counter(); folder=args.runtime/ticker.lower(); folder.mkdir(parents=True,exist_ok=True)
-    sources=[b for b in builds() if b['ticker']==ticker and b['version']=='causal-swing-closing-book-4' and b['start']<=args.start]
+    if getattr(args,'source_report',None):
+        r=json.loads(args.source_report.read_text())
+        proof=json.loads(args.source_report.with_name('validation.json').read_text())
+        if (r['ticker']!=ticker or r['version']!='causal-swing-closing-book-4'
+                or r['status']!='built_pending_quality_acceptance' or proof['status']!='passed'
+                or proof['database']!=r['database']):raise ValueError('Invalid pinned V4 source')
+        sources=[dict(id=r['database'],fingerprint=r['fingerprint'],start=r['requested_start'],end=r['actual_end'],source_policy=r['source_policy'])]
+    else:
+        sources=[b for b in builds() if b['ticker']==ticker and b['version']=='causal-swing-closing-book-4' and b['start']<=args.start]
     if not sources: raise ValueError(f'No certified v4 source for {ticker}')
     source=max(sources,key=lambda b:b['end'])
+    if source['start']>args.start:raise ValueError('V4 source starts after requested history')
     client=P.Client(args.env_file,args.threads)
     missing=client.query(f"SELECT count() n FROM market_sip_compact.events_ordinal_continuity FINAL WHERE ticker={P.literal(ticker)} AND source_date BETWEEN '{args.start}' AND '{args.end}' AND source_date<today() AND source_date NOT IN (SELECT session_date FROM {source['id']}.sessions FINAL)",'coverage')
     if int(missing[0]['n']):raise ValueError(f'{ticker}: {missing[0]["n"]} certified days missing from candidate source; extend v4 first')
