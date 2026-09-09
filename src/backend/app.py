@@ -1009,6 +1009,7 @@ class BacktestRunCreateRequest(BaseModel):
     configuration_revision_id: str = Field(default="", max_length=128)
     run_plan_id: str = Field(default="", max_length=128)
     simulation_profile: str = Field(default="baseline", pattern="^(baseline|stress)$")
+    new_order_activation_delay_ms: float = Field(default=0.0, ge=0, le=60_000)
     experimental_structure_book: str = Field(default="", max_length=64)
     minimum_p_norm: float = Field(default=DEFAULT_THRESHOLD, ge=0, le=1)
     start_time: str = "04:00:00"
@@ -5465,7 +5466,8 @@ def trading_backtest_structure_books() -> dict[str, Any]:
 @app.post("/api/trading/backtest/runs")
 async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict[str, Any]:
     try:
-        configuration_revision = backtest_configuration_snapshot(
+        configuration_revision = await asyncio.to_thread(
+            backtest_configuration_snapshot,
             payload.run_plan_id,
             candidate_id=payload.configuration_revision_id,
         )
@@ -5493,6 +5495,7 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
             configuration_revision=configuration_revision,
             mode=RunMode.BACKTEST,
             simulation_profile=payload.simulation_profile,
+            new_order_activation_delay_ms=payload.new_order_activation_delay_ms,
             experimental_structure_book=payload.experimental_structure_book,
             minimum_p_norm=payload.minimum_p_norm,
             tickers=tuple(payload.tickers),

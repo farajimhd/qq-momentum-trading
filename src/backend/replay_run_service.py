@@ -1542,6 +1542,8 @@ class ReplayRunController:
             },
             "structure_prefetch": deepcopy(getattr(self, "_structure_prefetch_progress", {})),
             "execution_mode": self.definition.execution_mode,
+            "simulation_profile": self.definition.simulation_profile,
+            "new_order_activation_delay_ms": self.definition.new_order_activation_delay_ms,
             "strategy_debug_sources": self._strategy_debug_sources(),
             "error": self.error,
             "created_at": self.created_at.isoformat(),

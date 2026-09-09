@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import threading
 from datetime import date, time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -151,6 +152,11 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
         controller = MagicMock()
         controller.snapshot.return_value = {"mode": "backtest"}
         approved = {"revision_id": "approved-backtest", "payload": {}}
+        event_loop_thread = threading.get_ident()
+        preparation_threads = []
+        def prepare(*args, **kwargs):
+            preparation_threads.append(threading.get_ident())
+            return approved
         request = BacktestRunCreateRequest(
             anchor_date=date(2026, 7, 28),
             session_count=1,
@@ -158,11 +164,12 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
             start_time="09:30:00",
             end_time="10:15:00",
             tickers=["AAPL", "MSFT"],
+            new_order_activation_delay_ms=250,
         )
         with (
             patch(
                 "src.backend.app.backtest_configuration_snapshot",
-                return_value=approved,
+                side_effect=prepare,
             ) as configuration_snapshot,
             patch(
                 "src.backend.app.backtest_preflight",
@@ -183,6 +190,9 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
         )
         definition = create.await_args.args[0]
         self.assertEqual(definition.mode, RunMode.BACKTEST)
+        self.assertEqual(definition.new_order_activation_delay_ms, 250)
+        self.assertTrue(preparation_threads)
+        self.assertNotIn(event_loop_thread, preparation_threads)
         self.assertIs(definition.configuration_revision, approved)
         self.assertEqual(definition.start_time, time(9, 30))
         self.assertEqual(definition.end_time, time(10, 15))
