@@ -32,7 +32,12 @@ market symbols and missing canonical history are explicitly deferred with reason
 No source flatfiles are used. Storage must pass `live_market_ssd` checks.
 
 Four worker processes each process one ticker in chronological session order.
-Each query uses at most two ClickHouse threads by default. Scheduling starts
+Each query uses at most two ClickHouse threads by default. There is
+one aggregation query at a time per ticker worker: the eight session chunks
+are read sequentially, without a nested query pool. Thus 64 workers with two
+threads each request at most 128 query execution threads, excluding ClickHouse
+background work and other applications. This is a query budget, not a limit on
+all server threads. Scheduling starts
 larger event histories first. Workers have isolated logs and checkpoints;
 failures do not strand other queued tickers. Configure concurrency at planning
 time; the plan pins source-code hashes and settings. Changed code needs a new plan.

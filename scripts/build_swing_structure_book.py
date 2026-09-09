@@ -144,7 +144,9 @@ def run(ticker, args):
                     source_revision=encode(split),revision=1)])
                 previous_rows = adjusted
             print(f'{ticker} {session} | active=1 completed={index} queued={len(days)-index-1} failed=0 | aggregating canonical seconds',flush=True)
-            bars, revision = read_session(ticker,session,client,policy=HISTORICAL_POLICY)
+            # Ticker processes own parallelism. Nested query pools would multiply
+            # the campaign's workers * threads budget by four.
+            bars, revision = read_session(ticker,session,client,policy=HISTORICAL_POLICY,query_workers=1)
             compute_start = time.perf_counter()
             for bar in bars:
                 engine.observe(*bar)

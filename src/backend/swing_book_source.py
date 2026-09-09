@@ -98,7 +98,9 @@ def bar_sql(ticker,session,left,right,rules, *, policy=SOURCE_VERSION):
     GROUP BY t HAVING countIf(last_ok)>0 AND countIf(high_low_ok)>0 ORDER BY t"""
 
 
-def read_session(ticker,session,client=None, *, policy=SOURCE_VERSION):
+def read_session(ticker,session,client=None, *, policy=SOURCE_VERSION, query_workers=4):
+    if not isinstance(query_workers,int) or isinstance(query_workers,bool) or not 1<=query_workers<=4:
+        raise ValueError('Use 1..4 concurrent session queries')
     query = _query if client is None else lambda sql:client.query(sql,'causal_bars')
     revision,rules = source_metadata(ticker,session,query,policy=policy)
     start,end = session_bounds(session)
@@ -106,8 +108,11 @@ def read_session(ticker,session,client=None, *, policy=SOURCE_VERSION):
         left,right = start+timedelta(hours=i*2),start+timedelta(hours=(i+1)*2)
         result = query(bar_sql(ticker,session,left,right,rules,policy=policy))
         return [(float(r['t']),float(r['high']),float(r['low']),float(r['close'])) for r in result]
-    with ThreadPoolExecutor(max_workers=4,thread_name_prefix='swing-clickhouse') as pool:
-        bars = [bar for chunk in pool.map(read,range(8)) for bar in chunk]
+    if query_workers==1:
+        bars = [bar for i in range(8) for bar in read(i)]
+    else:
+        with ThreadPoolExecutor(max_workers=query_workers,thread_name_prefix='swing-clickhouse') as pool:
+            bars = [bar for chunk in pool.map(read,range(8)) for bar in chunk]
     if source_metadata(ticker,session,query,policy=policy)[0]['token']!=revision['token']:
         raise ValueError('Canonical source changed during aggregation')
     if any(a[0]>=b[0] for a,b in zip(bars,bars[1:])):
