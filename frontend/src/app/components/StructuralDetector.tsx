@@ -13,7 +13,7 @@ type Candle = { time: number; endTime?: number; open: number; high: number; low:
 type Event = { state: string; level: Record<string, unknown>; band_id?: string; encounters?: number; rejection_closes?: number; source_ids?: string[] };
 type Cycle = { number: number; attempts: number; failed_attempts: number; depth: number; candles: number; recovery_progress: number };
 export type StructuralState = { time: number; effective_at: number; state: string; reason: string;
-  technical_signal?: {phase:string;action:string;reason:string;changed:boolean;execution_eligibility:string;setup:null|{direction:string;stop:number;target:number;entry_reference?:number;armed_at:number}};
+  technical_signal?: {phase:string;action:string;reason:string;changed:boolean;execution_eligibility:string;management?:string[];evaluations?:unknown[];level_map?:unknown[];level_map_total?:number;setup:null|{direction:string;pattern?:string;stop:number;initial_stop?:number;target:number|null;entry_reference?:number;armed_at:number;importance?:number;room_basis?:string;reward_risk?:number|null;mfe?:number;mae?:number;remaining_room_atr?:number|null}};
   momentum?: {agreement:string;tags:string[];macd:{watch:string|null;zone:string;entered_from:string|null;trend:string;transitions:string[]};rsi:{value:number|null;period:number;trend:string;zone:string}};
   labels?: Record<string,string[]>;
   summary?: {text:string;family:string;label:string;priority:number;changed:boolean;scope?:string;level?:Record<string,unknown>};
@@ -40,10 +40,17 @@ const defaults = { reversal_bps: 50, volatility_multiple: 2, body_half_life: 5,
   volume_expansion_multiple: 1.5, volume_divergence_min_score: 30, volume_setup_max_candles: 20,
   atr_period:14,atr_warmup_candles:5,break_body_atr:.3,break_body_fraction:.4,penetration_atr:.1,acceptance_closes:2,
   macd_change_bps:.1,momentum_confirm_closes:2,rsi_period:14,rsi_neutral_band:5,rsi_change_points:.5,
-  signal_setup_candles:60,signal_confirmation_candles:3,signal_hold_candles:300,signal_min_reward_risk:1.5,signal_stop_atr:.1 };
+  signal_setup_candles:60,signal_confirmation_candles:3,signal_hold_candles:300,signal_min_reward_risk:1.5,signal_stop_atr:.1,
+  signal_zone_atr:.2,signal_min_stop_atr:1,signal_max_risk_atr:4,signal_max_extension_atr:3,signal_min_room_atr:1,signal_progress_candles:20 };
 const fields = [ ['reversal_bps', 'Minimum local reversal (bps)', 1, 1000, 1],
-  ['signal_setup_candles','Technical setup expiry (candles)',1,10000,1],
-  ['signal_confirmation_candles','Retest confirmation freshness (candles)',1,10000,1],
+  ['signal_setup_candles','Prior reaction evidence window (candles)',1,10000,1],
+  ['signal_confirmation_candles','Adverse closes with weak momentum before exit',1,10000,1],
+  ['signal_zone_atr','Group nearby levels within ATR multiple',.01,10,.01],
+  ['signal_min_stop_atr','Minimum protection distance / prior ATR',.1,100,.1],
+  ['signal_max_risk_atr','Maximum initial stop distance / ATR',.1,100,.1],
+  ['signal_max_extension_atr','Maximum extension from structure / ATR',.1,100,.1],
+  ['signal_min_room_atr','Minimum room to meaningful barrier / ATR',.1,100,.1],
+  ['signal_progress_candles','No-progress window with weak momentum (candles)',1,10000,1],
   ['signal_hold_candles','Technical holding time limit (candles)',1,10000,1],
   ['signal_min_reward_risk','Minimum target distance / stop distance',.1,100,.1],
   ['signal_stop_atr','Stop buffer / setup ATR',.01,100,.01],
@@ -156,7 +163,9 @@ function CandleInspector({row,onClose,onMove,hasPrevious,hasNext}:{row:Structura
     <p>{new Date(row.time*1000).toISOString()} · Completed {new Date(row.effective_at*1000).toISOString()}</p>
     <p><strong>{row.summary?.text || human(row.state)}</strong> · {human(row.reason)}</p>
     {row.technical_signal && <section><h3>Technical signal · {human(row.technical_signal.action)}</h3><p>{human(row.technical_signal.phase)} · {human(row.technical_signal.reason)}</p>
-      {row.technical_signal.setup && <p>Reference entry {price(row.technical_signal.setup.entry_reference)} · Stop {price(row.technical_signal.setup.stop)} · Target {price(row.technical_signal.setup.target)}</p>}
+      {row.technical_signal.setup && <><p>{human(row.technical_signal.setup.pattern || 'setup')} · Reference entry {price(row.technical_signal.setup.entry_reference)} · Initial stop {price(row.technical_signal.setup.initial_stop)} · Current stop {price(row.technical_signal.setup.stop)} · Next barrier {row.technical_signal.setup.target==null ? 'Open room — no known barrier' : price(row.technical_signal.setup.target)}</p><p>Importance {row.technical_signal.setup.importance ?? '—'} · Initial reward/risk {row.technical_signal.setup.reward_risk?.toFixed(2) ?? 'Unknown'} · Favorable excursion {price(row.technical_signal.setup.mfe)} · Adverse excursion {price(row.technical_signal.setup.mae)}</p></>}
+      {!!row.technical_signal.management?.length && <p>Management: {row.technical_signal.management.map(human).join(' · ')}</p>}
+      <details><summary>Level importance, room and rejected entries</summary><pre>{JSON.stringify({zone_count:row.technical_signal.level_map_total,nearest_zones:row.technical_signal.level_map,evaluations:row.technical_signal.evaluations},null,2)}</pre></details>
       <p>Hypothetical signal only. Spread, quote freshness and borrow eligibility are not assessed. Boundary touches are reported after candle close; these are not fills.</p></section>}
     <p>Prior ATR {row.qualification?.atr==null ? '—' : price(row.qualification.atr)} · {row.qualification?.observations ?? 0}/{row.qualification?.period ?? '—'} candles · {row.qualification?.ready ? 'ready' : 'warming up'}</p>
     {row.momentum && <><p>{structuralLabelRows(row,[['macd','rsi','momentum']])[0]}</p><p>MACD 12/26/9 and RSI {row.momentum.rsi.period} use completed chart candles. Watch zones and RSI extremes are context, not entry or reversal confirmation.</p><details><summary>Momentum values and transitions</summary><pre>{JSON.stringify(row.momentum,null,2)}</pre></details></>}
@@ -244,7 +253,8 @@ export function useStructuralDetector(ticker: string, timeframe: string, candles
         {checkbox}<p className="chart-settings-help" role="status">{status}</p>
         <section className="chart-settings-section"><h3>Candle labels</h3>
           <p className="chart-settings-help">Only long/short entry and exit decisions appear below candles. The toolbar shows the current hold decision while a hypothetical position is active. No qualifying entry means no chart signal.</p>
-          <p className="chart-settings-help">Watch, armed, acceptance and confirmation states remain internal and can be inspected on a candle. Add Signal reason for entry/exit explanations. Stops and targets are frozen references; trade execution eligibility is not assessed.</p>
+          <p className="chart-settings-help">Setup evidence remains internal and can be inspected on a candle. Add Signal reason for entry/exit explanations. Initial references stay fixed; confirmed structure can tighten protection for subsequent candles. Trade execution eligibility is not assessed.</p>
+          <p className="chart-settings-help">Initiation, continuation and reversal entries use meaningful level zones and available room. Initial risk references remain recorded. Current protection can tighten after confirmed structure; accepted barriers advance to the next level. Open room is not a price forecast. Inspect a candle for entry rejections and management reasons.</p>
           <p className="chart-settings-help">Entry/exit markers sit outside the text box: ▲ above long entry and short exit; ▼ below short entry and long exit. Long entries use positive color, short entries negative color, and exits caution color.</p>
           <p className="chart-settings-help">A reversal candidate requires divergence near an extreme or structural rejection. A later close must cross its candle boundary with a matching structural break to confirm. Candidates expire or invalidate on volume-supported continuation; past labels stay unchanged.</p>
           {stored.labelRows.map((row,index) => <fieldset className="structural-label-row-config" key={index}>

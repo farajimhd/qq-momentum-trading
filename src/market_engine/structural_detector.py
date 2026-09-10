@@ -18,7 +18,7 @@ from .structural_labels import label_packet
 from .structural_momentum import observe as observe_momentum
 from .structural_signal import observe as observe_signal
 
-VERSION = 'structural-candle-detector-7'
+VERSION = 'structural-candle-detector-8'
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,12 @@ class DetectorSettings:
     signal_hold_candles: int = 300
     signal_min_reward_risk: float = 1.5
     signal_stop_atr: float = .1
+    signal_zone_atr: float = .2
+    signal_min_stop_atr: float = 1
+    signal_max_risk_atr: float = 4
+    signal_max_extension_atr: float = 3
+    signal_min_room_atr: float = 1
+    signal_progress_candles: int = 20
     tail_range_fraction: float = .5
     indecision_body_fraction: float = .2
     expansion_body_multiple: float = 1.5
@@ -63,7 +69,7 @@ class DetectorSettings:
     acceptance_closes: int = 2
 
     def __post_init__(self):
-        if any(type(v) is not int or not 1<=v<=10000 for v in (self.signal_setup_candles,self.signal_confirmation_candles,self.signal_hold_candles)):
+        if any(type(v) is not int or not 1<=v<=10000 for v in (self.signal_setup_candles,self.signal_confirmation_candles,self.signal_hold_candles,self.signal_progress_candles)):
             raise ValueError('Invalid signal lifetime')
         if type(self.rsi_period) is not int or not 2<=self.rsi_period<=200 or type(self.momentum_confirm_closes) is not int or not 1<=self.momentum_confirm_closes<=20 or not 0<self.rsi_neutral_band<20:
             raise ValueError('Invalid momentum settings')
@@ -135,7 +141,10 @@ class StructuralDetector:
             datetime.fromtimestamp(start,ZoneInfo('America/New_York')).date()!=
             datetime.fromtimestamp(self.last['time'],ZoneInfo('America/New_York')).date()))
         if gap:
+            interrupted_position = self.signal_state.get('setup')
             self.__init__(self.settings)
+            if interrupted_position:
+                self.signal_state['setup'] = interrupted_position
         previous = self.last['close'] if self.last else None
         atr = sum(self.true_ranges)/len(self.true_ranges) if self.true_ranges else None
         qualification = dict(atr=atr, ready=len(self.true_ranges)>=self.settings.atr_warmup_candles and bool(atr),
