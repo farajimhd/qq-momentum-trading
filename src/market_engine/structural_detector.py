@@ -16,8 +16,9 @@ from .structural_progression import Progression
 from .structural_volume import VolumeLevels
 from .structural_labels import label_packet
 from .structural_momentum import observe as observe_momentum
+from .structural_signal import observe as observe_signal
 
-VERSION = 'structural-candle-detector-6'
+VERSION = 'structural-candle-detector-7'
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,11 @@ class DetectorSettings:
     rsi_period: int = 14
     rsi_neutral_band: float = 5
     rsi_change_points: float = .5
+    signal_setup_candles: int = 60
+    signal_confirmation_candles: int = 3
+    signal_hold_candles: int = 300
+    signal_min_reward_risk: float = 1.5
+    signal_stop_atr: float = .1
     tail_range_fraction: float = .5
     indecision_body_fraction: float = .2
     expansion_body_multiple: float = 1.5
@@ -57,6 +63,8 @@ class DetectorSettings:
     acceptance_closes: int = 2
 
     def __post_init__(self):
+        if any(type(v) is not int or not 1<=v<=10000 for v in (self.signal_setup_candles,self.signal_confirmation_candles,self.signal_hold_candles)):
+            raise ValueError('Invalid signal lifetime')
         if type(self.rsi_period) is not int or not 2<=self.rsi_period<=200 or type(self.momentum_confirm_closes) is not int or not 1<=self.momentum_confirm_closes<=20 or not 0<self.rsi_neutral_band<20:
             raise ValueError('Invalid momentum settings')
         if any(not isfinite(v) or v <= 0 for v in asdict(self).values()):
@@ -104,6 +112,7 @@ class StructuralDetector:
         self.recent_bars = deque(maxlen=6)
         self.label_signature = None
         self.momentum_state = {}
+        self.signal_state = {}
 
     def local_evidence(self, level):
         result = compact(level)
@@ -268,6 +277,7 @@ class StructuralDetector:
             candle=dict(bar), gap_before=gap)
         result['qualification'] = qualification
         result['momentum'] = momentum
+        result['technical_signal'] = observe_signal(self.signal_state,result,self.global_levels+local_before,self.settings)
         result['labels'],result['summary'],self.label_signature = label_packet(result,self.label_signature,self.recent_bars,atr)
         self.true_ranges.append(max(bar['high']-bar['low'],abs(bar['high']-previous),abs(bar['low']-previous)) if previous is not None else bar['high']-bar['low'])
         self.recent_bars.append(dict(bar))

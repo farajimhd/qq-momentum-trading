@@ -40,7 +40,7 @@ def label_packet(row, prior_signature, recent, atr):
     families = dict(movement=[row['state']], regime=[], geometry=row['candle_shape']['tags'],
         displacement=[], interaction=[], break_lifecycle=[], retest_lifecycle=[],
         structural_progression=[], correction_recovery=[], pressure=[], volume=row['volume_analysis']['tags'],
-        reversal=[], momentum=row['momentum']['tags'], evidence=[])
+        reversal=[], momentum=row['momentum']['tags'], signal=[row['technical_signal']['action']], evidence=[])
     bar = row['candle']
     body = abs(bar['close']-bar['open'])
     ready = row['qualification']['ready']
@@ -55,6 +55,11 @@ def label_packet(row, prior_signature, recent, atr):
     else:
         families['regime'] = ['warming_up']
     candidates = []
+    signal=row['technical_signal']; action=signal['action']
+    if action.endswith(('_enter','_exit','_armed')) or action=='cancel_setup':
+        text={'long_enter':'Long enter ↑','short_enter':'Short enter ↓','long_exit':'Long exit','short_exit':'Short exit',
+              'long_armed':'Long armed','short_armed':'Short armed','cancel_setup':'Setup cancelled'}[action]
+        candidates.append(dict(family='signal',label=action,text=text,priority=100 if action.endswith(('_enter','_exit')) else 25))
     for scope in ('local','global'):
         for event in row[scope+'_events']:
             kind = event['state']

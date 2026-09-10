@@ -13,6 +13,7 @@ type Candle = { time: number; endTime?: number; open: number; high: number; low:
 type Event = { state: string; level: Record<string, unknown>; band_id?: string; encounters?: number; rejection_closes?: number; source_ids?: string[] };
 type Cycle = { number: number; attempts: number; failed_attempts: number; depth: number; candles: number; recovery_progress: number };
 export type StructuralState = { time: number; effective_at: number; state: string; reason: string;
+  technical_signal?: {phase:string;action:string;reason:string;changed:boolean;execution_eligibility:string;setup:null|{direction:string;stop:number;target:number;entry_reference?:number;armed_at:number}};
   momentum?: {agreement:string;tags:string[];macd:{watch:string|null;zone:string;entered_from:string|null;trend:string;transitions:string[]};rsi:{value:number|null;period:number;trend:string;zone:string}};
   labels?: Record<string,string[]>;
   summary?: {text:string;family:string;label:string;priority:number;changed:boolean;scope?:string;level?:Record<string,unknown>};
@@ -38,8 +39,14 @@ const defaults = { reversal_bps: 50, volatility_multiple: 2, body_half_life: 5,
   volume_half_life: 5, volume_change_fraction: .1, volume_warmup_candles: 5, session_level_count: 3,
   volume_expansion_multiple: 1.5, volume_divergence_min_score: 30, volume_setup_max_candles: 20,
   atr_period:14,atr_warmup_candles:5,break_body_atr:.3,break_body_fraction:.4,penetration_atr:.1,acceptance_closes:2,
-  macd_change_bps:.1,momentum_confirm_closes:2,rsi_period:14,rsi_neutral_band:5,rsi_change_points:.5 };
+  macd_change_bps:.1,momentum_confirm_closes:2,rsi_period:14,rsi_neutral_band:5,rsi_change_points:.5,
+  signal_setup_candles:60,signal_confirmation_candles:3,signal_hold_candles:300,signal_min_reward_risk:1.5,signal_stop_atr:.1 };
 const fields = [ ['reversal_bps', 'Minimum local reversal (bps)', 1, 1000, 1],
+  ['signal_setup_candles','Technical setup expiry (candles)',1,10000,1],
+  ['signal_confirmation_candles','Retest confirmation freshness (candles)',1,10000,1],
+  ['signal_hold_candles','Technical holding time limit (candles)',1,10000,1],
+  ['signal_min_reward_risk','Minimum target distance / stop distance',.1,100,.1],
+  ['signal_stop_atr','Stop buffer / setup ATR',.01,100,.01],
   ['volatility_multiple', 'Local volatility multiple', .1, 10, .1],
   ['body_half_life', 'Body average half-life (candles)', 1, 100, 1],
   ['proximity_body_multiple', 'Level proximity body multiple', .1, 10, .1],
@@ -77,7 +84,7 @@ const volumeText = (s:string) => ({volume_falling:'volume ↓',volume_rising:'vo
   countermove_volume_fading:'fading pullback volume',recovery_after_countermove:'recovery',recovery_at_session_level:'at session level',
   observed_hod_cross:'HOD cross',observed_hod_rejection:'HOD rejection',observed_hod_test:'HOD test',observed_hod_approach:'near HOD',
   observed_lod_cross:'LOD cross',observed_lod_rejection:'LOD rejection',observed_lod_test:'LOD test',observed_lod_approach:'near LOD'}[s] || human(s));
-const labelFields = { summary: 'Important or changed', everySummary:'Every candle summary', state: 'Movement', direction: 'Direction', local: 'Local interactions', global: 'Global interactions',
+const labelFields = { summary: 'Important or changed', everySummary:'Every candle summary', signal:'Technical signal', signalReason:'Signal reason', state: 'Movement', direction: 'Direction', local: 'Local interactions', global: 'Global interactions',
   localBias: 'Local swing trend', globalBias: 'Global swing trend', shape: 'Candle shape', macd: 'MACD context', rsi: 'RSI context', momentum: 'Momentum agreement', body: 'Recent body size', source: 'Global availability',
   progression: 'Progression', cycle: 'Recovery cycle', levelProgress: 'Levels crossed / lost', context: 'Combined structure context', retained: 'Retained structural history',
   localDetails: 'All local band details', globalDetails: 'All global band details',
@@ -95,6 +102,8 @@ export function structuralLabelRows(row: StructuralState, rows: LabelRows) {
     return focus ? eventText(focus.primary ? [focus.primary] : [])+(focus.other_bands ? ` · +${focus.other_bands} other bands` : '') : eventText(fallback);
   };
   const values: Record<LabelField,string> = { summary: row.summary?.text || human(row.state),everySummary:row.summary?.text || human(row.state), state: human(row.state), direction: row.direction || 'unknown',
+    signal:row.technical_signal ? human(row.technical_signal.action) : 'Signal unavailable',
+    signalReason:row.technical_signal ? human(row.technical_signal.reason) : 'Signal unavailable',
     volume: v?.status==='available' ? `${price(v.volume)} vol · ${v.color} · ${v.relative_volume==null ? 'RV warming up' : v.relative_volume.toFixed(2)+'× RV'}` : 'Volume unavailable',
     volumeTrend: v?.status==='available' ? v.tags.map(volumeText).join(' · ') || 'Volume: no prior comparison' : 'Volume unavailable',
     divergence: d?.status==='available' ? d.direction==='none' ? 'No qualified divergence' : `${d.direction} div. ${d.score?.toFixed(0) ?? '—'}/100` : `Divergence ${human(d?.status || 'unavailable')}`,
@@ -137,6 +146,9 @@ function CandleInspector({row,onClose,onMove,hasPrevious,hasNext}:{row:Structura
     <div className="structural-inspector-body">
     <p>{new Date(row.time*1000).toISOString()} · Completed {new Date(row.effective_at*1000).toISOString()}</p>
     <p><strong>{row.summary?.text || human(row.state)}</strong> · {human(row.reason)}</p>
+    {row.technical_signal && <section><h3>Technical signal · {human(row.technical_signal.action)}</h3><p>{human(row.technical_signal.phase)} · {human(row.technical_signal.reason)}</p>
+      {row.technical_signal.setup && <p>Reference entry {price(row.technical_signal.setup.entry_reference)} · Stop {price(row.technical_signal.setup.stop)} · Target {price(row.technical_signal.setup.target)}</p>}
+      <p>Hypothetical signal only. Spread, quote freshness and borrow eligibility are not assessed. Boundary touches are reported after candle close; these are not fills.</p></section>}
     <p>Prior ATR {row.qualification?.atr==null ? '—' : price(row.qualification.atr)} · {row.qualification?.observations ?? 0}/{row.qualification?.period ?? '—'} candles · {row.qualification?.ready ? 'ready' : 'warming up'}</p>
     {row.momentum && <><p>{structuralLabelRows(row,[['macd','rsi','momentum']])[0]}</p><p>MACD 12/26/9 and RSI {row.momentum.rsi.period} use completed chart candles. Watch zones and RSI extremes are context, not entry or reversal confirmation.</p><details><summary>Momentum values and transitions</summary><pre>{JSON.stringify(row.momentum,null,2)}</pre></details></>}
     <table><thead><tr><th>Family</th><th>Labels</th></tr></thead><tbody>{Object.entries(row.labels || {movement:[row.state]}).map(([family,labels])=><tr key={family}><th>{human(family)}</th><td>{labels.length ? labels.map(human).join(' · ') : 'None'}</td></tr>)}</tbody></table>
@@ -217,10 +229,12 @@ export function useStructuralDetector(ticker: string, timeframe: string, candles
     <button type="button" className="toolbar-button structural-detector-toolbar" aria-pressed={enabled} onClick={() => change({ ...stored, key: storageKey, enabled: !enabled })}>Structural detector</button>
     <button type="button" className="toolbar-button structural-detector-toolbar" aria-label="Structural detector settings" onClick={() => setSettingsOpen(true)}>Detector settings</button>
     {enabled ? <span className="chart-data-status" role="status">{state.error ? 'Detector unavailable' : state.busy ? 'Detecting·' : `${rows.length} states${result?.global_available_count ? ' · V6' : ' · global unavailable'}`}</span> : null}
+    {enabled && rows.at(-1)?.technical_signal && <span className="chart-data-status" title="Causal technical state; hypothetical position, not an order">Signal: {human(rows.at(-1)!.technical_signal!.action)}</span>}
     {settingsOpen ? <Modal className="structural-detector-settings" title="Structural detector settings" onClose={() => setSettingsOpen(false)}>
       <div className="structural-detector-settings-body">
         {checkbox}<p className="chart-settings-help" role="status">{status}</p>
         <section className="chart-settings-section"><h3>Candle labels</h3>
+          <p className="chart-settings-help">Technical signals follow a qualified break, acceptance and held retest with momentum agreement. Long and short entries/exits appear in compact summaries. Add Technical signal and Signal reason for every-candle state. Stops and targets are frozen references; trade execution eligibility is not assessed.</p>
           <p className="chart-settings-help">One compact label below the candle shows its most important event or a changed state. Click any completed candle or label for every family and its evidence. Zoom in to separate labels. Choose Every candle summary to also show repeated states, or customize the rows.</p>
           <p className="chart-settings-help">Add Progression or Recovery cycle to an existing layout to see the new sequence evidence. Band # is the independent encounter number. Local/global rows show the primary band and count other bands; select All band details for the complete list. Retained history includes distant levels, not current tests.</p>
           <p className="chart-settings-help">Volume and session-level fields can be added to any row. Green/red describes candle direction, not buy/sell order flow. Divergence scores measure heuristic evidence, not reversal probability. HOD/LOD and ranked confirmed swings cover only loaded candles, reset by New York date, and are not certified full-day extremes.</p>
