@@ -110,7 +110,11 @@ class Progression:
                 key=(scope,band_key(level))
                 if kind==('breakout' if sign==1 else 'support_failure'):
                     crossed[scope] += 1
-                    self.gained[key]=dict(level=deepcopy(level),accepted=True,broken_at=bar['end'])
+                    self.gained[key]=dict(level=deepcopy(level),accepted=event.get('qualification',{}).get('accepted',True),broken_at=bar['end'])
+                acceptance = ('breakout_accepted','support_retest_held') if sign==1 else ('breakdown_accepted','resistance_retest_held')
+                if kind in acceptance:
+                    if key in self.gained:
+                        self.gained[key]['accepted']=True
                 if kind in (('failed_breakout','resistance_reclaim') if sign==1 else ('failed_breakdown','support_reclaim')):
                     if key in self.gained and self.gained[key]['accepted']:
                         self.gained[key]['accepted']=False

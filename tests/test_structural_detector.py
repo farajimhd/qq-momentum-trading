@@ -55,7 +55,8 @@ def test_pullback_is_not_automatically_rejection_or_resistance():
     row = engine.observe(candle(5, 10.5, 10.48))
     assert row['state']=='pullback'
     assert not any(e['state'] in ('rejection', 'resistance_forming') for e in row['local_events'])
-    assert engine.observe(candle(6, 10.48, 10.49))['state'] in ('recovery','consolidation')
+    assert engine.observe(candle(6, 10.48, 10.49))['state']=='no_change'
+    assert engine.observe(candle(7, 10.49, 10.50))['state']=='recovery'
 
 
 def test_prefix_immutable_when_future_confirms_swing():
@@ -72,7 +73,7 @@ def test_prefix_immutable_when_future_confirms_swing():
 
 
 def test_global_break_uses_prior_level_even_when_current_book_removes_it():
-    engine = StructuralDetector()
+    engine = StructuralDetector(DetectorSettings(atr_warmup_candles=1))
     engine.observe(candle(0,10,10.1),[level()], 'available')
     touch = engine.observe(candle(1,10.1,10.21,10.22),[level()], 'available')
     assert not any(e['state']=='breakout' for e in touch['global_events'])
@@ -82,7 +83,7 @@ def test_global_break_uses_prior_level_even_when_current_book_removes_it():
 
 
 def test_local_and_global_events_are_separate():
-    engine = StructuralDetector()
+    engine = StructuralDetector(DetectorSettings(atr_warmup_candles=1))
     engine.observe(candle(0,10,10.1),[level()], 'available')
     row = engine.observe(candle(1,10.1,10.05,10.21),[level()], 'available')
     assert any(e['state']=='rejection' for e in row['global_events'])

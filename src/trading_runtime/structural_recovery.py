@@ -166,7 +166,7 @@ def evaluate(host, assignment, o, p, state):
     row = market.get('row') or {}
     book = market.get('book') or {}
     evidence = dict(contract=CONTRACT, detector_contract=row.get('contract'), book=book,
-        detector={k:row.get(k) for k in ('effective_at','sequence','state','direction','progression','volume_analysis')})
+        detector={k:row.get(k) for k in ('effective_at','sequence','state','direction','progression','volume_analysis','labels','summary','qualification')})
     def result(action, reason, status=None, **kwargs):
         return host._result(assignment,o,action,reason,1. if action=='enter_long' else 0.,1.,state,
             status or assignment.status,metadata={**evidence,**kwargs.pop('metadata',{})},**kwargs)

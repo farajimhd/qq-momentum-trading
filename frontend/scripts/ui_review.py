@@ -2489,7 +2489,7 @@ def capture(args: argparse.Namespace) -> int:
                             request = route.request.post_data_json
                             times = {bar['time'] for bar in request['candles'] if bar['end'] <= request['as_of']}
                             selected = [row for row in source_rows if row['time'] in times]
-                            if evidence.get('contract')=='structural-candle-detector-4':
+                            if evidence.get('contract') in ('structural-candle-detector-4','structural-candle-detector-5'):
                                 volumes={row['time']:row['candle'].get('volume') for row in selected}
                                 if any(bar.get('volume')!=volumes.get(bar['time']) for bar in request['candles']):
                                     raise RuntimeError('Chart-to-detector volume mapping changed')
@@ -2501,7 +2501,10 @@ def capture(args: argparse.Namespace) -> int:
                             const {default:ReactDOM}=await import('/node_modules/.vite/deps/react-dom_client.js');const {createRoot}=ReactDOM;
                             const {ChartPanel}=await import('/src/app/components/ChartPanel.tsx');
                             const host=document.createElement('div');host.id='structural-indicator-fixture';
-                            host.className='app-shell';host.style.cssText='position:fixed;inset:0;z-index:100;background:var(--surface);height:var(--app-zoomed-viewport-height);';
+                            host.className='app-shell';host.style.cssText='position:fixed;inset:0;z-index:100;background:var(--surface);width:var(--app-zoomed-viewport-width);height:var(--app-zoomed-viewport-height);';
+                            // This fixture mounts the real ChartPanel independently;
+                            // the application's fixed navigation must not cover it.
+                            document.getElementById('root').style.display='none';
                             document.body.append(host);
                             localStorage.removeItem('review.structural.structural-detector');
                             const payload={candles:rows.map(r=>({...r.candle,endTime:r.effective_at})),markers:[],
@@ -2523,36 +2526,40 @@ def capture(args: argparse.Namespace) -> int:
                         page.wait_for_function("document.querySelectorAll('.structural-label-layer .structural-candle-label').length>0", timeout=args.timeout_ms)
                         page.wait_for_timeout(300)
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__labels.png')),full_page=True)
+                        visible_label=panel.locator('.structural-candle-label:visible').first
+                        visible_label.click()
+                        inspector=page.get_by_role('dialog',name='Candle evidence',exact=True)
+                        inspector.wait_for(state='visible')
+                        if inspector.locator('tbody tr').count()!=13:
+                            raise RuntimeError('Candle inspector lost label families')
+                        inspector.get_by_text('Level interactions and qualification reasons',exact=True).click()
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__candle-evidence.png')),full_page=True)
+                        next_button=inspector.get_by_role('button',name='Next candle',exact=True)
+                        if next_button.is_enabled():
+                            prior_text=inspector.locator('p').first.inner_text()
+                            next_button.click()
+                            page.wait_for_function("previous => document.querySelector('.structural-candle-inspector p')?.textContent !== previous",arg=prior_text,timeout=args.timeout_ms)
+                        page.keyboard.press('Escape')
+                        inspector.wait_for(state='hidden')
                         panel.get_by_role('button', name='Structural detector settings', exact=True).click()
                         dialog=page.get_by_role('dialog',name='Structural detector settings',exact=True)
-                        dialog.get_by_role('checkbox',name='Row 1: Direction',exact=True).check()
-                        dialog.get_by_role('checkbox',name='Row 2: Recovery cycle',exact=True).check()
-                        dialog.get_by_role('checkbox',name='Row 3: Local interactions',exact=True).uncheck()
+                        dialog.get_by_role('checkbox',name='Row 1: Important or changed',exact=True).uncheck()
+                        dialog.get_by_role('checkbox',name='Row 1: Every candle summary',exact=True).check()
                         dialog.get_by_role('button',name='Add row',exact=True).click()
-                        dialog.get_by_role('checkbox',name='Row 6: MACD context',exact=True).check()
+                        dialog.get_by_role('checkbox',name='Row 2: MACD context',exact=True).check()
                         layout=page.evaluate("JSON.parse(localStorage.getItem('review.structural.structural-detector')).labelRows")
-                        if layout[0]!=['state','direction'] or layout[1]!=['progression','cycle'] or layout[2] or layout[5]!=['macd']:
+                        if layout!=[['everySummary'],['macd']]:
                             raise RuntimeError('Label row selections did not persist')
                         dialog.get_by_role('button',name='Done',exact=True).click()
                         page.wait_for_function("[...document.querySelectorAll('.structural-label-layer .structural-candle-label')].some(n=>n.textContent.includes('MACD'))")
-                        page.mouse.move(500,350)
-                        if page.get_by_role('dialog',name='Structural detector settings',exact=True).count():
-                            raise RuntimeError('Hover opened detector inspection')
                         panel.get_by_role('button',name='Structural detector settings',exact=True).click()
-                        if not dialog.get_by_role('checkbox',name='Row 6: MACD context',exact=True).is_checked():
+                        if not dialog.get_by_role('checkbox',name='Row 2: MACD context',exact=True).is_checked():
                             raise RuntimeError('Reopened configuration lost row settings')
                         dialog.get_by_role('button',name='Reset label rows',exact=True).click()
-                        if evidence.get('contract')=='structural-candle-detector-4':
-                            for row_index,old,new in [(2,'Progression','Volume progression'),(3,'Local interactions','Volume divergence score'),(4,'Global interactions','Observed HOD / LOD'),(5,'Candle shape','Volume')]:
-                                dialog.get_by_role('checkbox',name=f'Row {row_index}: {old}',exact=True).uncheck()
-                                dialog.get_by_role('checkbox',name=f'Row {row_index}: {new}',exact=True).check()
-                            dialog.get_by_role('button',name='Done',exact=True).click()
-                            page.wait_for_function("[...document.querySelectorAll('.structural-candle-label')].some(n=>n.textContent.includes('Obs. HOD'))")
-                            page.wait_for_timeout(300)
-                            page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__volume-labels.png')),full_page=True)
-                            panel.get_by_role('button',name='Structural detector settings',exact=True).click()
-                        dialog.get_by_role('checkbox',name='Row 1: Movement',exact=True).focus()
+                        dialog.get_by_role('checkbox',name='Row 1: Important or changed',exact=True).focus()
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__detector-details.png')),full_page=True)
+                        dialog.get_by_role('button',name='Done',exact=True).click()
+                        page.wait_for_timeout(300)
                         if page.get_by_text('Chart renderer stopped', exact=True).count():
                             raise RuntimeError('Independent structural chart failed')
                     if args.symmetric_swing_fixture:
@@ -3126,6 +3133,9 @@ def capture(args: argparse.Namespace) -> int:
                     if args.hindsight_positions:
                         result["hindsight_status"] = page.locator('.hindsight-controls').all_text_contents()
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem + '__failed.png')), full_page=True)
+                    if args.structural_detector_fixture:
+                        print('Structural fixture failure: '+str(exc),flush=True)
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__failed.png')),full_page=True)
                     capture_failures += 1
                     result.update({
                         "status": "capture_failed", "error": str(exc), "issues": [],

@@ -56,7 +56,7 @@ class VolumeLevels:
                 crossed = sign*(bar['close']-value['price']) > threshold
                 touched = sign*(bar[side]-value['price']) >= 0
                 rejected = touched and sign*(bar['close']-value['price']) < -threshold
-                interaction = 'break' if crossed else 'rejection' if rejected else 'test' if touched else 'approach'
+                interaction = 'cross' if crossed else 'rejection' if rejected else 'test' if touched else 'approach'
                 near.append(dict(side=side, rank=1, kind='running_extreme', interaction=interaction, **value))
             for rank, pivot in enumerate(self.ranks[side], 1):
                 if bar['low']-proximity <= pivot['price'] <= bar['high']+proximity:
@@ -115,7 +115,9 @@ class VolumeLevels:
         if self.leg and self.leg['complete'] and old_leg and old_leg['complete'] and old_leg['volume'] > 0:
             comparisons.append(dict(reference='previous_same_direction_leg',
                 ratio=(self.leg['volume']/self.leg['duration'])/(old_leg['volume']/old_leg['duration'])))
-        contraction = max([max(0, 1-c['ratio']) for c in comparisons] or [0.])
+        # Do not cherry-pick the more favorable reference when the previous
+        # candle and comparable directional leg disagree.
+        contraction = min([max(0, 1-c['ratio']) for c in comparisons] or [0.])
         supported = rate is not None and rate > 0 and self.samples >= self.settings.volume_warmup_candles
         direction = 'bearish' if sign == 1 else 'bullish' if sign == -1 else 'none'
         side = 'high' if sign == 1 else 'low'

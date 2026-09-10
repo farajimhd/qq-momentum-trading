@@ -1,7 +1,7 @@
 """Read-only indicator projection over the chart's realized candle contract.
 
 Chart candles are inputs, never persisted as market authority. Global evidence
-comes only from a certified V5 cursor, with price-basis checks. Strategies may
+defaults to a matching certified V6 cursor, with price-basis checks. Strategies may
 consume the same market_engine detector directly without any browser or API.
 """
 from collections import OrderedDict
@@ -54,6 +54,12 @@ class Settings(BaseModel):
     volume_expansion_multiple: float = Field(default=1.5, ge=1, le=20)
     volume_divergence_min_score: float = Field(default=30, ge=1, le=100)
     volume_setup_max_candles: int = Field(default=20, ge=1, le=1000)
+    atr_period: int = Field(default=14, ge=2, le=200)
+    atr_warmup_candles: int = Field(default=5, ge=1, le=200)
+    break_body_atr: float = Field(default=.3, gt=0, le=10)
+    break_body_fraction: float = Field(default=.4, gt=0, le=1)
+    penetration_atr: float = Field(default=.1, gt=0, le=5)
+    acceptance_closes: int = Field(default=2, ge=2, le=20)
 
 
 class DetectorRequest(BaseModel):
@@ -72,7 +78,7 @@ class GlobalContext:
         from src.backend.experimental_structure_book import builds, resolve
         self.ticker = ticker
         self.books = [resolve(book_id)] if book_id else sorted(
-            [b for b in builds() if b['ticker']==ticker and b['version']=='causal-swing-closing-book-5'],
+            [b for b in builds() if b['ticker']==ticker and b['version']=='causal-swing-closing-book-6'],
             key=lambda b:(b['end'], b.get('selection_contract')=='symmetric-level-evidence-selection-2', b['id']), reverse=True)
         if any(b['ticker']!=ticker or b['version'] not in ('causal-swing-closing-book-5','causal-swing-closing-book-6') for b in self.books):
             raise ValueError('Global context requires a matching certified V5/V6 book')
@@ -87,7 +93,7 @@ class GlobalContext:
         session = at.astimezone(NY).date().isoformat()
         book = next((b for b in self.books if b['start'] <= session <= b['end']), None)
         if not book:
-            return None, 'no_certified_v5_book_for_session'
+            return None, 'no_certified_v6_book_for_session'
         if session in self.errors:
             return None, self.errors[session]
         try:

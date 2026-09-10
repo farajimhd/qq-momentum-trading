@@ -7,13 +7,16 @@ from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass, asdict
 from math import isfinite
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from .swing_structure import SwingSettings, SwingStructure
 from .structural_evidence import Interactions, morphology, swing_bias, interaction_focus
 from .structural_progression import Progression
 from .structural_volume import VolumeLevels
+from .structural_labels import label_packet
 
-VERSION = 'structural-candle-detector-4'
+VERSION = 'structural-candle-detector-5'
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,12 @@ class DetectorSettings:
     volume_expansion_multiple: float = 1.5
     volume_divergence_min_score: float = 30
     volume_setup_max_candles: int = 20
+    atr_period: int = 14
+    atr_warmup_candles: int = 5
+    break_body_atr: float = .3
+    break_body_fraction: float = .4
+    penetration_atr: float = .1
+    acceptance_closes: int = 2
 
     def __post_init__(self):
         if any(not isfinite(v) or v <= 0 for v in asdict(self).values()):
@@ -48,11 +57,13 @@ class DetectorSettings:
             raise ValueError('Volume fraction or evidence score outside its range')
         if any(not isinstance(v,int) for v in (self.volume_warmup_candles,self.session_level_count,self.volume_setup_max_candles)):
             raise ValueError('Volume and session counts must be integers')
+        if any(not isinstance(v,int) for v in (self.atr_period,self.atr_warmup_candles,self.acceptance_closes)) or self.atr_warmup_candles>self.atr_period or self.break_body_fraction>1:
+            raise ValueError('Invalid ATR qualification settings')
 
 
 def compact(level):
     return {k: level[k] for k in ('unified_level_id', 'level_id', 'side', 'lower', 'upper',
-            'price', 'pivot_at', 'confirmed_at', 'confirmed_at_ms', 'book_version') if k in level}
+            'price', 'pivot_at', 'confirmed_at', 'confirmed_at_ms', 'book_version', 'scale', 'prominence', 'score', 'selection_score', 'selection_minimum_score','reversal_distance') if k in level}
 
 
 
@@ -81,6 +92,9 @@ class StructuralDetector:
         self.episode = None
         self.close_times = {}
         self.forming_witness = {}
+        self.true_ranges = deque(maxlen=settings.atr_period)
+        self.recent_bars = deque(maxlen=6)
+        self.label_signature = None
 
     def local_evidence(self, level):
         result = compact(level)
@@ -99,11 +113,27 @@ class StructuralDetector:
             raise ValueError('Candles must be distinct, ordered, and non-overlapping')
         if bar.get('volume') is not None and (not isfinite(bar['volume']) or bar['volume'] < 0):
             raise ValueError('Volume must be finite and nonnegative, or unavailable')
+        gap = bool(self.last and (start>self.last['end'] or end-start<86400 and
+            datetime.fromtimestamp(start,ZoneInfo('America/New_York')).date()!=
+            datetime.fromtimestamp(self.last['time'],ZoneInfo('America/New_York')).date()))
+        if gap:
+            self.__init__(self.settings)
         previous = self.last['close'] if self.last else None
+        atr = sum(self.true_ranges)/len(self.true_ranges) if self.true_ranges else None
+        qualification = dict(atr=atr, ready=len(self.true_ranges)>=self.settings.atr_warmup_candles and bool(atr),
+            observations=len(self.true_ranges),period=self.settings.atr_period,
+            current_body_atr=abs(bar['close']-bar['open'])/atr if atr else None,
+            range_atr=(bar['high']-bar['low'])/atr if atr else None,
+            close_change_atr=(bar['close']-previous)/atr if atr and previous is not None else None,
+            price_floor=(previous or bar['open'])*self.settings.movement_min_bps/10000,
+            penetration_atr=self.settings.penetration_atr,body_atr=self.settings.break_body_atr,
+            body_fraction=self.settings.break_body_fraction,acceptance_closes=self.settings.acceptance_closes)
         baseline = self.body or max(abs(bar['close']-bar['open']), bar['close']*self.settings.reversal_bps/10000)
-        threshold = max(baseline*self.settings.movement_body_multiple,bar['close']*self.settings.movement_min_bps/10000)
+        threshold = max(baseline*self.settings.movement_body_multiple,bar['close']*self.settings.movement_min_bps/10000,
+                        (atr or 0)*self.settings.penetration_atr if qualification['ready'] else 0)
         local_before = [self.local_evidence(l) for l in self.swings.active.values() if l['scale']=='local' and l['state']=='active']
-        local_events, local_expired = self.local_interactions.observe(bar, previous, local_before, baseline*self.settings.proximity_body_multiple, self.sequence)
+        proximity = max(baseline*self.settings.proximity_body_multiple,(atr or 0)*self.settings.penetration_atr)
+        local_events, local_expired = self.local_interactions.observe(bar, previous, local_before, proximity, self.sequence, qualification)
         # Use the previous as-of snapshot for crossings. A level can disappear
         # or change side in the current snapshot precisely because it broke.
         available = {str(l.get('unified_level_id', l.get('level_id'))): l for l in self.global_levels}
@@ -112,7 +142,7 @@ class StructuralDetector:
             if known > end:
                 raise ValueError('Future global swing evidence')
             available.setdefault(str(level.get('unified_level_id', level.get('level_id'))), level)
-        global_events, global_expired = self.global_interactions.observe(bar, previous, list(available.values()), baseline*self.settings.proximity_body_multiple, self.sequence) if global_status=='available' else ([], 0)
+        global_events, global_expired = self.global_interactions.observe(bar, previous, list(available.values()), proximity, self.sequence, qualification) if global_status=='available' else ([], 0)
         held = [t['level'] for t in self.global_interactions.tracks.values() if t['phase']!='active' and t['level']['side'] in (-1,'resistance') and bar['close']>t['level']['upper']]
         below = [t['level'] for t in self.global_interactions.tracks.values() if t['phase']!='active' and t['level']['side'] in (1,'support') and bar['close']<t['level']['lower']]
         # The shared local extractor's temporal constants are interpreted in
@@ -129,10 +159,10 @@ class StructuralDetector:
         new_local = [self.local_evidence(l) for l in self.swings.active.values() if l['scale']=='local' and l['confirmed_at']==local_time]
         for level in new_local:
             if level['side']=='resistance':
-                kind = 'lower_high_confirmed' if self.last_resistance is not None and level['price']<self.last_resistance else 'swing_high_confirmed'
+                kind = 'lower_high_confirmed' if self.last_resistance is not None and level['price']<self.last_resistance-threshold else 'equal_high_confirmed' if self.last_resistance is not None and abs(level['price']-self.last_resistance)<=threshold else 'swing_high_confirmed'
                 self.last_resistance = level['price']
             else:
-                kind = 'higher_low_confirmed' if self.last_support is not None and level['price']>self.last_support else 'swing_low_confirmed'
+                kind = 'higher_low_confirmed' if self.last_support is not None and level['price']>self.last_support+threshold else 'equal_low_confirmed' if self.last_support is not None and abs(level['price']-self.last_support)<=threshold else 'swing_low_confirmed'
             local_events.append(dict(state=kind, level=level))
             if level['side']=='support':
                 self.last_support = level['price']
@@ -177,8 +207,6 @@ class StructuralDetector:
                 reason = 'countertrend_close_without_confirmed_local_break'
                 if self.pullback is None:
                     self.pullback = dict(reference=self.extreme, direction=sign)
-            elif abs(delta)<=baseline*self.settings.consolidation_body_multiple and abs(bar['close']-bar['open'])<=baseline*self.settings.consolidation_body_multiple and not self.pullback:
-                state,reason = 'consolidation','small_body_and_close_change'
             elif self.pullback and sign*(bar['close']-self.pullback['reference'])<=0:
                 state = 'recovery' if sign==1 else 'downward_recovery'
                 reason = 'recovering_toward_prior_extreme'
@@ -190,7 +218,7 @@ class StructuralDetector:
                 self.extreme = bar['close']
         if self.movement_anchor is None or abs(delta)>threshold:
             self.movement_anchor = bar['close']
-        progress = self.progression.observe(bar,previous,self.trend,baseline,threshold,local_events,global_events,local_bias,global_bias,movement_delta=delta)
+        progress = self.progression.observe(bar,previous,self.trend,atr or baseline,threshold,local_events,global_events,local_bias,global_bias,movement_delta=delta)
         volume, session_levels = self.volume_levels.observe(bar,new_local,threshold,baseline,state,local_events+global_events)
         shape = morphology(bar,self.last,baseline,self.settings)
         alpha = 1-2**(-1/self.settings.body_half_life)
@@ -223,7 +251,11 @@ class StructuralDetector:
             developing_swings={side:dict(price=forming[side][0], pivot_at=self.close_times[forming[side][1]], confirmed=False)
                 for side in ('high', 'low') if forming.get(side)},
             macd=dict(histogram_bps=histogram_bps, warmup=self.sequence<26, active=active, direction=episode_direction, episode_started_at=self.episode),
-            candle=dict(bar), gap_before=bool(self.last and start>self.last['end']))
+            candle=dict(bar), gap_before=gap)
+        result['qualification'] = qualification
+        result['labels'],result['summary'],self.label_signature = label_packet(result,self.label_signature,self.recent_bars,atr)
+        self.true_ranges.append(max(bar['high']-bar['low'],abs(bar['high']-previous),abs(bar['low']-previous)) if previous is not None else bar['high']-bar['low'])
+        self.recent_bars.append(dict(bar))
         self.last = dict(bar)
         self.global_levels = deepcopy(levels or []) if global_status=='available' else []
         referenced = {local_time}

@@ -18,4 +18,17 @@
 .structural-candle-label-row + .structural-candle-label-row { border-top: 1px solid var(--border); }
 .structural-candle-label[data-direction="bullish"] { border-top-color: var(--success); }
 .structural-candle-label[data-direction="bearish"] { border-top-color: var(--danger); }
+.structural-candle-label { padding: 0; font-family: inherit; text-align: left; pointer-events: auto; cursor: pointer; }
+.structural-candle-label[data-compact="true"] { max-width: 6.5rem; border-radius: .2rem; }
+.structural-candle-label[data-compact="true"] .structural-candle-label-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: .05rem .2rem; }
+.structural-candle-label:focus-visible { outline: 2px solid var(--foreground); outline-offset: 2px; }
+.structural-candle-inspector { width: min(46rem, calc(var(--app-zoomed-viewport-width, 100vw) - 2rem)); max-height: calc(var(--app-zoomed-viewport-height, 100vh) - 2rem); overflow: hidden; pointer-events: auto; display: flex; flex-direction: column; }
+.structural-candle-inspector > .modal-header, .structural-inspector-navigation { flex-shrink: 0; }
+.structural-inspector-body { overflow: auto; min-height: 0; }
+.structural-candle-inspector p, .structural-candle-inspector details { margin: .7rem 1rem; overflow-wrap: anywhere; }
+.structural-inspector-navigation { display: flex; gap: .5rem; margin: .5rem 1rem; }
+.structural-candle-inspector table { width: calc(100% - 2rem); margin: 1rem; border-collapse: collapse; font-size: .8rem; }
+.structural-candle-inspector th, .structural-candle-inspector td { text-align: left; padding: .35rem .5rem; vertical-align: top; border-bottom: 1px solid var(--border); }
+.structural-candle-inspector tbody th { width: 30%; font-weight: 500; color: var(--text-muted); }
+.structural-candle-inspector pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .75rem; }
 @media (max-width: 600px) { .structural-label-fields { grid-template-columns: 1fr; } }
