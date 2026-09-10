@@ -5902,6 +5902,9 @@ class ReplayRunController:
         batch = await asyncio.to_thread(
             materialize_historical_watchlist_plans,
             self._historical_core_signal_plans,
+            projection_tickers=_structural_recovery_projection_tickers(
+                self.definition.configuration_revision["payload"], self.definition.tickers,
+            ),
         )
         return await asyncio.to_thread(self._compile_market_signal_events, batch)
 

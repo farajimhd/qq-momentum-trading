@@ -2591,6 +2591,20 @@ class BacktestPreflightTests(unittest.TestCase):
 
 
 class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_structural_signal_preparation_keeps_selected_source_scope(self):
+        for structural, expected in ((True, ["SUGP"]), (False, None)):
+            controller = SimpleNamespace(
+                _historical_core_signal_plans=[{"plan_hash": "signal-plan"}],
+                _journal=object(),
+                definition=SimpleNamespace(tickers=("SUGP",), configuration_revision={"payload": {
+                    "strategy": {"parameters": {"structural_recovery_contract": structural}},
+                }}),
+                _compile_market_signal_events=MagicMock(return_value=[]),
+            )
+            with patch("src.backend.historical_watchlist_feature_service.materialize_historical_watchlist_plans", return_value={}) as materialize:
+                await ReplayRunController._load_market_signal_events(controller)
+            materialize.assert_called_once_with([{"plan_hash": "signal-plan"}], projection_tickers=expected)
+
     @patch("src.backend.replay_run_service.qmd_advance_historical_structure_snapshot")
     @patch("src.backend.replay_run_service.qmd_historical_structure_snapshot")
     async def test_historical_structure_advances_cached_checkpoint_incrementally(
