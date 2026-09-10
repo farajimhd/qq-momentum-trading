@@ -2354,6 +2354,32 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BacktestPreflightTests(unittest.TestCase):
+    def test_structural_preflight_scopes_watchlist_without_changing_other_strategies(self):
+        for structural, expected in ((True, ["JUNS", "SUGP"]), (False, None)):
+            with self.subTest(structural=structural), tempfile.TemporaryDirectory() as directory:
+                approved = approved_configuration(assignments=[])
+                approved["payload"]["strategy"]["parameters"]["structural_recovery_contract"] = structural
+                approved["payload"]["universes"] = [{"source": "watchlist", "enabled": True}]
+                with patch("src.backend.replay_run_service.historical_preflight", return_value={
+                    "window": {"sessions": ["2026-08-21"]}, "checks": [], "strategy_run_ready": True,
+                }), patch("src.backend.replay_run_service.backtest_runtime_root", return_value=Path(directory)), patch(
+                    "src.backend.replay_run_service._historical_watchlist_plans_for_configuration", return_value=[{"plan_hash": "unchanged"}],
+                ), patch("src.backend.replay_run_service._historical_watchlist_membership_timeline_from_plans", return_value=[
+                    {"members": [{"ticker": "SUGP"}]},
+                ]) as materialize:
+                    result = backtest_preflight(anchor_date=date(2026, 8, 24), session_count=1,
+                        tickers=("sugp", "JUNS", "SUGP"), configuration_revision=approved)
+                self.assertTrue(result["strategy_run_ready"])
+                materialize.assert_called_once_with([{"plan_hash": "unchanged"}], projection_tickers=expected)
+
+    def test_structural_preflight_empty_tickers_cannot_expand_to_whole_market(self):
+        approved = approved_configuration()
+        approved["payload"]["strategy"]["parameters"]["structural_recovery_contract"] = True
+        with patch("src.backend.replay_run_service.historical_preflight") as historical:
+            with self.assertRaisesRegex(ValueError, "at least one selected ticker"):
+                backtest_preflight(anchor_date=date(2026, 8, 24), session_count=1, configuration_revision=approved)
+        historical.assert_not_called()
+
     def setUp(self):
         # These tests isolate population/storage preflight. Version admission
         # has its own stale-source and stale-candidate regression coverage.

@@ -4908,8 +4908,11 @@ class ReplayRunController:
 
     def _historical_watchlist_projection_tickers(self) -> list[str] | None:
         configuration = self.definition.configuration_revision["payload"]
-        if configuration.get('strategy', {}).get('parameters', {}).get('structural_recovery_contract'):
-            return list(self.definition.tickers)
+        structural_tickers = _structural_recovery_projection_tickers(
+            configuration, self.definition.tickers,
+        )
+        if structural_tickers is not None:
+            return structural_tickers
         activation = dict(configuration.get("signal_activation") or {})
         enabled_streams = [
             dict(stream)
@@ -8056,6 +8059,17 @@ def replay_preflight(
     }
 
 
+def _structural_recovery_projection_tickers(
+    configuration: dict[str, Any], tickers: tuple[str, ...],
+) -> list[str] | None:
+    if not configuration.get("strategy", {}).get("parameters", {}).get("structural_recovery_contract"):
+        return None
+    selected = sorted({ticker.strip().upper() for ticker in tickers if ticker.strip()})
+    if not selected:
+        raise ValueError("Structural recovery backtests require at least one selected ticker")
+    return selected
+
+
 def backtest_preflight(
     *,
     anchor_date: date,
@@ -8071,13 +8085,14 @@ def backtest_preflight(
             "Backtest period must stay within 04:00-20:00 New York with start before end"
         )
     approved = configuration_revision or backtest_configuration_snapshot()
+    configuration = dict(approved.get("payload") or {})
+    projection_tickers = _structural_recovery_projection_tickers(configuration, tickers)
     base = historical_preflight(
         mode=RunMode.BACKTEST.value,
         anchor_date=anchor_date,
         session_count=session_count,
         tickers=tickers,
     )
-    configuration = dict(approved.get("payload") or {})
     run_plan = dict(configuration.get("run_plan") or {})
     selected_signal_stream_ids = {
         str(value)
@@ -8151,7 +8166,8 @@ def backtest_preflight(
                 end=datetime.combine(sessions[-1], end_time, tzinfo=NEW_YORK),
             )
             timeline = _historical_watchlist_membership_timeline_from_plans(
-                watchlist_plans
+                watchlist_plans,
+                projection_tickers=projection_tickers,
             )
             watchlist_snapshot_count = len(timeline)
             watchlist_members = list(
