@@ -51,6 +51,7 @@ from src.backend.replay_run_service import (
     _debug_watchlist_membership_timeline,
     backtest_debug_preflight,
     backtest_preflight,
+    _scope_structural_watchlist_capacity,
     replay_preflight,
     replay_history_fetch_concurrency,
 )
@@ -2354,6 +2355,25 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BacktestPreflightTests(unittest.TestCase):
+    def test_source_scoped_capacity_preserves_candidate_rules_and_provenance(self):
+        plan = {"plan_hash": "sha256:original", "maximum_size": 10000,
+                "manual_inclusions": [], "rule_sets": [{"spread_bps": 100}],
+                "ranking_field": "market.liquidity_score", "max_evaluations_per_chunk": 10}
+        original = deepcopy(plan)
+        scoped = _scope_structural_watchlist_capacity(plan, ["JUNS", "SUGP"])
+        self.assertEqual(plan, original)
+        self.assertEqual(scoped["maximum_size"], 2)
+        self.assertEqual(scoped["source_plan_hash"], plan["plan_hash"])
+        self.assertNotEqual(scoped["plan_hash"], plan["plan_hash"])
+        for key in ("rule_sets", "ranking_field", "max_evaluations_per_chunk"):
+            self.assertEqual(scoped[key], plan[key])
+        # A genuine top-one ranking cap must remain top-one.
+        plan["maximum_size"] = 1
+        self.assertEqual(_scope_structural_watchlist_capacity(plan, ["JUNS", "SUGP"]), plan)
+        plan.update(maximum_size=10000, manual_inclusions=["OTHER"])
+        with self.assertRaisesRegex(ValueError, "manual inclusions"):
+            _scope_structural_watchlist_capacity(plan, ["SUGP"])
+
     def test_structural_preflight_scopes_watchlist_without_changing_other_strategies(self):
         for structural, expected in ((True, ["JUNS", "SUGP"]), (False, None)):
             with self.subTest(structural=structural), tempfile.TemporaryDirectory() as directory:

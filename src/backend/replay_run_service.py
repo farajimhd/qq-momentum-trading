@@ -1002,6 +1002,7 @@ class ReplayRunController:
         else:
             self._historical_watchlist_plans = _historical_watchlist_plans_for_configuration(
                 self.definition.configuration_revision,
+                tickers=self.definition.tickers,
                 start=self.definition.requested_start,
                 end=self.definition.session_end,
             )
@@ -7705,6 +7706,7 @@ def _historical_watchlist_plans_for_configuration(
     *,
     start: datetime,
     end: datetime,
+    tickers: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     from src.backend.historical_watchlist_plan import compile_historical_watchlist_plan
 
@@ -7764,7 +7766,7 @@ def _historical_watchlist_plans_for_configuration(
     )
     if universes and not model:
         raise ValueError("Historical Watchlist plans require the approved configuration model")
-    return [
+    plans = [
         compile_historical_watchlist_plan(
             model,
             str(universe.get("scanner_view_id") or ""),
@@ -7773,6 +7775,20 @@ def _historical_watchlist_plans_for_configuration(
         )
         for universe in universes
     ]
+    selected = _structural_recovery_projection_tickers(configuration, tickers)
+    return [_scope_structural_watchlist_capacity(plan, selected) for plan in plans] if selected else plans
+
+
+def _scope_structural_watchlist_capacity(plan: dict[str, Any], tickers: list[str]) -> dict[str, Any]:
+    """Derive capacity from an explicit source scope without editing the candidate."""
+    if not tickers or int(plan["maximum_size"]) <= len(tickers):
+        return plan
+    if set(plan.get("manual_inclusions") or []) - set(tickers):
+        raise ValueError("Structural Watchlist manual inclusions must be within the selected ticker scope")
+    body = {key: deepcopy(value) for key, value in plan.items() if key != "plan_hash"}
+    body.update(maximum_size=len(tickers), source_plan_hash=plan["plan_hash"], source_tickers=tickers)
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    return {**body, "plan_hash": "sha256:" + hashlib.sha256(encoded).hexdigest()}
 
 
 def _historical_core_signal_plans_for_configuration(
@@ -8162,6 +8178,7 @@ def backtest_preflight(
         try:
             watchlist_plans = _historical_watchlist_plans_for_configuration(
                 approved,
+                tickers=tickers,
                 start=datetime.combine(sessions[0], clock_time(4, 0), tzinfo=NEW_YORK),
                 end=datetime.combine(sessions[-1], end_time, tzinfo=NEW_YORK),
             )
