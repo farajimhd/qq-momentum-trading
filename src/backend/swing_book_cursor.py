@@ -59,6 +59,25 @@ class SwingBookCursor:
         self.ticker, self.normalized = ticker, normalized
         self.lock, self.session, self.at = RLock(), None, -1
 
+    def empty_interval(self, start, end):
+        """Certify only a short prefix interval with no canonical eligible bars.
+
+        inputs() has verified the session revision against the persisted book.
+        No future bar participates in this interval query.
+        """
+        with self.lock:
+            if not 0 < end-start <= 30 or end>self.at:
+                return None
+            session=datetime.fromtimestamp(start,NY).date().isoformat()
+            if session!=self.session or datetime.fromtimestamp(end,NY).date().isoformat()!=session:
+                return None
+            left=bisect_right(self.bars,start,key=lambda b:b[0])
+            right=bisect_right(self.bars,end,key=lambda b:b[0])
+            if left!=right:
+                return None
+            return dict(contract='canonical-empty-interval-1',start=start,end=end,
+                session=session,book_id=self.build['id'],fingerprint=self.build['fingerprint'])
+
     def advance(self, cutoff):
         if cutoff.tzinfo is None:
             raise ValueError('Timezone-aware cutoff required')

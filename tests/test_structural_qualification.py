@@ -78,7 +78,9 @@ def test_prior_atr_immutable_prefix_and_checkpoint_continuation():
     assert prefix==frozen
     assert set(result['labels'])=={'movement','regime','geometry','displacement','interaction','break_lifecycle',
         'retest_lifecycle','structural_progression','correction_recovery','pressure','volume','reversal','momentum','signal','evidence'}
-    assert result['summary']['label']=='breakout'
+    # A qualified impulse can act before oscillator warmup; the structural
+    # breakout remains in its family while the actionable signal takes priority.
+    assert result['summary']['label']=='long_enter'
 
 
 def test_warmup_and_gap_do_not_create_qualified_break():

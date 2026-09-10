@@ -153,7 +153,10 @@ def calculate(request, context_factory=GlobalContext):
             _cache[key] = entry
         for bar in closed[len(entry['bars']):]:
             levels, status = (None, 'split_adjusted_chart_requires_matching_global_basis') if request.split_adjusted else entry['context'].at(bar)
-            result = entry['engine'].observe(bar, levels, status)
+            previous=entry['engine'].last
+            cursor=getattr(entry['context'],'cursor',None)
+            proof=cursor.empty_interval(previous['end'],bar['time']) if previous and status=='available' and cursor and hasattr(cursor,'empty_interval') else None
+            result = entry['engine'].observe(bar, levels, status, continuity=proof)
             entry['rows'].append(result)
             entry['bars'].append(bar)
         entry['used'] = now

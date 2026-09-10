@@ -18,7 +18,7 @@ from .structural_labels import label_packet
 from .structural_momentum import observe as observe_momentum
 from .structural_signal import observe as observe_signal
 
-VERSION = 'structural-candle-detector-9'
+VERSION = 'structural-candle-detector-10'
 
 
 @dataclass(frozen=True)
@@ -132,7 +132,7 @@ class StructuralDetector:
                 result[key] = self.close_times[result[key]]
         return result
 
-    def observe(self, bar, levels=None, global_status='unavailable'):
+    def observe(self, bar, levels=None, global_status='unavailable', *, continuity=None):
         start, end = bar['time'], bar['end']
         if not all(isfinite(bar[k]) for k in ('time', 'end', 'open', 'high', 'low', 'close')):
             raise ValueError('Non-finite candle')
@@ -145,6 +145,11 @@ class StructuralDetector:
         gap = bool(self.last and (start>self.last['end'] or end-start<86400 and
             datetime.fromtimestamp(start,ZoneInfo('America/New_York')).date()!=
             datetime.fromtimestamp(self.last['time'],ZoneInfo('America/New_York')).date()))
+        certified=bool(gap and continuity and continuity.get('contract')=='canonical-empty-interval-1' and
+            continuity.get('start')==self.last['end'] and continuity.get('end')==start and
+            0<start-self.last['end']<=30 and continuity.get('fingerprint') and
+            datetime.fromtimestamp(start,ZoneInfo('America/New_York')).date()==datetime.fromtimestamp(self.last['time'],ZoneInfo('America/New_York')).date())
+        if certified: gap=False
         if gap:
             interrupted_position = self.signal_state.get('setup')
             self.__init__(self.settings)
@@ -291,6 +296,7 @@ class StructuralDetector:
             candle=dict(bar), gap_before=gap)
         result['qualification'] = qualification
         result['momentum'] = momentum
+        result['continuity'] = dict(status='certified_empty_interval' if certified else 'reset' if gap else 'contiguous',proof=continuity if certified else None)
         result['technical_signal'] = observe_signal(self.signal_state,result,self.global_levels+local_before,self.settings)
         result['labels'],result['summary'],self.label_signature = label_packet(result,self.label_signature,self.recent_bars,atr)
         self.true_ranges.append(max(bar['high']-bar['low'],abs(bar['high']-previous),abs(bar['low']-previous)) if previous is not None else bar['high']-bar['low'])
