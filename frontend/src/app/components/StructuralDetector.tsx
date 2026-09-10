@@ -92,6 +92,8 @@ const labelFields = { summary: 'Important or changed', everySummary:'Every candl
 type LabelField = keyof typeof labelFields;
 export type LabelRows = LabelField[][];
 const defaultRows: LabelRows = [['signal']];
+const entryExitActions = new Set(['long_enter','short_enter','long_exit','short_exit']);
+const decisionActions = new Set([...entryExitActions,'long_hold','short_hold']);
 const price = (n: unknown) => typeof n==='number' ? n.toLocaleString('en-US',{maximumFractionDigits:6}) : '?';
 const eventText = (events: Event[]) => [...new Map(events.map(e => [e.state+':'+(e.band_id || JSON.stringify(e.level)),
   `${human(e.state)} ${e.level.lower!=null ? price(e.level.lower)+'–'+price(e.level.upper) : price(e.level.price)}${e.encounters ? ' #'+e.encounters : ''}${(e.rejection_closes || 0)>1 ? ' · '+e.rejection_closes+' rejection closes' : ''}`])).values()].join(' · ') || 'none';
@@ -132,6 +134,7 @@ function readRows(value: unknown): LabelRows {
 }
 /** The same label component is used on candles and in the settings preview. */
 export function StructuralCandleLabel({ row, layout, onInspect }: { row: StructuralState; layout: LabelRows; onInspect?:()=>void }) {
+  if (!entryExitActions.has(row.technical_signal?.action || '')) return null;
   if (!layout.some(fields => fields.length)) return null;
   const compact=layout.length===1 && layout[0].length===1 && layout[0][0]==='signal';
   const action=row.technical_signal?.action || 'wait';
@@ -235,14 +238,14 @@ export function useStructuralDetector(ticker: string, timeframe: string, candles
     <button type="button" className="toolbar-button structural-detector-toolbar" aria-pressed={enabled} onClick={() => change({ ...stored, key: storageKey, enabled: !enabled })}>Structural detector</button>
     <button type="button" className="toolbar-button structural-detector-toolbar" aria-label="Structural detector settings" onClick={() => setSettingsOpen(true)}>Detector settings</button>
     {enabled ? <span className="chart-data-status" role="status">{state.error ? 'Detector unavailable' : state.busy ? 'Detecting·' : `${rows.length} states${result?.global_available_count ? ' · V6' : ' · global unavailable'}`}</span> : null}
-    {enabled && rows.at(-1)?.technical_signal && <span className="chart-data-status" title="Causal technical state; hypothetical position, not an order">Signal: {human(rows.at(-1)!.technical_signal!.action)}</span>}
+    {enabled && decisionActions.has(rows.at(-1)?.technical_signal?.action || '') && <span className="chart-data-status" title="Causal decision for a hypothetical position; not an order">Signal: {human(rows.at(-1)!.technical_signal!.action)}</span>}
     {settingsOpen ? <Modal className="structural-detector-settings" title="Structural detector settings" onClose={() => setSettingsOpen(false)}>
       <div className="structural-detector-settings-body">
         {checkbox}<p className="chart-settings-help" role="status">{status}</p>
         <section className="chart-settings-section"><h3>Candle labels</h3>
-          <p className="chart-settings-help">Technical signals follow a qualified break, acceptance and held retest with momentum agreement. Long and short signal transitions appear below candles. Add Signal reason for explanations. Stops and targets are frozen references; trade execution eligibility is not assessed.</p>
-          <p className="chart-settings-help">Only changed technical signals appear below candles. Repeated states and idle candles are hidden. Structural labels remain in the candle inspector. Existing chart layouts have been switched to signals only.</p>
-          <p className="chart-settings-help">Entry/exit markers sit outside the text box: ▲ above long entry and short exit; ▼ below short entry and long exit. Long signals use positive color, shorts negative color; watch and exit use caution color. Text always identifies direction.</p>
+          <p className="chart-settings-help">Only long/short entry and exit decisions appear below candles. The toolbar shows the current hold decision while a hypothetical position is active. No qualifying entry means no chart signal.</p>
+          <p className="chart-settings-help">Watch, armed, acceptance and confirmation states remain internal and can be inspected on a candle. Add Signal reason for entry/exit explanations. Stops and targets are frozen references; trade execution eligibility is not assessed.</p>
+          <p className="chart-settings-help">Entry/exit markers sit outside the text box: ▲ above long entry and short exit; ▼ below short entry and long exit. Long entries use positive color, short entries negative color, and exits caution color.</p>
           <p className="chart-settings-help">A reversal candidate requires divergence near an extreme or structural rejection. A later close must cross its candle boundary with a matching structural break to confirm. Candidates expire or invalidate on volume-supported continuation; past labels stay unchanged.</p>
           {stored.labelRows.map((row,index) => <fieldset className="structural-label-row-config" key={index}>
             <legend>Row {index+1}</legend>
@@ -318,7 +321,7 @@ export class StructuralDetectorPrimitive implements ISeriesPrimitive<Time> {
       for (const row of this.rows) {
         if (range && typeof range.from==='number' && row.time<range.from) continue;
         if (range && typeof range.to==='number' && row.time>range.to) break;
-        if (!row.technical_signal || !row.technical_signal.changed || row.technical_signal.action==='wait') continue;
+        if (!entryExitActions.has(row.technical_signal?.action || '')) continue;
         const x=this.coordinate(row.time), y=this.series.priceToCoordinate(row.candle.low);
         if (x!=null && y!=null && x>=0 && x<=mediaSize.width && y>=0 && y<mediaSize.height) labels.push({row,x,y:y+5});
       }

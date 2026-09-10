@@ -2558,6 +2558,9 @@ def capture(args: argparse.Namespace) -> int:
                             return {checks,maxError};
                         }""")
                         result['signal_motion']=motion
+                        signal_text=panel.locator('.structural-candle-label:visible').all_text_contents()
+                        if any(not re.match(r'\s*[▲▼]?\s*(Long|Short) (enter|exit)',text) for text in signal_text):
+                            raise RuntimeError('Chart exposed non-actionable setup or hold labels')
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__labels.png')),full_page=True)
                         visible_label=panel.locator('.structural-candle-label:visible').first
                         if evidence.get('contract')=='structural-candle-detector-7':
