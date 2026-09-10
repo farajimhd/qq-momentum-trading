@@ -18,7 +18,7 @@ from .structural_labels import label_packet
 from .structural_momentum import observe as observe_momentum
 from .structural_signal import observe as observe_signal
 
-VERSION = 'structural-candle-detector-8'
+VERSION = 'structural-candle-detector-9'
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,9 @@ class DetectorSettings:
     signal_max_extension_atr: float = 3
     signal_min_room_atr: float = 1
     signal_progress_candles: int = 20
+    signal_follow_through_candles: int = 5
+    signal_profit_activation_r: float = 1
+    signal_profit_giveback_fraction: float = .4
     tail_range_fraction: float = .5
     indecision_body_fraction: float = .2
     expansion_body_multiple: float = 1.5
@@ -69,6 +72,8 @@ class DetectorSettings:
     acceptance_closes: int = 2
 
     def __post_init__(self):
+        if type(self.signal_follow_through_candles) is not int or not 1<=self.signal_follow_through_candles<=10000 or not 0<self.signal_profit_giveback_fraction<1:
+            raise ValueError('Invalid position lifecycle settings')
         if any(type(v) is not int or not 1<=v<=10000 for v in (self.signal_setup_candles,self.signal_confirmation_candles,self.signal_hold_candles,self.signal_progress_candles)):
             raise ValueError('Invalid signal lifetime')
         if type(self.rsi_period) is not int or not 2<=self.rsi_period<=200 or type(self.momentum_confirm_closes) is not int or not 1<=self.momentum_confirm_closes<=20 or not 0<self.rsi_neutral_band<20:

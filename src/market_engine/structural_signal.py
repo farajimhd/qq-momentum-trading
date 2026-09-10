@@ -52,12 +52,53 @@ def momentum_support(row,sign):
     return (aligned or improving) and not weakening
 
 
+def event_witness(event):
+    return f"{event['state']}:{key(event['level'])}:{event.get('break_at')}:{event.get('encounters',0)}"
+
+
+def improving_momentum(row, sign):
+    m=row['momentum']
+    return m['agreement']!='warming_up' and m['macd'].get('trend')==('rising' if sign==1 else 'falling') and m.get('rsi',{}).get('trend')==('rising' if sign==1 else 'falling')
+
+
+def reentry_permission(previous_exit, fresh_events, sign, at):
+    """An exit's structural objection must be resolved by new evidence."""
+    if not previous_exit: return 'first_entry'
+    if previous_exit.get('resolution_basis'): return previous_exit['resolution_basis']
+    blocking=previous_exit.get('blocking_level') or previous_exit['origin']
+    accepted='breakout_accepted' if sign==1 else 'breakdown_accepted'
+    repairs=('support_reclaim','support_retest_held') if sign==1 else ('resistance_reclaim','resistance_retest_held')
+    for event in fresh_events:
+        if at<=previous_exit['exit_at']: continue
+        if known(event['level']) is None or known(event['level'])>at: continue
+        if event['state']==accepted and overlaps(event['level'],blocking):
+            previous_exit.update(resolution_basis='blocking_level_accepted',resolved_at=at,resolved_level=deepcopy(event['level']))
+            return 'blocking_level_accepted'
+        if event['state'] in repairs:
+            repaired=overlaps(event['level'],previous_exit['origin'])
+            new_base=known(event['level']) is not None and known(event['level'])>previous_exit['exit_at']
+            if (repaired and previous_exit['exit_class']=='failed_setup') or new_base:
+                basis='failed_structure_repaired' if repaired else 'new_pullback_base_confirmed'
+                previous_exit.update(resolution_basis=basis,resolved_at=at,resolved_level=deepcopy(event['level']))
+                return basis
+    return None
+
+
 def observe(state,row,levels,settings):
     bar=row['candle'];close=bar['close'];at=row['effective_at'];seq=row['sequence']
     interrupted=state.get('setup') if row['gap_before'] else None
     if row['gap_before']: state.clear()
     previous=state.get('last_bar',bar);atr=row['qualification'].get('atr')
     events=row['global_events']+row['local_events']
+    event_witnesses={event_witness(e) for e in events if all(k in e['level'] for k in ('lower','upper'))}
+    fresh_events=[e for e in events if all(k in e['level'] for k in ('lower','upper')) and event_witness(e) not in state.get('event_witnesses',[])]
+    for direction,previous_exit in state.get('exits',{}).items():
+        sign=1 if direction=='long' else -1
+        failed=('support_failure','failed_breakout') if sign==1 else ('breakout','failed_breakdown')
+        if previous_exit.get('resolved_level') and any(e['state'] in failed and overlaps(e['level'],previous_exit['resolved_level']) for e in fresh_events):
+            previous_exit.update(exit_at=at,exit_class='failed_setup',origin=previous_exit['resolved_level'],blocking_level=previous_exit['resolved_level'])
+            for field in ('resolved_level','resolution_basis','resolved_at'): previous_exit.pop(field,None)
+        reentry_permission(previous_exit,fresh_events,sign,at)
     reactions=state.setdefault('reactions',{})
     used=state.setdefault('used',{})
     for memory in (reactions,):
@@ -92,12 +133,31 @@ def observe(state,row,levels,settings):
         if sign*(close-position.get('best_close',position['entry_reference']))>=settings.penetration_atr*unit:
             position.update(best_close=close,last_progress_sequence=seq)
         giveback=sign*(position.get('best_close',position['entry_reference'])-close)
-        rejection=old_barrier and any(overlaps(e['level'],old_barrier) and e['state'] in (('rejection','failed_breakout') if sign==1 else ('support_rejection','failed_breakdown')) for e in events)
+        rejection_events=[e for e in events if e['state'] in (('rejection','failed_breakout') if sign==1 else ('support_rejection','failed_breakdown')) and
+                          (old_barrier and overlaps(e['level'],old_barrier) or any(z['importance']>=2 and overlaps(e['level'],z) for z in zones))]
+        rejection=bool(rejection_events)
         thesis_failed=any(overlaps(e['level'],position['origin']) for e in opposing)
         reversal=any(o['direction']==('bearish' if sign==1 else 'bullish') and o['outcome']=='structural_reversal_confirmation' for o in row.get('volume_analysis',{}).get('reversal_outcomes',[]))
+        initial_risk=abs(position['entry_reference']-position['initial_stop'])
+        progress=sign*(position['best_close']-position['entry_reference'])
+        unrealized=sign*(close-position['entry_reference'])
+        near_barrier=old_target is not None and sign*(old_target-close)<=unit
+        position['profit_protection_active']=position.get('profit_protection_active',False) or progress>=settings.signal_profit_activation_r*initial_risk
+        phase='protecting_profit' if position['profit_protection_active'] else 'approaching_barrier' if near_barrier else 'established' if progress>=.5*initial_risk else 'initial_follow_through'
+        position.update(lifecycle=phase,progress_r=progress/initial_risk,unrealized_r=unrealized/initial_risk,giveback_r=giveback/initial_risk)
+        adverse_body=max(0,-sign*(close-bar['open']))
+        rejection_size=(bar['high']-close) if sign==1 else (close-bar['low'])
+        strong_rejection=rejection and (rejection_size>=unit and adverse_body>=settings.break_body_atr*unit or
+            any(e['state'].startswith('failed_') or e.get('rejection_closes',0)>=2 for e in rejection_events))
+        follow_through_failed=phase=='initial_follow_through' and seq-position['entry_sequence']>=settings.signal_follow_through_candles and progress<.25*initial_risk
+        profit_giveback=position['profit_protection_active'] and giveback>=max(settings.signal_min_stop_atr*unit,settings.signal_profit_giveback_fraction*progress)
         if stop_hit: reason='both_boundaries_touched_order_unknown' if target_hit else 'stop_reference_touched'
         elif thesis_failed: reason='entry_structure_failed'
-        elif not supported and (opposing or reversal): reason='opposing_structure_and_momentum'
+        elif reversal: reason='confirmed_opposing_reversal'
+        elif strong_rejection: reason='important_barrier_rejection'
+        elif profit_giveback: reason='profit_giveback_limit'
+        elif follow_through_failed: reason='initial_follow_through_failed'
+        elif not supported and opposing: reason='opposing_structure_and_momentum'
         elif rejection and (not supported or against): reason='important_barrier_rejection'
         elif position['weak_closes']>=settings.signal_confirmation_candles and (giveback>=.5*unit or 'repeated_failed_recovery' in row.get('progression',{}).get('tags',[])): reason='failed_progress_and_momentum'
         elif seq-position['last_progress_sequence']>=settings.signal_progress_candles and not supported: reason='no_progress_with_weak_momentum'
@@ -105,6 +165,10 @@ def observe(state,row,levels,settings):
         else: reason='structure_valid'
         if reason!='structure_valid':
             action=direction+'_exit';state['setup']=None;state['last_exit_sequence']=seq
+            exit_class='barrier_rejection' if rejection else 'profit_protection' if position['profit_protection_active'] and unrealized>0 else 'failed_setup'
+            blocking=rejection_events[0]['level'] if rejection else old_barrier if exit_class=='profit_protection' else position['origin']
+            state.setdefault('exits',{})[direction]=dict(exit_at=at,reason=reason,exit_class=exit_class,origin=deepcopy(position['origin']),blocking_level=deepcopy(blocking),exit_reference=close)
+            position.update(exit_reason=reason,exit_class=exit_class,exit_reference=close,exit_at=at)
         else:
             action=direction+'_hold'
             # Targets are decision barriers, not automatic take-profit fills.
@@ -129,10 +193,17 @@ def observe(state,row,levels,settings):
             # A thin nearby band must not place protection inside ordinary noise.
             noise_stop=close-sign*settings.signal_min_stop_atr*(atr or unit)
             stops=[min(p,noise_stop) if sign==1 else max(p,noise_stop) for p in stops]
+            if position['profit_protection_active']:
+                # Close-derived peak: no assumed ordering of a candle's high/low.
+                allowance=max(settings.signal_min_stop_atr*(atr or unit),settings.signal_profit_giveback_fraction*progress)
+                profit_stop=position['best_close']-sign*allowance
+                if sign*(profit_stop-position['entry_reference'])>0:
+                    stops.append(profit_stop)
+                    management.append('profit_floor_for_subsequent_candles')
             valid=[p for p in stops if sign*(p-position['stop'])>0 and sign*(close-p)>settings.penetration_atr*unit]
             if valid:
                 position['stop']=max(valid) if sign==1 else min(valid);position['stop_effective_at']=at
-                management.append('confirmed_structure_stop_tightened')
+                management.append('protection_tightened_after_close')
             if target_hit: management.append('barrier_touched_monitor_acceptance_or_rejection')
         risk=sign*(close-position['stop']);room=sign*(position['target']-close) if position.get('target') is not None else None
         position.update(remaining_room_atr=room/unit if room is not None else None,remaining_reward_risk=room/risk if room is not None and risk>0 else None)
@@ -142,13 +213,17 @@ def observe(state,row,levels,settings):
         candidates=[]
         for sign in (1,-1):
             direction='long' if sign==1 else 'short'
-            if not momentum_support(row,sign):
+            supported=momentum_support(row,sign)
+            early=improving_momentum(row,sign)
+            if not supported and not early:
                 evaluations.append(dict(direction=direction,rejected='momentum_not_supportive'));continue
             triggers=[]
             kinds={'breakout' if sign==1 else 'support_failure':'initiation',
+                   'breakout_accepted' if sign==1 else 'breakdown_accepted':'continuation',
                    'support_retest_held' if sign==1 else 'resistance_retest_held':'continuation',
                    'support_reclaim' if sign==1 else 'resistance_reclaim':'reversal',
                    'failed_breakdown' if sign==1 else 'failed_breakout':'reversal'}
+            kinds['support_rejection' if sign==1 else 'rejection']='reversal'
             for e in events:
                 if e['state'] in kinds:
                     token=f"{kinds[e['state']]}:{key(e['level'])}:{e.get('break_at',known(e['level']))}:{e.get('encounters',0)}"
@@ -168,6 +243,11 @@ def observe(state,row,levels,settings):
                 visible=[m['level'] for z in zones for m in z['members']]
                 context=level_context(origin,visible,previous['close'],atr) if 'members' not in origin else None
                 grade=origin.get('importance') if context is None else 0 if context['significance']=='minor' else 3 if context['significance']=='major' else 2 if context['location']=='outer' else 1
+                if not supported and (pattern!='reversal' or grade<2):
+                    evaluations.append(dict(direction=direction,pattern=pattern,rejected='early_entry_requires_important_reaction'));continue
+                permission=reentry_permission(state.get('exits',{}).get(direction),fresh_events,sign,at)
+                if permission is None:
+                    evaluations.append(dict(direction=direction,pattern=pattern,rejected='prior_exit_requires_structural_reset'));continue
                 stop=origin['lower']-settings.signal_stop_atr*atr if sign==1 else origin['upper']+settings.signal_stop_atr*atr
                 noise_stop=close-sign*settings.signal_min_stop_atr*atr
                 stop=min(stop,noise_stop) if sign==1 else max(stop,noise_stop)
@@ -179,6 +259,7 @@ def observe(state,row,levels,settings):
                 evaluations.append(dict(direction=direction,pattern=pattern,rejected=rejected,importance=grade,risk_atr=risk/atr,room_atr=room/atr if room is not None else None))
                 if rejected: continue
                 candidates.append(dict(direction=direction,pattern=pattern,origin=deepcopy(origin),importance=grade,token=token,
+                    lifecycle='initial_follow_through',entry_mode='aligned' if supported else 'early_reaction',reentry_basis=permission,
                     stop=stop,initial_stop=stop,target=target,initial_target=target,barrier=deepcopy(target_zone),atr=atr,
                     entry_reference=close,entry_at=at,entry_sequence=seq,armed_at=at,last_progress_sequence=seq,best_close=close,
                     reward_risk=room/risk if room is not None else None,room_basis='known_barrier' if target is not None else 'open_room_unbounded_not_forecast',mfe=0.,mae=0.))
@@ -200,8 +281,10 @@ def observe(state,row,levels,settings):
     for memory in (reactions,used):
         if len(memory)>4096: raise ValueError('Signal evidence capacity exceeded')
     state['last_bar']=deepcopy(bar)
-    phase='active' if state.get('setup') else 'idle'
-    result=dict(contract='structural-technical-signal-2',phase=phase,action=action,reason=reason,effective_at=at,
+    state['event_witnesses']=sorted(event_witnesses)
+    phase=position['lifecycle'] if state.get('setup') else 'post_exit' if state.get('exits') else 'idle'
+    result=dict(contract='structural-technical-signal-3',phase=phase,action=action,reason=reason,effective_at=at,
+        previous_exits=deepcopy(state.get('exits',{})),
         changed=action!=state.get('last_action'),setup=deepcopy(position),management=management,evaluations=evaluations,
         level_map=sorted(zones,key=lambda z:abs((z['lower']+z['upper'])/2-close))[:12],level_map_total=len(zones),level_map_scope='nearest_12_zones; all zones evaluated',execution_eligibility='not_assessed',position_basis='hypothetical_signal_only',
         reference_basis='completed candles; new protection applies after close; no fills inferred')

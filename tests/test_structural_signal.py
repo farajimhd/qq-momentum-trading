@@ -126,7 +126,7 @@ def test_stale_trigger_not_reused_after_exit_and_gap_resets():
 
 
 def test_old_or_minor_structure_does_not_tighten_and_forming_events_are_safe():
-    state={};s=DetectorSettings();entry=observe(state,row(30,'breakout'),levels(),s)
+    state={};s=DetectorSettings(signal_profit_activation_r=10);entry=observe(state,row(30,'breakout'),levels(),s)
     current=row(31,close=10.5)
     current['local_events']=[dict(state='resistance_forming',level=dict(price=10.6,confirmed_at=None))]
     old=band(10.3,1)
@@ -167,3 +167,101 @@ def test_full_detector_prefix_and_active_checkpoint(long):
     assert rows[:43]==frozen
     fresh=StructuralDetector(DetectorSettings(macd_gap_bps=.1))
     assert [fresh.observe(b,bands,'available') for b in bars[:43]]==frozen
+
+@pytest.mark.parametrize('long',[True,False])
+def test_confirmed_opposing_reversal_exits_even_with_aligned_momentum(long):
+    state={};s=DetectorSettings();observe(state,row(30,'breakout' if long else 'support_failure',long=long),levels(long),s)
+    current=row(31,close=10.3,long=long)
+    current['volume_analysis']=dict(reversal_outcomes=[dict(direction='bearish' if long else 'bullish',outcome='structural_reversal_confirmation')])
+    result=observe(state,current,levels(long),s)
+    assert result['action']==('long_exit' if long else 'short_exit')
+    assert result['reason']=='confirmed_opposing_reversal'
+
+
+def test_early_important_reaction_can_enter_before_momentum_agreement():
+    current=row(30,'support_reclaim',origin=band(10.1,1))
+    current['momentum']['agreement']='mixed'
+    r=observe({},current,levels(),DetectorSettings())
+    assert r['action']=='long_enter' and r['setup']['entry_mode']=='early_reaction'
+    current['global_events'][0]['state']='breakout'
+    assert observe({},current,levels(),DetectorSettings())['action']=='wait'
+
+
+def test_initial_position_requires_follow_through():
+    state={};s=DetectorSettings(signal_follow_through_candles=3)
+    observe(state,row(30,'breakout'),levels(),s)
+    for i in (31,32): assert observe(state,row(i,close=10.2),levels(),s)['action']=='long_hold'
+    result=observe(state,row(33,close=10.2),levels(),s)
+    assert result['reason']=='initial_follow_through_failed'
+    assert result['previous_exits']['long']['exit_class']=='failed_setup'
+
+
+@pytest.mark.parametrize('long',[True,False])
+def test_profit_floor_uses_prior_close_and_preserves_ordinary_pullbacks(long):
+    state={};s=DetectorSettings();direction='long' if long else 'short'
+    observe(state,row(30,'breakout' if long else 'support_failure',long=long),levels(long),s)
+    impulse=row(31,close=10.6,long=long)
+    if long: impulse['candle']['low']=10.1
+    else: impulse['candle']['high']=9.9
+    r=observe(state,impulse,levels(long),s)
+    assert r['action']==direction+'_hold' and r['phase']=='protecting_profit'
+    stop=r['setup']['stop']
+    pullback=row(32,close=10.58,long=long)
+    r=observe(state,pullback,levels(long),s)
+    assert r['action']==direction+'_hold'
+    crossed=row(33,close=10.55,long=long)
+    if long: crossed['candle']['low']=stop-.01
+    else: crossed['candle']['high']=stop+.01
+    r=observe(state,crossed,levels(long),s)
+    assert r['action']==direction+'_exit' and r['setup']['exit_class']=='profit_protection'
+
+
+def test_strong_barrier_rejection_exits_without_momentum_flip_and_blocks_churn():
+    state={};s=DetectorSettings();observe(state,row(30,'breakout'),levels(),s)
+    current=row(31,'rejection',close=10.8,origin=band(11))
+    current['candle'].update(open=10.95,high=11.1,low=10.7)
+    r=observe(state,current,levels(),s)
+    assert r['reason']=='important_barrier_rejection'
+    assert r['previous_exits']['long']['exit_class']=='barrier_rejection'
+    # A fresh candle impulse alone does not resolve the rejected resistance.
+    current=row(32,'breakout',close=10.9,origin=band(10.8))
+    r=observe(state,current,levels(),s)
+    assert r['action']=='wait' and r['reason']=='prior_exit_requires_structural_reset'
+    accepted=row(33,'breakout_accepted',close=11.2,origin=band(11))
+    r=observe(state,accepted,levels()+[band(12)],s)
+    assert r['action']=='long_enter' and r['setup']['reentry_basis']=='blocking_level_accepted'
+
+
+def test_failed_setup_requires_repair_and_reset_survives_checkpoint_serialization():
+    state={};s=DetectorSettings();observe(state,row(30,'breakout'),levels(),s)
+    bad=row(31,close=10.2);bad['candle']['low']=10
+    observe(state,bad,levels(),s)
+    state=json.loads(json.dumps(state))
+    current=row(32,'support_reclaim',origin=band(10.1,1))
+    current['momentum']['agreement']='mixed';current['momentum']['macd']['trend']='mixed'
+    assert observe(state,current,levels(),s)['action']=='wait'
+    # Repair was observed even though entry momentum was unavailable then.
+    current=row(33,'support_retest_held',origin=band(10.1,1))
+    result=observe(state,current,levels(),s)
+    assert result['action']=='long_enter' and result['setup']['reentry_basis']=='failed_structure_repaired'
+
+
+def test_minor_rejection_does_not_close_supported_position():
+    state={};s=DetectorSettings();observe(state,row(30,'breakout'),levels(),s)
+    minor=dict(band(10.4),scale='local',reversal_distance=.01)
+    current=row(31,'rejection',close=10.3,origin=minor)
+    current['candle'].update(open=10.4,high=10.5,low=10.2)
+    assert observe(state,current,levels()+[minor],s)['action']=='long_hold'
+
+
+def test_reentry_permission_revoked_when_repaired_structure_fails_again():
+    state={};s=DetectorSettings();observe(state,row(30,'breakout'),levels(),s)
+    bad=row(31,close=10.2);bad['candle']['low']=10
+    observe(state,bad,levels(),s)
+    repair=row(32,'support_reclaim',origin=band(10.1,1));repair['momentum']['agreement']='mixed';repair['momentum']['macd']['trend']='mixed'
+    observe(state,repair,levels(),s)
+    failed=row(33,'support_failure',origin=band(10.1,1))
+    observe(state,failed,levels(),s)
+    current=row(34,'breakout',origin=band(10.15))
+    result=observe(state,current,levels(),s)
+    assert result['action']=='wait' and result['reason']=='prior_exit_requires_structural_reset'

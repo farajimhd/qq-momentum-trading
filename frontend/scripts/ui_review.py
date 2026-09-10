@@ -2484,12 +2484,17 @@ def capture(args: argparse.Namespace) -> int:
                         # allowing UI validation without restarting a paused run.
                         source_rows = evidence['rows']
                         peak = max(range(len(source_rows)), key=lambda i: abs(source_rows[i]['candle']['close']-source_rows[i]['candle']['open']))
+                        actionable=[i for i,r in enumerate(source_rows) if r.get('technical_signal',{}).get('action','').endswith(('_enter','_exit'))]
+                        if actionable:
+                            # Re-entry restrictions may correctly leave the largest
+                            # candle without a signal. Inspect actual decisions.
+                            peak=max(actionable,key=lambda i:abs(source_rows[i]['candle']['close']-source_rows[i]['candle']['open']))
                         visible = source_rows[max(0, peak-35):peak+45]
                         def detector_response(route):
                             request = route.request.post_data_json
                             times = {bar['time'] for bar in request['candles'] if bar['end'] <= request['as_of']}
                             selected = [row for row in source_rows if row['time'] in times]
-                            if evidence.get('contract') in ('structural-candle-detector-4','structural-candle-detector-5','structural-candle-detector-6','structural-candle-detector-7','structural-candle-detector-8'):
+                            if evidence.get('contract') in ('structural-candle-detector-4','structural-candle-detector-5','structural-candle-detector-6','structural-candle-detector-7','structural-candle-detector-8','structural-candle-detector-9'):
                                 volumes={row['time']:row['candle'].get('volume') for row in selected}
                                 if any(bar.get('volume')!=volumes.get(bar['time']) for bar in request['candles']):
                                     raise RuntimeError('Chart-to-detector volume mapping changed')
@@ -2563,26 +2568,26 @@ def capture(args: argparse.Namespace) -> int:
                             raise RuntimeError('Chart exposed non-actionable setup or hold labels')
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__labels.png')),full_page=True)
                         visible_label=panel.locator('.structural-candle-label:visible').first
-                        if evidence.get('contract') in ('structural-candle-detector-7','structural-candle-detector-8'):
+                        if evidence.get('contract') in ('structural-candle-detector-7','structural-candle-detector-8','structural-candle-detector-9'):
                             long_labels=panel.locator('.structural-candle-label:visible').filter(has_text='Long enter')
                             if long_labels.count(): visible_label=long_labels.first
                         inspected_action=re.search(r'(Long|Short) (enter|exit)',visible_label.inner_text()).group().lower()
                         visible_label.click()
                         inspector=page.get_by_role('dialog',name='Candle evidence',exact=True)
                         inspector.wait_for(state='visible')
-                        if evidence.get('contract') in ('structural-candle-detector-7','structural-candle-detector-8'):
+                        if evidence.get('contract') in ('structural-candle-detector-7','structural-candle-detector-8','structural-candle-detector-9'):
                             inspector.get_by_role('heading',name='Technical signal · '+inspected_action,exact=True).wait_for(state='visible')
                             if 'not fills' not in inspector.inner_text():
                                 raise RuntimeError('Technical signal execution boundary missing')
-                        if evidence.get('contract')=='structural-candle-detector-8':
+                        if evidence.get('contract') in ('structural-candle-detector-8','structural-candle-detector-9'):
                             if not all(text in inspector.inner_text() for text in ('Initial stop','Current stop','Next barrier','Initial reward/risk')):
                                 raise RuntimeError('Position management references missing')
                             inspector.get_by_role('heading',name='Technical signal · '+inspected_action,exact=True).scroll_into_view_if_needed()
                             page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__signal-evidence.png')),full_page=True)
-                        expected_families=15 if evidence.get('contract') in ('structural-candle-detector-7','structural-candle-detector-8') else 14 if evidence.get('contract')=='structural-candle-detector-6' else 13
+                        expected_families=15 if evidence.get('contract') in ('structural-candle-detector-7','structural-candle-detector-8','structural-candle-detector-9') else 14 if evidence.get('contract')=='structural-candle-detector-6' else 13
                         if inspector.locator('tbody tr').count()!=expected_families:
                             raise RuntimeError('Candle inspector lost label families')
-                        if evidence.get('contract') in ('structural-candle-detector-6','structural-candle-detector-7','structural-candle-detector-8'):
+                        if evidence.get('contract') in ('structural-candle-detector-6','structural-candle-detector-7','structural-candle-detector-8','structural-candle-detector-9'):
                             inspector.get_by_text('Momentum values and transitions',exact=True).click()
                             if 'Wilder' not in inspector.inner_text():
                                 raise RuntimeError('Momentum numeric evidence missing')
