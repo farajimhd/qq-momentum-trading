@@ -40,7 +40,7 @@ def label_packet(row, prior_signature, recent, atr):
     families = dict(movement=[row['state']], regime=[], geometry=row['candle_shape']['tags'],
         displacement=[], interaction=[], break_lifecycle=[], retest_lifecycle=[],
         structural_progression=[], correction_recovery=[], pressure=[], volume=row['volume_analysis']['tags'],
-        reversal=[], evidence=[])
+        reversal=[], momentum=row['momentum']['tags'], evidence=[])
     bar = row['candle']
     body = abs(bar['close']-bar['open'])
     ready = row['qualification']['ready']
@@ -85,6 +85,10 @@ def label_packet(row, prior_signature, recent, atr):
         families[family].append(tag)
     families['reversal'] = [c['direction']+'_candidate' for c in row['volume_analysis']['reversal_candidates']]
     families['reversal'] += [o['direction']+'_'+o['outcome'] for o in row['volume_analysis']['reversal_outcomes']]
+    families['reversal'] += [c['direction']+'_momentum_'+c['momentum_context'] for c in row['volume_analysis']['reversal_candidates']]
+    watch = row['momentum']['macd']['watch']
+    if watch:
+        candidates.append(dict(family='momentum',label=watch,text={'watch_up':'Watch ↑','watch_down':'Watch ↓','watch_mixed':'Watch ↔'}[watch],priority=15))
     notable = {
         'recovery_completed':('Recovered',70), 'deep_correction':('Deep pullback',60),
         'repeated_failed_recovery':('Recovery fails',75), 'losing_gained_levels':('Levels lost',85),

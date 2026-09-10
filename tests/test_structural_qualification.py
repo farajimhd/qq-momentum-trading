@@ -77,7 +77,7 @@ def test_prior_atr_immutable_prefix_and_checkpoint_continuation():
     assert 'breakout' in states(result['global_events'])
     assert prefix==frozen
     assert set(result['labels'])=={'movement','regime','geometry','displacement','interaction','break_lifecycle',
-        'retest_lifecycle','structural_progression','correction_recovery','pressure','volume','reversal','evidence'}
+        'retest_lifecycle','structural_progression','correction_recovery','pressure','volume','reversal','momentum','evidence'}
     assert result['summary']['label']=='breakout'
 
 

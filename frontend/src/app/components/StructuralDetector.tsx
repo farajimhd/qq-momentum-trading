@@ -13,6 +13,7 @@ type Candle = { time: number; endTime?: number; open: number; high: number; low:
 type Event = { state: string; level: Record<string, unknown>; band_id?: string; encounters?: number; rejection_closes?: number; source_ids?: string[] };
 type Cycle = { number: number; attempts: number; failed_attempts: number; depth: number; candles: number; recovery_progress: number };
 export type StructuralState = { time: number; effective_at: number; state: string; reason: string;
+  momentum?: {agreement:string;tags:string[];macd:{watch:string|null;zone:string;entered_from:string|null;trend:string;transitions:string[]};rsi:{value:number|null;period:number;trend:string;zone:string}};
   labels?: Record<string,string[]>;
   summary?: {text:string;family:string;label:string;priority:number;changed:boolean;scope?:string;level?:Record<string,unknown>};
   qualification?: {atr:number|null;ready:boolean;observations:number;period:number};
@@ -36,12 +37,18 @@ const defaults = { reversal_bps: 50, volatility_multiple: 2, body_half_life: 5,
   movement_body_multiple: .1, movement_min_bps: 1, deep_correction_multiple: 2, evidence_memory_candles: 1800, pressure_closes: 2,
   volume_half_life: 5, volume_change_fraction: .1, volume_warmup_candles: 5, session_level_count: 3,
   volume_expansion_multiple: 1.5, volume_divergence_min_score: 30, volume_setup_max_candles: 20,
-  atr_period:14,atr_warmup_candles:5,break_body_atr:.3,break_body_fraction:.4,penetration_atr:.1,acceptance_closes:2 };
+  atr_period:14,atr_warmup_candles:5,break_body_atr:.3,break_body_fraction:.4,penetration_atr:.1,acceptance_closes:2,
+  macd_change_bps:.1,momentum_confirm_closes:2,rsi_period:14,rsi_neutral_band:5,rsi_change_points:.5 };
 const fields = [ ['reversal_bps', 'Minimum local reversal (bps)', 1, 1000, 1],
   ['volatility_multiple', 'Local volatility multiple', .1, 10, .1],
   ['body_half_life', 'Body average half-life (candles)', 1, 100, 1],
   ['proximity_body_multiple', 'Level proximity body multiple', .1, 10, .1],
-  ['macd_gap_bps', 'MACD episode gap (bps; context only)', .1, 1000, 1],
+  ['macd_gap_bps', 'MACD watch-zone boundary (bps)', .1, 1000, 1],
+  ['macd_change_bps', 'MACD meaningful separation change (bps)', .01, 100, .01],
+  ['momentum_confirm_closes', 'MACD direction persistence (candles)', 1, 20, 1],
+  ['rsi_period', 'Wilder RSI period (candles)', 2, 200, 1],
+  ['rsi_neutral_band', 'RSI neutral half-band around 50', .1, 19.9, .1],
+  ['rsi_change_points', 'RSI meaningful change (points)', .1, 100, .1],
   ['tail_range_fraction', 'Tail minimum fraction of range', .1, 1, .05],
   ['indecision_body_fraction', 'Indecision maximum body fraction', .01, 1, .05],
   ['expansion_body_multiple', 'Expansion recent-body multiple', .1, 10, .1],
@@ -71,7 +78,7 @@ const volumeText = (s:string) => ({volume_falling:'volume ↓',volume_rising:'vo
   observed_hod_cross:'HOD cross',observed_hod_rejection:'HOD rejection',observed_hod_test:'HOD test',observed_hod_approach:'near HOD',
   observed_lod_cross:'LOD cross',observed_lod_rejection:'LOD rejection',observed_lod_test:'LOD test',observed_lod_approach:'near LOD'}[s] || human(s));
 const labelFields = { summary: 'Important or changed', everySummary:'Every candle summary', state: 'Movement', direction: 'Direction', local: 'Local interactions', global: 'Global interactions',
-  localBias: 'Local swing trend', globalBias: 'Global swing trend', shape: 'Candle shape', macd: 'MACD context', body: 'Recent body size', source: 'Global availability',
+  localBias: 'Local swing trend', globalBias: 'Global swing trend', shape: 'Candle shape', macd: 'MACD context', rsi: 'RSI context', momentum: 'Momentum agreement', body: 'Recent body size', source: 'Global availability',
   progression: 'Progression', cycle: 'Recovery cycle', levelProgress: 'Levels crossed / lost', context: 'Combined structure context', retained: 'Retained structural history',
   localDetails: 'All local band details', globalDetails: 'All global band details',
   volume: 'Volume', volumeTrend: 'Volume progression', divergence: 'Volume divergence score', reversal: 'Reversal evidence progression', dayLevels: 'Observed HOD / LOD', rankedHighs: 'Ranked session highs', rankedLows: 'Ranked session lows', nearDayLevel: 'Session level interaction' };
@@ -100,7 +107,9 @@ export function structuralLabelRows(row: StructuralState, rows: LabelRows) {
     localDetails:'Local details: '+eventText(row.local_events), globalDetails:'Global details: '+eventText(row.global_events),
     localBias: 'Local: '+(row.local_bias || 'unknown'), globalBias: 'Global: '+(row.global_bias || 'unknown'),
     shape: (row.candle_shape?.tags || ['unavailable']).map(human).join(' · '),
-    macd: row.macd.warmup ? 'MACD warming up' : `MACD ${row.macd.histogram_bps.toFixed(1)} bps`,
+    macd: row.macd.warmup ? 'MACD warming up' : `MACD ${row.macd.histogram_bps.toFixed(1)} bps${row.momentum ? ' · '+human(row.momentum.macd.watch || row.momentum.macd.zone) : ''}`,
+    rsi: row.momentum?.rsi.value==null ? 'RSI warming up' : `RSI ${row.momentum.rsi.value.toFixed(1)} · ${row.momentum.rsi.trend}`,
+    momentum: row.momentum ? `Momentum ${human(row.momentum.agreement)}` : 'Momentum unavailable',
     body: `Body ${row.body_baseline.toFixed(4)}`, source: human(row.global_status),
     progression: p?.tags.filter(tag => tag!=='levels_crossed' || !p.tags.includes('multiple_levels_crossed')).map(human).join(' · ') || 'unavailable',
     cycle: c ? `Cycle ${c.number} · attempt ${c.attempts} · ${c.failed_attempts} failed · depth ${price(c.depth)} · ${c.candles} candles · ${(c.recovery_progress*100).toFixed(0)}% recovered` : `${p?.completed_cycles || 0} completed cycles`,
@@ -129,6 +138,7 @@ function CandleInspector({row,onClose,onMove,hasPrevious,hasNext}:{row:Structura
     <p>{new Date(row.time*1000).toISOString()} · Completed {new Date(row.effective_at*1000).toISOString()}</p>
     <p><strong>{row.summary?.text || human(row.state)}</strong> · {human(row.reason)}</p>
     <p>Prior ATR {row.qualification?.atr==null ? '—' : price(row.qualification.atr)} · {row.qualification?.observations ?? 0}/{row.qualification?.period ?? '—'} candles · {row.qualification?.ready ? 'ready' : 'warming up'}</p>
+    {row.momentum && <><p>{structuralLabelRows(row,[['macd','rsi','momentum']])[0]}</p><p>MACD 12/26/9 and RSI {row.momentum.rsi.period} use completed chart candles. Watch zones and RSI extremes are context, not entry or reversal confirmation.</p><details><summary>Momentum values and transitions</summary><pre>{JSON.stringify(row.momentum,null,2)}</pre></details></>}
     <table><thead><tr><th>Family</th><th>Labels</th></tr></thead><tbody>{Object.entries(row.labels || {movement:[row.state]}).map(([family,labels])=><tr key={family}><th>{human(family)}</th><td>{labels.length ? labels.map(human).join(' · ') : 'None'}</td></tr>)}</tbody></table>
     <p>Local / global identifies the source. Outer / internal describes position in the prior enclosing range; unknown means that range was unavailable. Scores describe evidence, not probabilities.</p>
     <details><summary>Level interactions and qualification reasons</summary><pre>{JSON.stringify({local:row.local_events,global:row.global_events},null,2)}</pre></details>
