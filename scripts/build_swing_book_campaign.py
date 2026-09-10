@@ -22,6 +22,7 @@ import prototype_structure_book_clickhouse as P
 from build_swing_structure_book import policy
 from swing_book_paths import WORKSTATION_ENV_FILE, validate_runtime_root
 from swing_campaign_dashboard import Dashboard
+from swing_reader_upgrade import UPGRADE_PATHS, legacy_hash_matches
 
 MAX_WORKERS=64
 MAX_QUERY_THREADS=128
@@ -37,7 +38,7 @@ TRACKED=('scripts/build_swing_book_campaign.py','scripts/build_swing_structure_b
  'src/market_engine/swing_book_v6.py','src/market_engine/swing_book.py',
  'src/market_engine/swing_structure.py','src/market_engine/swing_level_index.py',
  'src/market_engine/swing_book_v5.py','src/market_engine/resistance_selection.py',
- 'src/backend/swing_book_source.py')
+ 'src/backend/swing_book_source.py', *UPGRADE_PATHS)
 
 
 def code_hash():
@@ -53,6 +54,22 @@ def compatible_code_hash(value):
         hashes['scripts/build_swing_book_campaign.py']=controller
         if value==P.digest(hashes):return True
     return False
+
+
+def reader_for_manifest(m):
+    if compatible_code_hash(m['code_hash']):
+        reader=m.get('reader','legacy')
+        if reader not in ('legacy','indexed'):
+            raise ValueError('Unknown campaign reader')
+        return reader
+    hashes={p:sha256((ROOT/p).read_bytes()).hexdigest() for p in TRACKED}
+    upgrade=m.get('reader_upgrade') or {}
+    if (legacy_hash_matches(m['code_hash'],hashes,campaign=True)
+            and upgrade.get('execution_code_hash')==code_hash()
+            and upgrade.get('prior_code_hash')==m['code_hash']
+            and upgrade.get('reader')=='indexed'):
+        return 'indexed'
+    raise ValueError('Code differs from frozen plan; use explicit --upgrade-reader only for the supported V6 reader migration')
 
 
 LEGACY_DISPLAY_CONTROLLERS=(
@@ -155,7 +172,7 @@ def plan(args):
     rows.sort(key=lambda r:(-r['events'],r['ticker']))
     m=dict(schema_version=2,book_version='causal-swing-closing-book-6',created_at=now(),code_hash=code_hash(),universe_date=stamp,
         universe_hash=P.digest(universe),universe=universe,start=args.start,end=args.end,
-        workers=args.workers,threads=args.threads,rows=rows)
+        workers=args.workers,threads=args.threads,rows=rows,reader='indexed')
     save(root,m);P.save(root/'planning-profiles.json',client.profiles)
     print(f'Frozen universe {stamp}: {len(rows)} tickers',flush=True)
     show(m)
@@ -167,12 +184,13 @@ def worker(args):
     import build_swing_structure_book as builder
     m=json.loads((args.runtime/'manifest.json').read_text())
     if m.get('schema_version')!=2 or m.get('book_version')!='causal-swing-closing-book-6':raise ValueError('Not a V6 campaign plan')
-    if not compatible_code_hash(m['code_hash']):raise ValueError('Worker code differs from frozen plan')
+    reader=reader_for_manifest(m)
     row=next(r for r in m['rows'] if r['ticker']==args.ticker)
     progress=Path(row['progress_file']);progress.parent.mkdir(parents=True,exist_ok=True)
     started=time.perf_counter()
     def publish(stage,**values):P.save(progress,dict(ticker=args.ticker,stage=stage,updated_at=now(),**values))
-    options=SimpleNamespace(start=m['start'],end=m['end'],threads=m['threads'],env_file=args.env_file,stop_file=args.runtime/'STOP')
+    options=SimpleNamespace(start=m['start'],end=m['end'],threads=m['threads'],env_file=args.env_file,
+        stop_file=args.runtime/'STOP',reader=reader)
     try:
         options.survivor_only=True
         options.runtime=args.runtime.parent/(args.runtime.name+'-v6')
@@ -194,7 +212,13 @@ def run(args):
     root=args.runtime;m=json.loads((root/'manifest.json').read_text())
     validate_concurrency(m['workers'],m['threads'])
     if m.get('schema_version')!=2 or m.get('book_version')!='causal-swing-closing-book-6':raise ValueError('Not a V6 campaign plan')
-    if not compatible_code_hash(m['code_hash']):raise ValueError('Code changed since plan; create a new campaign directory')
+    if getattr(args,'upgrade_reader',False):
+        hashes={p:sha256((ROOT/p).read_bytes()).hexdigest() for p in TRACKED}
+        if not legacy_hash_matches(m['code_hash'],hashes,campaign=True):
+            raise ValueError('Unsupported reader migration; frozen engine/source files must match')
+        m['reader_upgrade']=dict(prior_code_hash=m['code_hash'],execution_code_hash=code_hash(),
+            reader='indexed',requested_at=now(),verification='required_per_worker_before_new_sessions')
+    reader_for_manifest(m)
     if P.digest(m['universe'])!=m['universe_hash']:raise ValueError('Frozen universe hash mismatch')
     # A crashed controller may leave a worker finishing its session. Never
     # reset its progress or start a duplicate writer while it still owns a lock.
@@ -202,6 +226,9 @@ def run(args):
         lock=Path(row['progress_file']).parent/'worker.lock'
         if lock.exists():
             with exclusive(lock):pass
+    if getattr(args,'upgrade_reader',False):
+        save(root,m)
+        print('Indexed reader upgrade requested: each worker must pass candle and checkpoint parity before new session writes.',flush=True)
     (root/'STOP').unlink(missing_ok=True)
     for row in m['rows']:
         if row['status'] in ('active','interrupted') or args.retry_failed and row['status']=='failed':row['status']='queued'
@@ -258,6 +285,7 @@ def parser():
     p.add_argument('--start',default='2025-01-01');p.add_argument('--end',default=date.today().isoformat())
     p.add_argument('--workers',type=int,default=4);p.add_argument('--threads',type=int,default=2)
     p.add_argument('--progress-seconds',type=int,default=1);p.add_argument('--retry-failed',action='store_true')
+    p.add_argument('--upgrade-reader',action='store_true',help='explicitly migrate a stopped legacy V6 campaign; verify reference candles and saved state before new writes')
     p.add_argument('--ticker')
     p.add_argument('--tickers',nargs='+',help='Explicit subset for a pilot; omitted means every published tradable ticker')
     p.add_argument('--env-file',type=Path,default=WORKSTATION_ENV_FILE)
@@ -267,6 +295,7 @@ def parser():
 def main():
     p=parser()
     args=p.parse_args()
+    if args.upgrade_reader and args.action!='run':p.error('--upgrade-reader applies only to run')
     try:args.runtime=validate_runtime_root(args.runtime)
     except ValueError as exc:p.error(str(exc))
     try:validate_concurrency(args.workers,args.threads)

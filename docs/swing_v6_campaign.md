@@ -33,14 +33,16 @@ No source flatfiles are used. Storage must pass `live_market_ssd` checks.
 
 Four worker processes each process one ticker in chronological session order.
 Each query uses at most two ClickHouse threads by default. There is
-one aggregation query at a time per ticker worker: the eight session chunks
-are read sequentially, without a nested query pool. Thus 64 workers with two
+one aggregation query at a time per ticker worker. New plans read one complete
+session using the certified source-day ordinal range and the original timestamp
+and trade-condition predicates. Thus 64 workers with two
 threads each request at most 128 query execution threads, excluding ClickHouse
 background work and other applications. This is a query budget, not a limit on
 all server threads. Scheduling starts
 larger event histories first. Workers have isolated logs and checkpoints;
 failures do not strand other queued tickers. Configure concurrency at planning
-time; the plan pins source-code hashes and settings. Changed code needs a new plan.
+time; the plan pins source-code hashes and settings. Changed code needs a new plan,
+except for the explicitly verified reader migration described below.
 The launcher supports up to 64 workers and a combined query-thread budget of
 128 (`workers * threads`). On the 128-core workstation, explicitly select
 `--workers 64 --threads 2` when planning; the conservative default remains four
@@ -88,3 +90,32 @@ The campaign directory contains `manifest.json`, planning profiles and
 `<campaign-name>-v6/<ticker>` directory, discoverable by the existing book registry.
 The manifest records per-ticker elapsed seconds, database, status and failure
 reason. No full-universe runtime estimate is certified from the two-ticker test.
+
+## Indexed reader migration
+
+After synchronizing validated source, resume a stopped legacy campaign with:
+
+```powershell
+python -B scripts/build_swing_book_campaign.py run --runtime $campaign --upgrade-reader
+```
+
+This accepts only known legacy builder/controller fingerprints, with all other
+previously pinned files unchanged. It preserves the frozen universe, database
+identity and completed checkpoints, and pins the new execution fingerprint.
+Completed tickers remain skipped; failed tickers require `--retry-failed`.
+Subsequent resumes use the ordinary `run` command.
+
+Before any new book/session writes, each indexed worker compares reference and
+indexed candles for the last completed and next unfinished session. It also
+reproduces the last completed V6 state, including intervening splits, and checks
+its saved hash. Any mismatch fails closed. This is a bounded migration gate,
+not a claim of exhaustive historical parity. Every completed prefix checkpoint
+still receives the existing integrity check. New tickers verify their first day.
+
+The dashboard shows `verifying` during this gate. Runtime evidence is saved as
+`reader-verification-<timestamp>.json`; session profiles separate `read_seconds`
+from computation and total time. The initial reference checks still perform
+eight queries per sampled session. Steady-state reads use one ordinal-bounded
+query, with a hard 57,600-row result limit. No flatfile fallback or table migration
+is introduced. Measure actual throughput after verification before increasing
+concurrency; 64 workers is a supported ceiling, not a recommended starting load.

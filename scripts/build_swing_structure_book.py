@@ -58,6 +58,9 @@ def split_versions(previous_rows,factor,boundary):
 
 def run(ticker, args):
     survivor_only=getattr(args,'survivor_only',False)
+    indexed = getattr(args,'reader','legacy') == 'indexed'
+    if indexed and not survivor_only:
+        raise ValueError('Indexed reader upgrade is currently certified only for V6')
     version=VERSION
     engine_type=SwingBook
     project_level=project
@@ -74,7 +77,15 @@ def run(ticker, args):
                   Path('src/market_engine/swing_level_index.py').resolve(),
                   Path('src/market_engine/swing_book.py').resolve(), Path('src/backend/swing_book_source.py').resolve()]
     if survivor_only:code_paths.extend(Path(p).resolve() for p in ('src/market_engine/swing_book_v6.py','src/market_engine/swing_book_v5.py','src/market_engine/resistance_selection.py'))
-    code = P.digest({str(p.relative_to(Path(__file__).resolve().parents[1])):sha256(p.read_bytes()).hexdigest() for p in code_paths})
+    if indexed:
+        from swing_reader_upgrade import UPGRADE_PATHS, build_identity, verify
+        from src.backend.swing_book_indexed_source import read_session as indexed_read, READER_VERSION
+        code_paths.extend(Path(p).resolve() for p in UPGRADE_PATHS)
+    hashes = {str(p.relative_to(Path(__file__).resolve().parents[1])):sha256(p.read_bytes()).hexdigest() for p in code_paths}
+    execution_code = P.digest(hashes)
+    report_path = folder/'report.json'
+    previous_report = json.loads(report_path.read_text()) if report_path.exists() else {}
+    code = build_identity(hashes,previous_report,indexed=True) if indexed else execution_code
     days = client.query(f"SELECT source_date,event_count,next_ordinal,last_ordinal,first_sip_timestamp_us,last_sip_timestamp_us,build_step,updated_at FROM market_sip_compact.events_ordinal_continuity FINAL WHERE ticker={P.literal(ticker)} AND source_date BETWEEN '{args.start}' AND '{args.end}' ORDER BY source_date", 'source_days')
     if not days:
         raise ValueError(f'No certified days for {ticker}')
@@ -83,14 +94,15 @@ def run(ticker, args):
     rules = client.query("SELECT token_id,modifier_int,update_high_low,update_last,update_volume FROM market_sip_compact.event_condition_token_reference WHERE source_family='trade_conditions' AND is_join_canonical=1 ORDER BY token_id",'rules')
     fingerprint = P.digest([version,code,ticker,days,splits,coverage,rules])
     db = 'structure_book_'+fingerprint[:12]
-    report_path = folder/'report.json'
-    previous_report = json.loads(report_path.read_text()) if report_path.exists() else {}
     if previous_report and previous_report['fingerprint'] != fingerprint:
         raise ValueError('Source or code changed: use a new runtime directory')
     report = dict(version=version, database=db, ticker=ticker, fingerprint=fingerprint,
         requested_start=args.start, actual_end=days[-1]['source_date'], status='building',
         threads=args.threads, code_hash=code, runtime=str(folder), source_policy=HISTORICAL_POLICY,
         session_profiles=previous_report.get('session_profiles',[]))
+    if indexed:
+        report.update(reader=READER_VERSION,execution_code_hash=execution_code,
+            reader_verification=dict(status='checking'))
     P.save(report_path, report)
     P.save(folder/'source_manifest.json', [days,rules,splits,coverage])
     policy(client,db)
@@ -110,6 +122,13 @@ def run(ticker, args):
     pending = [d for d in days if d['source_date'] not in done]
     print(f'{ticker} | completed={len(done)} queued={len(pending)} active=0 failed=0 | {db}', flush=True)
     try:
+        if indexed:
+            proof = verify(ticker,days,done,client,db,splits,stop_file=getattr(args,'stop_file',None))
+            proof.update(execution_code_hash=execution_code,build_code_hash=code,fingerprint=fingerprint)
+            P.save(folder/f'reader-verification-{time.time_ns()}.json',proof)
+            report['reader_verification'] = proof
+            P.save(report_path,report)
+            print(f'{ticker} | indexed reader verified; continuing certified prefix of {len(done)} sessions',flush=True)
         for index, day in enumerate(days):
             if getattr(args,'stop_file',None) and args.stop_file.exists():
                 raise KeyboardInterrupt('Campaign stop requested at session boundary')
@@ -146,7 +165,9 @@ def run(ticker, args):
             print(f'{ticker} {session} | active=1 completed={index} queued={len(days)-index-1} failed=0 | aggregating canonical seconds',flush=True)
             # Ticker processes own parallelism. Nested query pools would multiply
             # the campaign's workers * threads budget by four.
-            bars, revision = read_session(ticker,session,client,policy=HISTORICAL_POLICY,query_workers=1)
+            read_start = time.perf_counter()
+            bars, revision = indexed_read(ticker,session,client) if indexed else read_session(ticker,session,client,policy=HISTORICAL_POLICY,query_workers=1)
+            read_seconds = time.perf_counter()-read_start
             compute_start = time.perf_counter()
             for bar in bars:
                 engine.observe(*bar)
@@ -172,7 +193,8 @@ def run(ticker, args):
                 source_revision=encode(revision),revision=1)])
             seed, previous_rows = state, closing_rows
             report['session_profiles'].append(dict(session=session,bars=len(bars),closing_rows=len(closing_rows),
-                compute_seconds=compute,total_seconds=time.perf_counter()-unit))
+                read_seconds=read_seconds,compute_seconds=compute,total_seconds=time.perf_counter()-unit,
+                reader=READER_VERSION if indexed else 'legacy'))
             P.save(report_path,report)
             print(f'{ticker} {session} | completed={index+1}/{len(days)} active=0 queued={len(days)-index-1} failed=0 | bars={len(bars)} closing={len(closing_rows)} compute={compute:.3f}s total={time.perf_counter()-unit:.2f}s', flush=True)
         policy(client,db)

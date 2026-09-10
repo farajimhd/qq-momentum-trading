@@ -57,7 +57,8 @@ class Dashboard:
                 return previous[1], False
             data = json.loads(path.read_text())
             profiles = data.get('session_profiles', [])
-            result = (len(profiles), profiles[-1]['session'] if profiles else '--')
+            result = (len(profiles), 'verifying' if data.get('reader_verification',{}).get('status')=='checking'
+                      else profiles[-1]['session'] if profiles else '--')
             self.cache[str(path)] = (stamp, result)
             return result, False
         except (OSError, ValueError, KeyError):
@@ -116,7 +117,8 @@ class Dashboard:
                 total = row['days']
                 state = row['status']
                 elapsed = time.time()-row.get('started_epoch',time.time()) if state=='active' else row.get('elapsed_seconds')
-                label = f'{state} {done}/{total}' + (' stale' if stale else '')
+                shown_state = 'verifying' if state=='active' and session=='verifying' else state
+                label = f'{shown_state} {done}/{total}' + (' stale' if stale else '')
                 progress = Table.grid(padding=(0,1))
                 progress.add_row(ProgressBar(total=max(1,total),completed=min(done,total),width=8),
                                  Text(f'{min(done,total)/max(1,total):.0%}'))
