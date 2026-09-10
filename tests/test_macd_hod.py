@@ -1,6 +1,7 @@
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
+from pytest import approx
 
 from src.trading_runtime import macd_hod as M, strategy_engine as S
 from tests.test_structural_recovery import parameters as base_parameters, observation, level, NOW
@@ -21,6 +22,8 @@ def ready():
               bar_open=10.,bar_low=10.,bar_high=10.1)
     r=host.evaluate(a,o)
     a=replace(a,state=r.state,status=r.status)
+    a.state['macd_hod_state']['swing_low']={'price':9.99,'pivot_at':NOW.timestamp()-4,
+        'confirmed_at':NOW.timestamp()-2}
     return host,a,step(o,.1)
 
 
@@ -38,7 +41,7 @@ def test_entry_timeframe_frozen_references_and_mandatory_protection():
     snapshot=intent.metadata['unified_structural_trigger']['current_snapshot']
     assert [x['upper'] for x in snapshot['levels']]==[10.42,10.02,9.82]
     assert snapshot['session_high']==10.5
-    assert intent.invalidation_price<9.8
+    assert intent.invalidation_price<9.99
     assert intent.profit_target_price>o.ask
     assert intent.metadata['mandatory_broker_target']
     assert intent.resolved_execution_policy().envelope.deadline_ms==100
@@ -79,7 +82,46 @@ def test_same_episode_reentry_uses_prior_high_and_waits_for_fills():
     a=replace(a,status=S.AssignmentStatus.WATCHING)
     r=host.evaluate(a,step(o,.3,price=10.19));assert r.evaluation.signals[0].reason=='waiting_for_episode_high'
     a=replace(a,state=r.state,status=S.AssignmentStatus.WATCHING)
+    a.state['macd_hod_state']['swing_low']={'price':10.18,'pivot_at':NOW.timestamp()-3,
+        'confirmed_at':o.observed_at.timestamp()+.2}
     r=host.evaluate(a,step(o,.4,price=10.23));assert r.evaluation.signals[0].action=='enter_long'
+
+
+def test_rolling_quality_uses_explicit_age_not_consumer_candle_interval():
+    host,a,o=ready()
+    keys=('market.session_dollar_volume','market.volume','market.trade_rate_10s','market.trade_rate_60s')
+    for age,expected in [(700,True),(2000,True),(2001,False),(-1,False)]:
+        values=deepcopy(o.source_values)
+        for key in keys:
+            values[key]['observed_at']=(o.observed_at-timedelta(milliseconds=age)).isoformat()
+        result=host.evaluate(a,replace(o,source_values=values))
+        quality=result.evaluation.signals[0].metadata['liquidity_admission']
+        assert quality['checks']['current_trade_rate_10s']==expected
+        assert (not quality['failed'])==expected
+    stale=deepcopy(o.source_values)
+    stale['market.spread_bps']['observed_at']=(o.observed_at-timedelta(milliseconds=1001)).isoformat()
+    assert host.evaluate(a,replace(o,source_values=stale)).evaluation.signals[0].reason=='tradability_incomplete'
+
+
+def test_target_ignores_distant_gaps_and_accepts_single_overhead_level():
+    near=[{'lower':3.54,'upper':3.54}]
+    target=M.target_selection(near,3.46,[],M.DEFAULTS,.01)
+    extended=M.target_selection(near+[{'lower':4.95,'upper':4.95},{'lower':10.95,'upper':10.95}],3.46,[],M.DEFAULTS,.01)
+    assert target==extended
+    assert target['price']==approx(3.53)
+    assert M.target_selection([],3.46,[],M.DEFAULTS,.01) is None
+
+
+def test_entry_initializes_stop_progression_for_later_confirmed_higher_low():
+    host,a,o=ready();r=host.evaluate(a,o)
+    a=replace(a,state=deepcopy(r.state),status=S.AssignmentStatus.MANAGING)
+    a.state['macd_hod_state']['swing_low']={'price':10.05,'pivot_at':o.observed_at.timestamp()+.2,
+        'confirmed_at':o.observed_at.timestamp()+2.2}
+    early=host.evaluate(a,step(o,2.1,price=10.15,position_quantity=100))
+    assert not early.evaluation.intents
+    r=host.evaluate(a,step(o,2.3,price=10.15,position_quantity=100))
+    assert r.evaluation.intents[0].action=='replace_protective_stop'
+    assert r.evaluation.intents[0].invalidation_price==approx(10.04)
 
 
 def test_future_levels_cannot_enter_and_quote_failure_does_not_disable_stop():
@@ -116,7 +158,12 @@ def test_target_advances_after_break_and_rejection_restores_previous_price():
     host,a,o=ready();r=host.evaluate(a,o)
     a=replace(a,state=r.state,status=S.AssignmentStatus.MANAGING)
     prior=a.state['structural_profit_targets'][0]
-    r=host.evaluate(a,replace(step(o,.1,price=10.9,position_quantity=100),bar_open=10.6))
+    # A newly formed lower resistance breaks while the original target zone
+    # is retired by the book; the next overhead checkpoint can then advance.
+    a.state['macd_hod_state']['rows'].append(dict(level(-1,10.2,10.2),selection_score=80))
+    current=tuple(row for row in o.structural_resistance_levels if row['lower']!=10.4)
+    r=host.evaluate(a,replace(step(o,.1,price=10.3,position_quantity=100),bar_open=10.1,
+        structural_resistance_levels=current))
     intent,=r.evaluation.intents
     assert intent.action=='replace_profit_target'
     assert intent.profit_target_price>prior
@@ -125,7 +172,7 @@ def test_target_advances_after_break_and_rejection_restores_previous_price():
     asyncio.run(assigned.on_intent_rejected(intent,reasons=('test_rejection',),event_time=o.observed_at))
     restored=assigned.assignments()[0]
     assert restored.state['structural_profit_targets']==[prior]
-    retry=host.evaluate(restored,step(o,.2,price=10.9,position_quantity=100))
+    retry=host.evaluate(restored,step(o,.2,price=10.3,position_quantity=100))
     assert retry.evaluation.intents[0].profit_target_price==intent.profit_target_price
 
 

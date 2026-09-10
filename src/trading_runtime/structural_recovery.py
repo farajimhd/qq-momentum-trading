@@ -91,13 +91,18 @@ def _source(o, key, age):
         return None
 
 
-def tradability(o, p, row, state=None):
+def tradability(o, p, row, state=None, *, producer_freshness=False):
     from .strategy_engine import _liquidity_admission_result, _current_execution_quality_result
     s = p['structural_recovery']
-    admitted, evidence = _liquidity_admission_result(o, p['liquidity_admission'])
+    # Session/rolling facts retain their producer timestamp. The caller's
+    # candle interval must not silently replace its explicit source-age limit.
+    values = {key:_source(o,key,s['maximum_source_age_ms']) for key in (
+        'market.session_dollar_volume','market.volume','market.trade_rate_10s','market.trade_rate_60s')}
+    resolved = values if producer_freshness else None
+    admitted, evidence = _liquidity_admission_result(o, p['liquidity_admission'],liquidity_values=resolved)
     checks = dict(evidence['checks'])
     for key in ('market.session_dollar_volume','market.volume','market.trade_rate_10s','market.trade_rate_60s'):
-        checks[key+'_fresh'] = _source(o,key,s['maximum_source_age_ms']) is not None
+        checks[key+'_fresh'] = values[key] is not None
     quote_spread = _source(o,'market.spread_bps',s['maximum_quote_age_ms'])
     checks['fresh_uncrossed_quote'] = quote_spread is not None and 0 < o.bid <= o.ask and all(isfinite(x) for x in (o.bid,o.ask))
     checks['current_spread'] = (checks['fresh_uncrossed_quote'] and
@@ -118,7 +123,7 @@ def tradability(o, p, row, state=None):
             (o.ask-o.bid)/((o.ask+o.bid)/2)*10000 <= p['liquidity_admission']['maximum_admission_spread_bps'])
         if admitted and actual_admission_spread and all(freshness.values()) and not state.get('recovery_admission'):
             state['recovery_admission'] = dict(observed_at=o.observed_at.isoformat(), **deepcopy(evidence))
-        _, current = _current_execution_quality_result(o,p['liquidity_admission'])
+        _, current = _current_execution_quality_result(o,p['liquidity_admission'],liquidity_values=resolved)
         checks = dict(current['checks'], **freshness,
             admission_latched=bool(state.get('recovery_admission')),
             current_spread=checks['current_spread'] and current['checks']['current_spread'])

@@ -1429,15 +1429,18 @@ def _spread_bps(observation: StrategyObservation) -> float | None:
 def _liquidity_admission_result(
     observation: StrategyObservation,
     policy: dict[str, Any],
+    *,
+    liquidity_values: dict[str, float | None] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
+    def value(key: str) -> float | None:
+        return (liquidity_values.get(key) if liquidity_values is not None
+                else _numeric_source_value(observation, key))
     facts = {
         "price": observation.price,
-        "session_dollar_volume": _numeric_source_value(
-            observation, "market.session_dollar_volume"
-        ),
-        "session_share_volume": _numeric_source_value(observation, "market.volume"),
-        "trade_rate_10s": _numeric_source_value(observation, "market.trade_rate_10s"),
-        "trade_rate_60s": _numeric_source_value(observation, "market.trade_rate_60s"),
+        "session_dollar_volume": value("market.session_dollar_volume"),
+        "session_share_volume": value("market.volume"),
+        "trade_rate_10s": value("market.trade_rate_10s"),
+        "trade_rate_60s": value("market.trade_rate_60s"),
         "spread_bps": _spread_bps(observation),
     }
     maximum_admission_spread_bps = float(
@@ -1476,10 +1479,14 @@ def _current_execution_quality_result(
     policy: dict[str, Any],
     *,
     reentry: bool = False,
+    liquidity_values: dict[str, float | None] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     spread = _spread_bps(observation)
-    trade_rate_10s = _numeric_source_value(observation, "market.trade_rate_10s")
-    trade_rate_60s = _numeric_source_value(observation, "market.trade_rate_60s")
+    def value(key: str) -> float | None:
+        return (liquidity_values.get(key) if liquidity_values is not None
+                else _numeric_source_value(observation, key))
+    trade_rate_10s = value("market.trade_rate_10s")
+    trade_rate_60s = value("market.trade_rate_60s")
     execution_vwap = observation.execution_vwap or _numeric_source_value(
         observation, "indicator.vwap.execution_value", "1s"
     )

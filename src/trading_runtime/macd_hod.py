@@ -71,17 +71,15 @@ def below(value, s, tick):
 
 
 def target_selection(rows, price, bodies, s, tick):
-    above = [r for r in rows if r['lower']-tick > price]
-    if len(above) < 2:
+    # Keep the saved candidate's legacy body/gap settings loadable, but distant
+    # book gaps must never push this checkpoint past the nearest resistance.
+    above = sorted((r for r in rows if r['lower']-tick > price),key=lambda r:r['lower'])
+    if not above:
         return None
-    gaps = [b['lower']-a['lower'] for a,b in zip(above,above[1:])][-32:]
-    mean_gap = sum(gaps)/len(gaps)
-    mean_body = sum(bodies)/len(bodies) if bodies else 0.
-    reference = above[0]['lower']+max(mean_gap*s['target_gap_multiple'],mean_body*s['target_body_multiple'])
-    choices = [dict(price=floor((r['lower']-tick)/tick+1e-9)*tick,level=r) for r in above[1:]]
-    selected = next((r for r in choices if r['price'] >= reference),choices[-1])
-    return dict(selected, target_reference=reference,average_gap=mean_gap,average_bullish_body=mean_body,
-                book_limited=selected['price'] < reference)
+    level=above[0]
+    return dict(price=floor((level['lower']-tick)/tick+1e-9)*tick,level=level,
+                selection_method='nearest_qualified_overhead_resistance',
+                target_reference=level['lower'])
 
 
 def observe(o, d, s):
@@ -139,7 +137,7 @@ def evaluate(host, a, o, p, state):
     active=state.get('macd_hod_entry') or {}
     stop=float(state.get('active_stop') or 0)
     target=float((state.get('structural_profit_targets') or [0])[0])
-    evidence=dict(contract=CONTRACT,macd=dict(timeframe='100ms',gap_bps=d.get('gap_bps'),
+    evidence=dict(contract=CONTRACT,implementation_revision='macd-hod-repair-2',macd=dict(timeframe='100ms',gap_bps=d.get('gap_bps'),
                   observed_at=d.get('closed_at'),episode=d.get('episode')))
     def result(action,reason,status=None,**kw):
         exit_metadata = ({'reentry_after_fill': reason != 'session_flatten' and a.permissions.reenter}
@@ -170,7 +168,7 @@ def evaluate(host, a, o, p, state):
             return result('exit',reason,Status.EXIT_PENDING,quantity=o.position_quantity,
                           invalidation_price=stop,metadata={'cancel_entry_acquisition':True,'position_fraction':1.})
     quality_p=dict(p,structural_recovery=dict(QUALITY_DEFAULTS,**{k:v for k,v in s.items() if k in QUALITY_DEFAULTS}))
-    ready,quality=tradability(o,quality_p,dict(effective_at=d.get('closed_at',0),candle={'volume':d.get('bar_volume')}),state)
+    ready,quality=tradability(o,quality_p,dict(effective_at=d.get('closed_at',0),candle={'volume':d.get('bar_volume')}),state,producer_freshness=True)
     evidence['liquidity_admission']=quality
     if pending and (not ready or now-active.get('confirmed_at',0)>=s['confirmation_lifetime_ms']/1000
                     or (d.get('gap_bps') or 0)<=0 or o.ask>active.get('maximum_buy_price',0)):
@@ -236,6 +234,9 @@ def evaluate(host, a, o, p, state):
     threshold=max(boundary['upper'],d['vwap'])
     if d.get('used_episode'):
         threshold=max(threshold,d['prior_episode_high']*(1+s['reentry_buffer_bps']/10000))
+    evidence['entry_selection']=dict(vwap=d['vwap'],prior_hod=hod,threshold=threshold,
+        resistance_boundaries=[r['upper'] for r in refs],same_episode_reentry=bool(d.get('used_episode')),
+        prior_episode_high=d.get('prior_episode_high'))
     if o.price<=threshold:
         return result('wait','waiting_for_episode_high' if d.get('used_episode') else 'waiting_for_hod_zone')
     low=d.get('swing_low') or {}
@@ -248,10 +249,13 @@ def evaluate(host, a, o, p, state):
     ceiling=min(o.price*(1+s['maximum_chase_bps']/10000),
                 (target+s['minimum_reward_risk']*stop-cost)/(1+s['minimum_reward_risk']))
     first=next((r for r in entry_rows if r['lower']>o.ask),None)
+    evidence['entry_risk']=dict(stop=stop,target=target,maximum_buy_price=ceiling,
+        ask=o.ask,bid=o.bid,estimated_cost=cost,minimum_reward_risk=s['minimum_reward_risk'],
+        nearest_resistance=first['lower'] if first else None)
     if not 0<stop<o.bid<=o.ask<=ceiling or not first or first['lower']-tick-o.ask<=cost:
         return result('wait','insufficient_room_or_invalid_stop')
     entry=dict(confirmed_at=now,maximum_buy_price=ceiling,invalidation=anchor,stop=stop,target=target,
-               references=deepcopy(refs),session_high=hod,stop_swing_at=low.get('confirmed_at',0),episode=d['episode'])
+               references=deepcopy(refs),session_high=hod,stop_swing_at=low.get('confirmed_at',0),episode=d['episode'],break_at=now)
     state.update(macd_hod_entry=entry,initial_stop=stop,active_stop=stop,structural_profit_targets=[target],
                  entry_reference_price=o.ask,entry_at=o.observed_at.isoformat(),last_exit_reason='',
                  entry_acquisition_exit_latched=False,entries=state.get('entries',0)+1)
