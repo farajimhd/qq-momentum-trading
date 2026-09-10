@@ -2365,6 +2365,10 @@ class BacktestPreflightTests(unittest.TestCase):
         self.assertEqual(scoped["maximum_size"], 2)
         self.assertEqual(scoped["source_plan_hash"], plan["plan_hash"])
         self.assertNotEqual(scoped["plan_hash"], plan["plan_hash"])
+        import hashlib
+        wire = {k: v for k, v in scoped.items() if k not in {"plan_hash", "source_plan_hash", "source_tickers"}}
+        self.assertEqual(scoped["plan_hash"], "sha256:" + hashlib.sha256(
+            json.dumps(wire, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest())
         for key in ("rule_sets", "ranking_field", "max_evaluations_per_chunk"):
             self.assertEqual(scoped[key], plan[key])
         # A genuine top-one ranking cap must remain top-one.
@@ -2385,7 +2389,8 @@ class BacktestPreflightTests(unittest.TestCase):
                 }), patch("src.backend.replay_run_service.backtest_runtime_root", return_value=Path(directory)), patch(
                     "src.backend.replay_run_service._historical_watchlist_plans_for_configuration", return_value=[{"plan_hash": "unchanged"}],
                 ), patch("src.backend.replay_run_service._historical_watchlist_membership_timeline_from_plans", return_value=[
-                    {"members": [{"ticker": "SUGP"}]},
+                    {"transitions": [{"ticker": "SUGP", "event": "added"}]}
+                    if structural else {"members": [{"ticker": "SUGP"}]},
                 ]) as materialize:
                     result = backtest_preflight(anchor_date=date(2026, 8, 24), session_count=1,
                         tickers=("sugp", "JUNS", "SUGP"), configuration_revision=approved)

@@ -7786,9 +7786,12 @@ def _scope_structural_watchlist_capacity(plan: dict[str, Any], tickers: list[str
     if set(plan.get("manual_inclusions") or []) - set(tickers):
         raise ValueError("Structural Watchlist manual inclusions must be within the selected ticker scope")
     body = {key: deepcopy(value) for key, value in plan.items() if key != "plan_hash"}
-    body.update(maximum_size=len(tickers), source_plan_hash=plan["plan_hash"], source_tickers=tickers)
+    body["maximum_size"] = len(tickers)
     encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
-    return {**body, "plan_hash": "sha256:" + hashlib.sha256(encoded).hexdigest()}
+    # QMD hashes its declared wire schema. Application provenance is retained
+    # alongside that plan, outside the wire hash (unknown fields are ignored).
+    return {**body, "plan_hash": "sha256:" + hashlib.sha256(encoded).hexdigest(),
+            "source_plan_hash": plan["plan_hash"], "source_tickers": tickers}
 
 
 def _historical_core_signal_plans_for_configuration(
@@ -8191,7 +8194,11 @@ def backtest_preflight(
                 {
                     str(row.get("ticker") or "").upper(): row
                     for snapshot in timeline
-                    for row in snapshot["members"]
+                    for row in (
+                        list(snapshot.get("members") or [])
+                        + [transition for transition in snapshot.get("transitions") or []
+                           if transition.get("event") in {"added", "rank_changed"}]
+                    )
                     if str(row.get("ticker") or "").strip()
                 }.values()
             )
