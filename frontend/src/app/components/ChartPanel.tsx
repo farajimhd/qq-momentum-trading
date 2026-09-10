@@ -642,6 +642,8 @@ export type ChartTimelineEvent = {
 };
 
 export type ChartPayload = {
+  /** Timeframe of the loaded candles, which may lag the selected toolbar value. */
+  timeframe?: string;
   candles: Candle[];
   forecast_candles?: Candle[];
   volume: Array<{ time: number; value: number; color: string }>;
@@ -1439,6 +1441,9 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }, []);
 
   useEffect(() => {
+    // Canvas retains the prior page while a new timeframe loads. Do not fit
+    // that page under the new identity and then freeze its stale price range.
+    if (payload?.timeframe && payload.timeframe !== timeframe) return;
     payloadRef.current = payload;
     if (!payload || !priceChartRef.current || !candleRef.current || !volumeRef.current) return;
     const viewportIdentity = `${ticker}:${timeframe}:${referenceKey || "no-reference"}`;

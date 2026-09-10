@@ -692,8 +692,12 @@ impl HistoricalDerivedCache {
         }
         let resolution_us = parse_resolution_us(timeframe)
             .ok_or_else(|| format!("unsupported indicator warm-up timeframe {timeframe}"))?;
-        if timeframe != "1s" {
-            return Err("indicator warm-up currently requires the canonical 1s timeframe".into());
+        // Warm-up is aggregated from canonical events at the requested bar
+        // resolution, just like the session page. Its durable identity already
+        // includes timeframe; using a 1s seed for subsecond bars would change
+        // EMA/MACD semantics. Accept the same native intervals as the bar store.
+        if !qmd_core::bars::is_supported_timeframe(timeframe) {
+            return Err(format!("unsupported indicator warm-up timeframe {timeframe}"));
         }
         let required_bars = required_bars.clamp(1, 10_000);
         let path = indicator_warmup_cache_path(
@@ -755,7 +759,7 @@ impl HistoricalDerivedCache {
             let mut recent_bars = self
                 .indicator_warmup_bars(timeframe, session_start, &recent.events)
                 .await?;
-            // A LIMIT-sized tail can begin inside a one-second bucket. If the
+            // A LIMIT-sized tail can begin inside a requested-timeframe bucket. If the
             // query returned fewer rows than requested, it covered the full
             // certified interval and its first bucket is complete.
             if recent.events.len() == recent_limit && !recent_bars.is_empty() {

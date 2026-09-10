@@ -281,6 +281,7 @@ export function ChartPreview({
     }));
     const originMarker = barGptForecasts.length ? barGptOriginOptions.find((row) => row.originUs === barGptOriginUs) : undefined;
     return {
+      timeframe: liveChart.bars[0]?.timeframe,
       candles: realizedCandles,
       forecast_candles: forecastCandles,
       markers: [

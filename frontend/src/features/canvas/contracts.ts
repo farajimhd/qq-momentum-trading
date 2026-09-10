@@ -7,7 +7,7 @@ import type { TradingWorkspaceMode } from "../../app/tradingWorkspace";
 import type { XbrlAnalysisSettings } from "../../app/components/XbrlAnalysisContainer";
 import type { StrategyChartPresentation, StrategyDecisionEvent } from "../../app/strategyPresentation";
 import type { CanvasReplayRun } from "../../app/replayRun";
-export type HistoricalBar = { bar_end?: string; bar_start: string; close: number; high: number; is_closed?: boolean; last_event_ts?: string; low: number; open: number; volume: number };
+export type HistoricalBar = { timeframe?: string; bar_end?: string; bar_start: string; close: number; high: number; is_closed?: boolean; last_event_ts?: string; low: number; open: number; volume: number };
 export const EMPTY_STRATEGY_DECISIONS: StrategyDecisionEvent[] = [];
 export type QmdStructureLevelCandidate = {
   level_id: number;
