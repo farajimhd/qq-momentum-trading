@@ -258,6 +258,7 @@ export function useStructuralDetector(ticker: string, timeframe: string, candles
         {checkbox}<p className="chart-settings-help" role="status">{status}</p>
         <section className="chart-settings-section"><h3>Candle labels</h3>
           <p className="chart-settings-help">Short entry and long exit appear above candles; long entry and short exit appear below. The toolbar shows the current hold decision while a hypothetical position is active. No qualifying entry means no chart signal.</p>
+          <p className="chart-settings-help">Signals appear on the next available candle after the decision closes. Until that candle exists, the decision remains in the toolbar. Clicking a signal opens evidence from its originating candle.</p>
           <p className="chart-settings-help">Setup evidence remains internal and can be inspected on a candle. Add Signal reason for entry/exit explanations. Initial references stay fixed; confirmed structure can tighten protection for subsequent candles. Trade execution eligibility is not assessed.</p>
           <p className="chart-settings-help">Initiation, continuation and reversal entries use meaningful level zones and available room. Initial risk references remain recorded. Current protection can tighten after confirmed structure; accepted barriers advance to the next level. Open room is not a price forecast. Inspect a candle for entry rejections and management reasons.</p>
           <p className="chart-settings-help">New positions must follow through. Established positions can hold normal pullbacks; profitable progress activates a close-based protective floor. Strong rejection at important levels or a confirmed opposing reversal can close without a momentum flip. Re-entry requires the prior exit's structure to be repaired, its barrier accepted, or a new confirmed pullback base. R means initial reference risk, not realized profit.</p>
@@ -285,7 +286,7 @@ export function useStructuralDetector(ticker: string, timeframe: string, candles
       <div className="structural-label-actions"><Button variant="primary" onClick={() => setSettingsOpen(false)}>Done</Button></div>
     </Modal> : null}
   </>;
-  return { rows, checkbox, controls, enabled, status, labelRows: stored.labelRows };
+  return { rows, checkbox, controls, enabled, status, cutoff, labelRows: stored.labelRows };
 }
 
 function LabelCommit({onCommit,children}:{onCommit:()=>void;children:ReactNode}) {
@@ -299,12 +300,14 @@ export class StructuralDetectorPrimitive implements ISeriesPrimitive<Time> {
   private chart: IChartApi | null = null;
   private update?: () => void;
   private rows: StructuralState[] = EMPTY;
+  private candles: Candle[] = [];
+  private cutoff = 0;
   private layout: LabelRows = defaultRows;
   private coordinate: (t:number) => number | null = () => null;
   private host?: HTMLDivElement;
   private root?: Root;
   private frame = 0;
-  private labels: {row:StructuralState;x:number;y:number}[]=[];
+  private labels: {row:StructuralState;displayTime:number;x:number;y:number}[]=[];
   private signature='';
   private dirty=true;
   private selected: number | null = null;
@@ -313,7 +316,7 @@ export class StructuralDetectorPrimitive implements ISeriesPrimitive<Time> {
     if (!this.host) return;
     const coordinates=new Map(this.labels.map(label=>[label.row.time,label]));
     const boxes=Array.from(this.host.querySelectorAll<HTMLElement>('.structural-label-anchor'),node=>({node,
-      point:coordinates.get(Number(node.dataset.time)),width:node.offsetWidth,height:node.offsetHeight}));
+      point:coordinates.get(Number(node.dataset.sourceTime)),width:node.offsetWidth,height:node.offsetHeight}));
     const occupied:{left:number;right:number;top:number;bottom:number}[]=[];
     boxes.sort((a,b)=>Number(b.node.dataset.priority)-Number(a.node.dataset.priority)).forEach(({node,point,width,height})=>{
       if (!point) {node.style.visibility='hidden';return;}
@@ -334,24 +337,31 @@ export class StructuralDetectorPrimitive implements ISeriesPrimitive<Time> {
         this.host.style.height=`${mediaSize.height}px`;
       }
       const range=this.chart.timeScale().getVisibleRange();
-      const labels: { row: StructuralState; x:number; y:number }[]=[];
+      const labels: { row: StructuralState; displayTime:number; x:number; y:number }[]=[];
       for (const row of this.rows) {
-        if (range && typeof range.from==='number' && row.time<range.from) continue;
-        if (range && typeof range.to==='number' && row.time>range.to) break;
         if (!entryExitActions.has(row.technical_signal?.action || '')) continue;
+        // Find the first real candle on which the completed decision is known.
+        // It may be forming; no next-candle prices enter the signal calculation.
+        let low=0,high=this.candles.length;
+        while(low<high) {const mid=(low+high)>>>1;if(this.candles[mid].time<row.effective_at)low=mid+1;else high=mid;}
+        const destination=this.candles[low];
+        if (!destination || destination.time>this.cutoff) continue;
+        const displayTime=destination.time;
+        if (range && typeof range.from==='number' && displayTime<range.from) continue;
+        if (range && typeof range.to==='number' && displayTime>range.to) break;
         const above=aboveCandle(row);
-        const x=this.coordinate(row.time), y=this.series.priceToCoordinate(above ? row.candle.high : row.candle.low);
-        if (x!=null && y!=null && x>=0 && x<=mediaSize.width && y>=0 && y<mediaSize.height) labels.push({row,x,y:y+(above ? -5 : 5)});
+        const x=this.coordinate(displayTime), y=this.series.priceToCoordinate(above ? destination.high : destination.low);
+        if (x!=null && y!=null && x>=0 && x<=mediaSize.width && y>=0 && y<mediaSize.height) labels.push({row,displayTime,x,y:y+(above ? -5 : 5)});
       }
       this.labels=labels;
       this.position();
-      const signature=labels.map(label=>label.row.time).join(',');
+      const signature=labels.map(label=>`${label.row.time}:${label.displayTime}`).join(',');
       if (signature!==this.signature) {this.signature=signature;this.dirty=true;}
       // Do not cancel pending content commits during continuous interaction.
       if (this.dirty && !this.frame) this.frame=requestAnimationFrame(() => {
         this.frame=0;this.dirty=false;
         const selectedIndex=this.rows.findIndex(row=>row.time===this.selected), selected=this.rows[selectedIndex];
-        this.root?.render(<LabelCommit onCommit={this.position}>{this.labels.map(({row,x,y}) => <div className="structural-label-anchor" data-time={row.time} data-priority={row.technical_signal?.action.endsWith('_enter') || row.technical_signal?.action.endsWith('_exit') ? 100 : 20} key={row.time} style={{left:x,top:y}}><StructuralCandleLabel row={row} layout={this.layout} onInspect={()=>this.inspect(row)} /></div>)}
+        this.root?.render(<LabelCommit onCommit={this.position}>{this.labels.map(({row,displayTime,x,y}) => <div className="structural-label-anchor" data-time={displayTime} data-source-time={row.time} data-effective-at={row.effective_at} data-priority={row.technical_signal?.action.endsWith('_enter') || row.technical_signal?.action.endsWith('_exit') ? 100 : 20} key={row.time} style={{left:x,top:y}}><StructuralCandleLabel row={row} layout={this.layout} onInspect={()=>this.inspect(row)} /></div>)}
           {selected ? <CandleInspector row={selected} hasPrevious={selectedIndex>0} hasNext={selectedIndex<this.rows.length-1} onClose={()=>{this.selected=null;this.dirty=true;this.update?.();}} onMove={step=>this.inspect(this.rows[selectedIndex+step])} /> : null}</LabelCommit>);
       });
     });
@@ -369,5 +379,5 @@ export class StructuralDetectorPrimitive implements ISeriesPrimitive<Time> {
     const margin=Math.min(180,this.layout.filter(fields=>fields.length).length*28);
     return { priceRange: null, margins: { above: margin, below: margin } };
   }
-  setState(rows:StructuralState[],coordinate:(t:number)=>number|null,layout:LabelRows) { if(this.rows!==rows || this.layout!==layout)this.dirty=true; this.rows=rows; if(!rows.some(r=>r.time===this.selected))this.selected=null; this.coordinate=coordinate; this.layout=layout; this.update?.(); }
+  setState(rows:StructuralState[],coordinate:(t:number)=>number|null,layout:LabelRows,candles:Candle[],cutoff:number) { if(this.rows!==rows || this.layout!==layout)this.dirty=true; this.rows=rows;this.candles=candles;this.cutoff=cutoff; if(!rows.some(r=>r.time===this.selected))this.selected=null; this.coordinate=coordinate; this.layout=layout; this.update?.(); }
 }

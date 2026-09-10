@@ -1829,7 +1829,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       currentPayload.candles.at(-1)?.time ?? 0, timeline[0]?.time ?? 0);
     const swingDuration = estimateCandleDuration(timeline);
     structuralDetectorPrimitiveRef.current?.setState(structuralDetectorRef.current.rows,
-      time => xForAnnotationTime(chart, time, timeline, swingDuration), structuralDetectorRef.current.labelRows);
+      time => xForAnnotationTime(chart, time, timeline, swingDuration), structuralDetectorRef.current.labelRows,currentPayload.candles,structuralDetectorRef.current.cutoff);
     swingStructurePrimitiveRef.current?.setState(swing.segments,
       (time) => xForAnnotationTime(chart, Math.max(timeline[0]?.time ?? 0,
         Math.min(time, timeline.at(-1)?.time ?? 0)), timeline, swingDuration),

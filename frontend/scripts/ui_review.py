@@ -2533,6 +2533,15 @@ def capture(args: argparse.Namespace) -> int:
                         page.get_by_role('checkbox', name='Structural detector', exact=True).check()
                         panel.get_by_role('button', name=re.compile(r'^Indicators(?:\s+\d+)?$')).click()
                         page.wait_for_function("document.querySelectorAll('.structural-label-layer .structural-candle-label').length>0", timeout=args.timeout_ms)
+                        page.evaluate("""rows=>{
+                            const data=window.__signalReview.series.data();
+                            for(const row of rows) {
+                                if(!row.technical_signal?.action.endsWith('_enter') && !row.technical_signal?.action.endsWith('_exit'))continue;
+                                if(!data.some(p=>typeof p.time==='number' && p.time>=row.effective_at) &&
+                                   document.querySelector(`.structural-label-anchor[data-source-time="${row.time}"]`))
+                                    throw Error('Signal rendered before a destination candle exists');
+                            }
+                        }""",visible)
                         panel.get_by_role('button', name='Structural detector', exact=True).click()
                         page.wait_for_function("document.querySelectorAll('.structural-label-layer .structural-candle-label').length===0", timeout=args.timeout_ms)
                         panel.get_by_role('button', name='Structural detector', exact=True).click()
@@ -2551,6 +2560,9 @@ def capture(args: argparse.Namespace) -> int:
                                 await frame();
                                 for(const node of document.querySelectorAll('.structural-label-anchor')) {
                                     const time=Number(node.dataset.time),x=scale.timeToCoordinate(time);
+                                    const sourceTime=Number(node.dataset.sourceTime),effectiveAt=Number(node.dataset.effectiveAt);
+                                    const destination=series.data().find(p=>typeof p.time==='number' && p.time>=effectiveAt);
+                                    if(time<=sourceTime || time!==destination?.time)throw Error('Signal is not on its first available next candle');
                                     const point=series.dataByIndex(scale.coordinateToLogical(x));
                                     if(x==null || !point || point.time!==time || node.style.visibility==='hidden')continue;
                                     const above=/Short enter|Long exit/.test(node.textContent);
@@ -2573,9 +2585,12 @@ def capture(args: argparse.Namespace) -> int:
                             long_labels=panel.locator('.structural-candle-label:visible').filter(has_text='Long enter')
                             if long_labels.count(): visible_label=long_labels.first
                         inspected_action=re.search(r'(Long|Short) (enter|exit)',visible_label.inner_text()).group().lower()
+                        inspected_source=visible_label.evaluate("node=>Number(node.closest('.structural-label-anchor').dataset.sourceTime)")
                         visible_label.click()
                         inspector=page.get_by_role('dialog',name='Candle evidence',exact=True)
                         inspector.wait_for(state='visible')
+                        if not page.evaluate("source=>document.querySelector('.structural-candle-inspector p')?.textContent.includes(new Date(source*1000).toISOString())",inspected_source):
+                            raise RuntimeError('Shifted signal inspector lost its originating candle')
                         if evidence.get('contract') in ('structural-candle-detector-7','structural-candle-detector-8','structural-candle-detector-9'):
                             inspector.get_by_role('heading',name='Technical signal · '+inspected_action,exact=True).wait_for(state='visible')
                             if 'not fills' not in inspector.inner_text():
