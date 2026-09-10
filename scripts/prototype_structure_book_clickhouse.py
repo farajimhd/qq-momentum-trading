@@ -89,20 +89,27 @@ class Client:
 
     def close(self):
         while True:
-            try:self._pool.get_nowait().close()
+            try:self._pool.get_nowait()[0].close()
             except queue.Empty:break
 
     def __del__(self):
         if hasattr(self, '_pool'):self.close()
 
-    def _response(self, url, body, headers, timeout):
+    def _response(self, url, body, headers, timeout, reuse=True):
         """Bounded reusable HTTP connections; never replay a write internally."""
         endpoint = urllib.parse.urlsplit(url)
         if endpoint.scheme not in ('http', 'https') or not endpoint.hostname:
             raise ValueError('Invalid ClickHouse HTTP endpoint')
         with self._slots:
-            try:connection = self._pool.get_nowait()
-            except queue.Empty:
+            connection = None
+            while reuse and connection is None:
+                try:cached, deadline = self._pool.get_nowait()
+                except queue.Empty:break
+                if time.monotonic() < deadline:
+                    connection = cached
+                else:
+                    cached.close()
+            if connection is None:
                 kind = http.client.HTTPSConnection if endpoint.scheme == 'https' else http.client.HTTPConnection
                 connection = kind(endpoint.hostname, endpoint.port, timeout=timeout)
             reusable = False
@@ -114,14 +121,24 @@ class Client:
                 response = connection.getresponse()
                 data = response.read(8000001)
                 if len(data)>8000000:raise RuntimeError('Metadata response exceeded bound')
-                reusable = not response.will_close
+                reusable = reuse and not response.will_close
                 if response.status >= 300:
                     from io import BytesIO
                     raise urllib.error.HTTPError(url,response.status,response.reason,response.headers,BytesIO(data))
                 return data
             finally:
-                if reusable:self._pool.put_nowait(connection)
+                if reusable:self._pool.put_nowait((connection,time.monotonic()+5.))
                 else:connection.close()
+
+    def settle_write(self, error):
+        """Stop only our uncertain request before checking durable row contents."""
+        query_id = getattr(error,'query_id',None)
+        if not query_id or not query_id.startswith('structure-feasibility-'):
+            raise ValueError('Cannot reconcile a write without its request identity') from error
+        rows=self.query('KILL QUERY WHERE query_id='+literal(query_id)+' SYNC FORMAT JSONEachRow',
+                        'settle_write',read=False,seconds=15)
+        if any(row.get('kill_status')!='finished' for row in rows):
+            raise RuntimeError('Uncertain checkpoint write is still active; refusing replay')
 
     def query(self, sql, label, read=True, seconds=120):
         for attempt in range(6 if read else 1):
@@ -151,9 +168,11 @@ class Client:
             self.active.add(query_id)
         status = 'failed'
         try:
-            body = self._response(url,request.data,dict(request.header_items()),seconds+15)
-            rows = [json.loads(line) for line in body.splitlines()] if read else []
-            if not read and body.strip() and label!='cancel':
+            # Writes must never inherit a socket left idle during candle compute.
+            # Their uncertain outcomes are reconciled by the checkpoint writer.
+            body = self._response(url,request.data,dict(request.header_items()),seconds+15,read)
+            rows = [json.loads(line) for line in body.splitlines()] if read or label=='settle_write' else []
+            if not read and body.strip() and label not in ('cancel','settle_write'):
                 raise RuntimeError('Unexpected INSERT/DDL response')
             status = 'completed'
             return rows
@@ -163,6 +182,10 @@ class Client:
                 if secret:
                     message = message.replace(secret, '[redacted]')
             raise RuntimeError(f'{label}: HTTP {error.code}: {message}') from None
+        except (OSError,http.client.HTTPException) as error:
+            if not read:
+                error.query_id = query_id
+            raise
         finally:
             with self.lock:
                 self.active.discard(query_id)

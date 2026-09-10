@@ -9,7 +9,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 import argparse
 from contextlib import contextmanager
-from collections import Counter
+from collections import Counter, deque
 from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
@@ -259,7 +259,7 @@ def run(args):
     m.pop('stop_reason',None)
     save(root,m)
     print(f'Resume: workers={m["workers"]}, threads/worker={m["threads"]}, retried tickers={retried}; completed books retained.',flush=True)
-    active={};last=0.;stopping=False;network_failures=0
+    active={};last=0.;stopping=False;network_failures=deque()
     dashboard=Dashboard(m)
     dashboard.start()
     try:
@@ -287,10 +287,13 @@ def run(args):
                     reason=progress.get('error','' if status=='completed' else 'See worker.log'),database=progress.get('database'))
                 active.pop(pid);save(root,m)
                 if status=='failed' and transport_failure(row['reason']):
-                    network_failures+=1
-                    if network_failures>=4 and not stopping:
+                    stamp=time.monotonic()
+                    network_failures.append(stamp)
+                    while network_failures and stamp-network_failures[0]>180:
+                        network_failures.popleft()
+                    if len(network_failures)>=4 and not stopping:
                         stopping=True
-                        m['stop_reason']='Four transport failures in this run; stopped dispatch to protect remaining tickers. Check connectivity and resume with fewer workers.'
+                        m['stop_reason']='Four workers exhausted transport recovery within 180 seconds; stopped dispatch to protect remaining tickers. Check connectivity before resuming.'
                         (root/'STOP').touch()
                         dashboard.event(m['stop_reason'])
                 dashboard.event(f'{row["ticker"]}: {status} | {duration(row["elapsed_seconds"])} | {row["reason"]}')

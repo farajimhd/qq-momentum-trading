@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time as daytime
 from hashlib import sha256
 import json
+import http.client
 import time
 
 import prototype_structure_book_clickhouse as P
@@ -39,9 +40,62 @@ def policy(client, db):
 
 
 def insert(client, db, table, rows):
-    if rows:
-        client.query(f'INSERT INTO {db}.{table} FORMAT JSONEachRow\n'+'\n'.join(map(encode, rows)),
-                     'write_'+table, read=False)
+    """Recover deterministic checkpoint batches without replaying accepted rows.
+
+    ReplacingMergeTree keys/revisions are the existing checkpoint contract.
+    Higher revisions may close an earlier interval; conflicting equal/newer
+    revisions fail closed. The session marker is still written last.
+    """
+    keys = {'book':('ticker','valid_from_us','level_id'),
+            'sessions':('ticker','session_date'),'split_audit':('ticker','effective_us')}
+    if table not in keys:
+        raise ValueError('Unsupported checkpoint table')
+    integers = {'level_id','side','valid_from_us','valid_to_us','revision','sequence','effective_us','affected_rows'}
+    floats = {'price','lower','upper','prominence','closed_at','close','price_factor'}
+    def normalized(row):
+        return {k:None if v is None else int(v) if k in integers else float(v) if k in floats else v for k,v in row.items()}
+    def identity(row):
+        row = normalized(row)
+        return tuple(row[k] for k in keys[table])
+    def missing(expected):
+        literals = lambda row:'('+','.join(P.literal(str(row[k])) for k in keys[table])+')'
+        saved = client.query(f"SELECT * FROM {db}.{table} FINAL WHERE ({','.join(keys[table])}) IN ("+
+                             ','.join(literals(r) for r in expected)+')','reconcile_'+table)
+        found = {}
+        for row in saved:
+            key = identity(row)
+            if key in found:
+                raise ValueError('Duplicate checkpoint keys during write recovery')
+            found[key] = normalized(row)
+        pending = []
+        for row in expected:
+            actual = found.get(identity(row))
+            if actual == normalized(row):
+                continue
+            if actual is not None and int(actual['revision']) >= int(row['revision']):
+                raise ValueError(f'Conflicting {table} checkpoint during write recovery')
+            pending.append(row)
+        return pending
+    for offset in range(0,len(rows),500):
+        pending = rows[offset:offset+500]
+        if len({identity(r) for r in pending})!=len(pending):
+            raise ValueError('Duplicate checkpoint keys in write batch')
+        for attempt in range(3):
+            try:
+                client.query(f'INSERT INTO {db}.{table} FORMAT JSONEachRow\n'+'\n'.join(map(encode,pending)),
+                             'write_'+table,read=False)
+                break
+            except (OSError,http.client.HTTPException) as error:
+                print(f'Write recovery | {table} | attempt={attempt+1}/3 | checking {len(pending)} rows',flush=True)
+                client.settle_write(error)
+                before = len(pending)
+                pending = missing(pending)
+                print(f'Write recovery | {table} | verified={before-len(pending)} pending={len(pending)}',flush=True)
+                if not pending:
+                    break
+                if attempt==2:
+                    raise
+                time.sleep(2**attempt)
 
 
 def split_versions(previous_rows,factor,boundary):

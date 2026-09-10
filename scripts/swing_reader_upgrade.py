@@ -32,13 +32,22 @@ UPGRADE_PATHS = (
 TRANSPORT_BASELINE = {
     'scripts/prototype_structure_book_clickhouse.py': (
         '3aef19d9c77ca5e905e33a53d9c5e77bef9a7f3abffa2ae088d39e29ee6e1224',
-        '6768743f8b019dd5a7b89c51dcc2fa502c70548407b07fa72929d2988b6019bb'),
+        '6768743f8b019dd5a7b89c51dcc2fa502c70548407b07fa72929d2988b6019bb',
+        '7541c6f5e6f668a5eb01af969d050b4eb90214427cff43cb1c3f3029eaa38f43',
+        'dcd9d78760f5aa8bb68e74554c3e264715d81bcb2dfe1aafaac53062fe7cc3c0'),
+    'scripts/build_swing_structure_book.py': (
+        '80b8569d6fc3acf79792082886e937d446f29f21c1f367e0612652a9d58d9742',
+        '582d9058d6c42547ed698eeb75d39bb9aa763607b7741200724f8579becfb42e'),
     'scripts/build_swing_book_campaign.py': (
         '96545eb1b3e40eedd58c43caaca5998f9ac6bd7d3ea9348ddccb79509ad6d60e',
-        '41a4d6f388604f0b686bb64286b60e9cf34c7aa9348e93b058e0a4765ab29a5f'),
+        '41a4d6f388604f0b686bb64286b60e9cf34c7aa9348e93b058e0a4765ab29a5f',
+        '272c33289d2d1f677460364d5433bd8aad2a2fdb6cb2a7a87d33a892dcce9ecb',
+        '4339ffe0adfe8e65b74c16b6a103a407dfe40741b61096d72495a429d0f0a3ee'),
     'scripts/swing_reader_upgrade.py': (
         '296b429f0c06dfbaabf3fdeec6535451d5a49bf328f948b522fbb0b5b57cfdee',
-        '7e81f939695acc5c4967e0a4efee6d28205582da0eed9d845f1bba9191f11737'),
+        '7e81f939695acc5c4967e0a4efee6d28205582da0eed9d845f1bba9191f11737',
+        '86a05afd8f51360ea7ceb32473e63b04e59075a8d51b916d09ad26aab1ee9cad',
+        '3255e335024595150aae5c5642b7eee3d9e9cdf3d11e2deef9a2f246b76da67a'),
 }
 
 
