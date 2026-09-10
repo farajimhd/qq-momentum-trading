@@ -2174,16 +2174,8 @@ class ReplayRunController:
                 )
             )
             configuration = self.definition.configuration_revision["payload"]
-            run_plan = dict(configuration.get("run_plan") or {})
-            source_native_identity_only = (
-                bool(self._historical_external_signal_events)
-                and str(
-                    dict(run_plan.get("activation") or {}).get(
-                        "watchlist_policy"
-                    )
-                    or "any_selected"
-                )
-                == "not_required"
+            source_native_identity_only = _uses_source_native_identity_preparation(
+                configuration, bool(self._historical_external_signal_events),
             )
             if source_native_identity_only:
                 self._preparation_stage = "signal_identity"
@@ -4634,7 +4626,14 @@ class ReplayRunController:
             # occurrences and QMD derived indicators; the broad UI catalog is
             # descriptive here and does not activate model feature serving.
             return False
-        return "model.bargpt." in json.dumps(activation, sort_keys=True, default=str)
+        # The field catalog describes available models, not active consumers.
+        # The compiled dependency plan is the serving authority. Older
+        # snapshots without one fall back to their selected rules/streams.
+        dependencies = activation.get("data_field_plan")
+        if not isinstance(dependencies, dict):
+            dependencies = {"rule_sets": activation.get("rule_sets") or [],
+                            "signal_streams": enabled_streams}
+        return "model.bargpt." in json.dumps(dependencies, sort_keys=True, default=str)
 
     async def _ensure_bar_gpt_features(self, event_time: datetime) -> None:
         if not self._bar_gpt_fields_required():
@@ -5286,6 +5285,11 @@ class ReplayRunController:
             str(stream.get("occurrence_source") or "") == "qmd_squeeze_episode"
             for stream in enabled_streams
         )
+        structural_recovery = bool(self.definition.configuration_revision["payload"].get(
+            "strategy", {}).get("parameters", {}).get("structural_recovery_contract"))
+        # Both paths already own their causal signal stream. Structural
+        # recovery gets structure exclusively from the selected V6 book.
+        prepared_activation = source_native_only or structural_recovery
         requests = {
             (assignment.ticker, timeframe)
             for assignment in self._strategy.assignments()
@@ -5316,7 +5320,7 @@ class ReplayRunController:
                 tickers = tuple(sorted({ticker for ticker, _ in requests}))
                 events_by_ticker = (
                     {}
-                    if source_native_only
+                    if prepared_activation
                     else await _historical_signal_events(
                         tickers=tickers,
                         start=self.definition.session_start,
@@ -5329,8 +5333,9 @@ class ReplayRunController:
                 self._strategy_frame_cache_status = "run_checkpoint"
                 return spool
         indicator_columns = (
-            tuple(sorted(_STRATEGY_INDICATOR_FIELDS))
-            if source_native_only
+            tuple(sorted(field for field in _STRATEGY_INDICATOR_FIELDS
+                         if not structural_recovery or not field.startswith(("qmd_structure_", "structure_", "flow_structure_"))))
+            if prepared_activation
             else None
         )
         durable_cache = self.definition.historical_frame_cache is None
@@ -5399,7 +5404,7 @@ class ReplayRunController:
                             )
                     events_by_ticker = await self._strategy_frame_signal_events(
                         requests=requests,
-                        source_native_only=source_native_only,
+                        source_native_only=prepared_activation,
                     )
                     await asyncio.to_thread(cached.finalize, events_by_ticker)
                     self._preparation_completed_units = len(ordered_requests)
@@ -5473,7 +5478,7 @@ class ReplayRunController:
 
                                 for attempt in range(8):
                                     try:
-                                        if (
+                                        if structural_recovery or (
                                             source_native_only
                                             and self._strategy_quality_prune_ready
                                         ):
@@ -5543,7 +5548,7 @@ class ReplayRunController:
                     )
                 events_by_ticker = await self._strategy_frame_signal_events(
                     requests=requests,
-                    source_native_only=source_native_only,
+                    source_native_only=prepared_activation,
                 )
                 await asyncio.to_thread(spool.finalize, events_by_ticker)
                 if durable_cache:
@@ -8079,6 +8084,15 @@ def replay_preflight(
         "execution_mode": execution_mode,
         "available_run_plans": deepcopy(approved.get("available_run_plans") or []),
     }
+
+
+def _uses_source_native_identity_preparation(configuration: dict[str, Any], has_events: bool) -> bool:
+    streams = [row for row in configuration.get("signal_activation", {}).get("signal_streams", [])
+               if row.get("enabled", True)]
+    return bool(has_events and streams
+                and all(str(row.get("occurrence_source") or "").strip() for row in streams)
+                and not configuration.get("strategy", {}).get("parameters", {}).get("structural_recovery_contract")
+                and configuration.get("run_plan", {}).get("activation", {}).get("watchlist_policy") == "not_required")
 
 
 def _structural_recovery_projection_tickers(

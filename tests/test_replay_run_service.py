@@ -52,6 +52,7 @@ from src.backend.replay_run_service import (
     backtest_debug_preflight,
     backtest_preflight,
     _scope_structural_watchlist_capacity,
+    _uses_source_native_identity_preparation,
     replay_preflight,
     replay_history_fetch_concurrency,
 )
@@ -1865,6 +1866,35 @@ class CompletedBacktestSelectionTests(unittest.TestCase):
 
 
 class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_structural_frames_use_completed_bars_and_not_legacy_structure_or_scanner(self):
+        configuration = approved_configuration()
+        configuration["payload"]["strategy"]["parameters"]["structural_recovery_contract"] = True
+        with patch("src.backend.experimental_structure_book.resolve", return_value={
+            "ticker": "SUGP", "version": "causal-swing-closing-book-6", "start": "2025-01-01",
+            "end": "2026-09-04", "fingerprint": "v6-test",
+        }):
+            definition = ReplayRunDefinition(session_date=date(2026,8,21), start_time=time(4), end_time=time(4,30),
+                mode=RunMode.BACKTEST, tickers=("SUGP",), configuration_revision=configuration,
+                experimental_structure_book="test-v6")
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(definition, runtime_root=Path(directory))
+            controller._strategy = MagicMock()
+            controller._strategy.assignments.return_value = [MagicMock(ticker="SUGP", parameters={})]
+            controller._strategy_registration = MagicMock()
+            controller._strategy_registration.timeframe_resolver.return_value = {"1s"}
+            with patch("src.backend.replay_run_service.qmd_historical_source_revision", return_value={
+                "token": "v6-source", "source_plan_hash": "source-plan", "complete_for_history": True,
+            }), patch("src.backend.replay_run_service._stream_historical_bar_derived_frames", new_callable=AsyncMock) as bars, patch(
+                "src.backend.replay_run_service._stream_historical_derived_frames", new_callable=AsyncMock,
+            ) as legacy, patch("src.backend.replay_run_service._historical_signal_events", new_callable=AsyncMock) as scanner:
+                await controller._load_strategy_frames()
+            bars.assert_awaited_once()
+            legacy.assert_not_awaited()
+            scanner.assert_not_awaited()
+            columns = bars.call_args.kwargs["indicator_columns"]
+            self.assertIn("atr_14", columns)
+            self.assertFalse(any(c.startswith(("qmd_structure_", "structure_", "flow_structure_")) for c in columns))
+
     async def test_only_resource_and_transport_stream_failures_are_retryable(self) -> None:
         self.assertTrue(
             _retryable_historical_stream_error(
@@ -2355,6 +2385,16 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BacktestPreflightTests(unittest.TestCase):
+    def test_computed_and_structural_signals_do_not_enter_native_squeeze_preparation(self):
+        config = {"run_plan": {"activation": {"watchlist_policy": "not_required"}},
+                  "signal_activation": {"signal_streams": [{"enabled": True, "source_type": "core_scan"}]}}
+        self.assertFalse(_uses_source_native_identity_preparation(config, True))
+        config["signal_activation"]["signal_streams"][0]["occurrence_source"] = "qmd_squeeze_episode"
+        self.assertTrue(_uses_source_native_identity_preparation(config, True))
+        self.assertFalse(_uses_source_native_identity_preparation(config, False))
+        config["strategy"] = {"parameters": {"structural_recovery_contract": True}}
+        self.assertFalse(_uses_source_native_identity_preparation(config, True))
+
     def test_source_scoped_capacity_preserves_candidate_rules_and_provenance(self):
         plan = {"plan_hash": "sha256:original", "maximum_size": 10000,
                 "manual_inclusions": [], "rule_sets": [{"spread_bps": 100}],
@@ -2591,6 +2631,17 @@ class BacktestPreflightTests(unittest.TestCase):
 
 
 class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
+    def test_unused_model_catalog_does_not_activate_bargpt_serving(self):
+        activation = {"column_catalog": [{"source_id": "model.bargpt.prediction"}],
+                      "data_fields": [{"source_id": "model.bargpt.prediction"}],
+                      "signal_streams": [{"source_type": "core_scan"}],
+                      "data_field_plan": {"atomic_inputs": ["market.spread_bps"]}}
+        controller = SimpleNamespace(definition=SimpleNamespace(mode=RunMode.BACKTEST,
+            configuration_revision={"payload": {"signal_activation": activation}}))
+        self.assertFalse(ReplayRunController._bar_gpt_fields_required(controller))
+        activation["data_field_plan"]["atomic_inputs"].append("model.bargpt.prediction")
+        self.assertTrue(ReplayRunController._bar_gpt_fields_required(controller))
+
     async def test_structural_signal_preparation_keeps_selected_source_scope(self):
         for structural, expected in ((True, ["SUGP"]), (False, None)):
             controller = SimpleNamespace(
