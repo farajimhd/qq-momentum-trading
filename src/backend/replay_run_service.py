@@ -423,6 +423,7 @@ class ReplayRunDefinition:
         object.__setattr__(self, "tickers", normalized_tickers)
         recovery = (self.configuration_revision.get('payload', {}).get('strategy', {})
                     .get('parameters', {}).get('structural_recovery_contract'))
+        recovery = recovery or self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('macd_hod_contract')
         if recovery and not self.experimental_structure_book:
             raise ValueError('Structural recovery requires an explicitly selected certified V6 swing book')
         if self.experimental_structure_book:
@@ -3253,6 +3254,7 @@ class ReplayRunController:
             structure_event=structure_event,
             structure_direction="bullish" if direction > 0 else "bearish" if direction < 0 else "",
             execution_vwap=_optional_positive(indicator.get("execution_vwap")),
+            bar_volume=_optional_number(frame.bar.get("volume")),
             macd_line=_optional_number(indicator.get("macd_line")),
             macd_signal=_optional_number(indicator.get("macd_signal")),
             macd_histogram=_optional_number(indicator.get("macd_histogram")),
@@ -5287,7 +5289,8 @@ class ReplayRunController:
             for stream in enabled_streams
         )
         structural_recovery = bool(self.definition.configuration_revision["payload"].get(
-            "strategy", {}).get("parameters", {}).get("structural_recovery_contract"))
+            "strategy", {}).get("parameters", {}).get("structural_recovery_contract") or self.definition.configuration_revision["payload"].get(
+            "strategy", {}).get("parameters", {}).get("macd_hod_contract"))
         # Both paths already own their causal signal stream. Structural
         # recovery gets structure exclusively from the selected V6 book.
         prepared_activation = source_native_only or structural_recovery
@@ -8099,7 +8102,8 @@ def _uses_source_native_identity_preparation(configuration: dict[str, Any], has_
 def _structural_recovery_projection_tickers(
     configuration: dict[str, Any], tickers: tuple[str, ...],
 ) -> list[str] | None:
-    if not configuration.get("strategy", {}).get("parameters", {}).get("structural_recovery_contract"):
+    parameters = configuration.get("strategy", {}).get("parameters", {})
+    if not (parameters.get("structural_recovery_contract") or parameters.get("macd_hod_contract")):
         return None
     selected = sorted({ticker.strip().upper() for ticker in tickers if ticker.strip()})
     if not selected:

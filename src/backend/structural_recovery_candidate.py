@@ -7,9 +7,11 @@ PROFILE_ID = 'v6-structural-support-recovery'
 LABEL = 'V6 structural support recovery'
 
 
-def build(base, *, align_179=False):
+def build(base, *, align_179=False, profile_id=PROFILE_ID, label_override=None):
+    PROFILE_ID = profile_id
     liquidity = LIQUIDITY_181 if align_179 else LIQUIDITY
     label = LABEL + (' - 179 gates' if align_179 else '')
+    label = label_override or label
     payload = deepcopy(base)
     canvas = payload.pop('canvas')
     # The balanced profile supplies configuration schema, not trading rules.

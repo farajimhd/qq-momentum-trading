@@ -127,9 +127,9 @@ def strategy_input_catalog() -> list[dict[str, Any]]:
         _input("indicator.vwap.execution_value", "VWAP", "QMD indicator", "qmd", "execution_vwap", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="execution_value"),
         _input("indicator.flow_structure.score", "Flow-structure score", "QMD indicator", "qmd", "qmd_score", "score", ["100ms"], parameter="score"),
         _input("indicator.flow_structure.confidence", "Flow-structure confidence", "QMD indicator", "qmd", "qmd_confidence", "score", ["100ms"], parameter="confidence"),
-        _input("indicator.macd.line", "MACD line", "Market indicator", "qmd", "macd_line", "number", ["1s", "5s", "10s", "30s", "1m", "5m"], parameter="line"),
-        _input("indicator.macd.signal", "MACD signal", "Market indicator", "qmd", "macd_signal", "number", ["1s", "5s", "10s", "30s", "1m", "5m"], parameter="signal"),
-        _input("indicator.macd.histogram", "MACD histogram", "Market indicator", "qmd", "macd_histogram", "number", ["1s", "5s", "10s", "30s", "1m", "5m"], parameter="histogram"),
+        _input("indicator.macd.line", "MACD line", "Market indicator", "qmd", "macd_line", "number", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="line"),
+        _input("indicator.macd.signal", "MACD signal", "Market indicator", "qmd", "macd_signal", "number", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="signal"),
+        _input("indicator.macd.histogram", "MACD histogram", "Market indicator", "qmd", "macd_histogram", "number", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="histogram"),
         _input("signal.price_volume_expansion.score", "Price-volume expansion score", "QMD market signal", "qmd", "price_volume_expansion_score", "score", ["1s", "10s", "30s", "1m"], parameter="score"),
         _input("signal.flow_price_divergence.score", "Flow-price divergence score", "QMD market signal", "qmd", "flow_price_divergence_score", "score", ["100ms"], parameter="score"),
         _input("signal.liquidity_dislocation.score", "Liquidity dislocation score", "QMD market signal", "qmd", "liquidity_dislocation_score", "score", ["100ms"], parameter="score"),
@@ -217,7 +217,7 @@ def _rule_stage_timeframes(stage: dict[str, Any]) -> set[str]:
 def strategy_rule_timeframes(parameters: dict[str, Any]) -> set[str]:
     """Return every derived-data timeframe referenced by active lifecycle rules."""
 
-    timeframes: set[str] = set()
+    timeframes: set[str] = {'100ms', '1s'} if parameters.get('macd_hod_contract') else set()
     for stage in dict(parameters.get("entry_rules") or {}).values():
         if isinstance(stage, dict):
             timeframes.update(_rule_stage_timeframes(stage))
@@ -363,6 +363,7 @@ class StrategyObservation:
     completed_range_context: dict[str, Any] = field(default_factory=dict)
     candle_detector_state: dict[str, Any] | None = None
     structural_detector_state: dict[str, Any] | None = None
+    bar_volume: float | None = None
 
     def __post_init__(self) -> None:
         if self.observed_at.tzinfo is None:
@@ -870,6 +871,9 @@ def resolve_long_momentum_parameters(
         v5_breakout.configure(parameters)
     if parameters.get('structural_recovery_contract'):
         from .structural_recovery import configure
+        configure(parameters)
+    if parameters.get('macd_hod_contract'):
+        from .macd_hod import configure
         configure(parameters)
     execution = dict(parameters.get("execution") or {})
     slope_policy = parameters["momentum_management"].get("histogram_slope_exit")
@@ -2703,6 +2707,9 @@ class LongMomentumStrategyEngine:
             assignment.parameters,
             revision=self.revision,
         )
+        if parameters.get('macd_hod_contract'):
+            from .macd_hod import evaluate
+            return evaluate(self, assignment, observation, parameters, state)
         if parameters.get('structural_recovery_contract'):
             from .structural_recovery import evaluate
             return evaluate(self, assignment, observation, parameters, state)
@@ -5258,7 +5265,8 @@ class LongMomentumStrategyEngine:
             confidence=max(0.0, min(1.0, confidence)),
             reason=reason,
             source_signal_ids=observation.source_signal_ids,
-            working_timeframe=str(assignment.parameters.get("entry", {}).get("breakout_timeframe") or "1s"),
+            working_timeframe=('100ms' if assignment.parameters.get('macd_hod_contract') else
+                str(assignment.parameters.get("entry", {}).get("breakout_timeframe") or "1s")),
             invalidation_price=invalidation_price,
             metadata={
                 **resolved_metadata,
@@ -5358,6 +5366,15 @@ class LongMomentumStrategyEngine:
             intents = tuple(replace(i, execution_policy=replace(i.resolved_execution_policy(),
                 envelope=replace(i.resolved_execution_policy().envelope, maximum_buy_price=ceiling)),
                 metadata={**i.metadata, 'gap_entry_ceiling': ceiling}) for i in intents)
+        if action == 'enter_long' and assignment.parameters.get('macd_hod_contract') and intents:
+            entry = state['macd_hod_entry']
+            intents = tuple(replace(i, reference_price=observation.ask,
+                execution_policy=replace(i.resolved_execution_policy(),
+                    envelope=replace(i.resolved_execution_policy().envelope,
+                        maximum_buy_price=entry['maximum_buy_price'], persist_until_cancelled=False,
+                        deadline_ms=max(1,int(assignment.parameters['macd_hod']['confirmation_lifetime_ms']
+                            - (observation.observed_at.timestamp()-entry['confirmed_at'])*1000)))),
+                metadata={**i.metadata, 'mandatory_broker_target': True}) for i in intents)
         if action == 'enter_long' and assignment.parameters.get('structural_recovery_contract') and intents:
             ceiling = state['recovery_entry']['maximum_buy_price']
             intents = tuple(replace(i, reference_price=observation.ask,
@@ -5587,7 +5604,7 @@ def _protection_profile_from_phase(
         dict(parameters.get("protection_profile_catalog") or {}).get(reference)
         or {}
     )
-    mandatory_target = bool(parameters.get('structural_recovery_contract') or
+    mandatory_target = bool(parameters.get('macd_hod_contract') or parameters.get('structural_recovery_contract') or
         (parameters.get('episode_management') or {}).get('position_structure_enabled', False))
     if mandatory_target and action in {'enter_long', 'add_long'} and not configured:
         raise ValueError('Position structure requires an explicit broker protection profile')
@@ -5603,7 +5620,7 @@ def _protection_profile_from_phase(
         if isinstance(value, (int, float)) and float(value) > 0
     ]
     configured_slices = [dict(raw) for raw in configured.get("slices") or []]
-    if parameters.get('swing_gap_contract') or v5_breakout.enabled(parameters) or parameters.get('structural_recovery_contract'):
+    if parameters.get('macd_hod_contract') or parameters.get('swing_gap_contract') or v5_breakout.enabled(parameters) or parameters.get('structural_recovery_contract'):
         configured_slices = [dict(configured_slices[0])] if configured_slices else []
         for raw in configured_slices:
             raw.update(quantity_fraction=1., strategy_profit_target_index=0,
