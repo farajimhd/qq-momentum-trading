@@ -3571,7 +3571,10 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
     async def test_body_breakout_receives_trade_events_without_legacy_r3_acceptance(self) -> None:
         await self._check_flat_intrabar_entry("prior_completed_frame_top_n_below_session_high", False, body_entry=True)
 
-    async def _check_flat_intrabar_entry(self, mode: str, armed: bool, live_entry: bool = False, body_entry: bool = False) -> None:
+    async def test_structural_recovery_receives_trades_during_confirmation_window(self) -> None:
+        await self._check_flat_intrabar_entry("prior_completed_frame_top_n_below_session_high", False, recovery=True)
+
+    async def _check_flat_intrabar_entry(self, mode: str, armed: bool, live_entry: bool = False, body_entry: bool = False, recovery: bool = False) -> None:
         now = datetime(2026, 8, 21, 4, 2, 52, tzinfo=NEW_YORK)
         parameters = default_long_momentum_parameters()
         parameters['entry_body_breakout'] = dict(enabled=body_entry, offset_ticks=1)
@@ -3580,6 +3583,8 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             "selection_mode": mode,
             "accept_live_price_above_entry_level": live_entry,
         })
+        if recovery:
+            parameters['structural_recovery_contract'] = 'v6-structural-recovery-1'
         controller = ReplayRunController(
             ReplayRunDefinition(
                 session_date=date(2026, 8, 21),

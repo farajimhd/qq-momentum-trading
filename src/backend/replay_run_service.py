@@ -3513,7 +3513,8 @@ class ReplayRunController:
         forming_open = (provisional_macd.observe_forming_candle(float(event.price), event.ts)
                         if provisional_macd else None)
         if ticker_assignments and all(
-            assignment.status
+            not assignment.parameters.get('structural_recovery_contract')
+            and assignment.status
             in {AssignmentStatus.WATCHING, AssignmentStatus.REENTRY_COOLDOWN}
             and str(
                 dict(assignment.parameters.get("structural_entry") or {}).get(
@@ -9150,6 +9151,7 @@ def _compact_strategy_chart_plan(value: Any) -> dict[str, Any]:
         "liquidity_admission",
         "macd",
         "ratchet_acceptance",
+        "structural_recovery",
     ):
         item = value.get(key)
         if isinstance(item, Mapping):

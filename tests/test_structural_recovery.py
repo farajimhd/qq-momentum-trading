@@ -132,6 +132,42 @@ def test_pending_exit_blocks_entry_and_same_confirmation_cannot_reenter():
     assert not host.evaluate(flat,o).evaluation.intents
 
 
+def test_recovery_can_enter_on_improved_quote_before_confirmation_expires():
+    host,a,o,_=ready()
+    chased=replace(o,bid=10.39,ask=10.40)
+    rejected=host.evaluate(a,chased)
+    assert rejected.evaluation.signals[0].metadata['entry_quality']['failed']==['chase']
+    assert 'chase' in rejected.evaluation.signals[0].metadata['reason_detail']
+    watching=replace(a,state=rejected.state,status=rejected.status)
+    improved=replace(o,observed_at=o.observed_at+timedelta(milliseconds=250),
+        evaluation_events=('market_data_update',))
+    accepted=host.evaluate(watching,improved)
+    intent,=accepted.evaluation.intents
+    assert intent.resolved_execution_policy().envelope.deadline_ms==750
+    expired=replace(improved,observed_at=o.observed_at+timedelta(seconds=1))
+    assert not host.evaluate(watching,expired).evaluation.intents
+
+
+def test_activity_and_chart_preserve_structural_rejection_evidence(tmp_path):
+    from src.backend.trading_runtime_service import strategy_activity_payload
+    from src.backend.replay_run_service import _compact_strategy_chart_plan
+    from src.trading_runtime.journal import TradingJournal
+    host,a,o,_=ready()
+    rejected=host.evaluate(a,replace(o,bid=10.39,ask=10.40)).evaluation.signals[0]
+    journal=TradingJournal(tmp_path/'evidence.sqlite3')
+    try:
+        journal.append(run_id='recovery-evidence',category='strategy_decision',
+            entity_type='signal',entity_id=rejected.signal_id,event_time=o.observed_at,
+            payload=dict(ticker=o.ticker,strategy_id=a.strategy_id,action='wait',
+                reason=rejected.reason,metadata=rejected.metadata))
+        activity=strategy_activity_payload(journal=journal,run_id='recovery-evidence')
+        gate=activity['rows'][0]['gate_snapshot']
+        assert gate['structural_recovery']['entry_quality']['failed']==['chase']
+        assert _compact_strategy_chart_plan(gate)['structural_recovery']==gate['structural_recovery']
+    finally:
+        journal.close()
+
+
 def test_cancel_acquisition_on_deterioration_and_exit_on_support_failure():
     host,a,o,saved=ready();first=host.evaluate(a,o)
     pending=replace(a,state=first.state,status=S.AssignmentStatus.ENTRY_PENDING)

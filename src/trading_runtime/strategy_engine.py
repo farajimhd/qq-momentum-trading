@@ -6711,6 +6711,19 @@ def _decision_reason_detail(
     state: dict[str, Any],
 ) -> str:
     prefix = "Wait" if action == "wait" else "Hold" if action == "hold" else "Act"
+    if metadata.get('contract') == 'v6-structural-recovery-1':
+        if reason == 'structural_tradability_incomplete':
+            failed = (metadata.get('tradability') or {}).get('failed') or []
+            return f"Wait: structural tradability failed: {', '.join(failed)}."
+        if reason == 'structural_detector_warming_up':
+            return (f"Wait: structural detector warmup "
+                    f"{(metadata.get('detector') or {}).get('sequence', 0)} candles.")
+        if reason == 'structural_reward_risk_or_chase_failed':
+            quality = metadata.get('entry_quality') or {}
+            return (f"Wait: structural entry failed: {', '.join(quality.get('failed') or [])}; "
+                    f"ask={_display_value(quality.get('ask'))}, "
+                    f"reward/risk ceiling={_display_value(quality.get('reward_risk_ceiling'))}, "
+                    f"chase ceiling={_display_value(quality.get('chase_ceiling'))}.")
     if reason == 'entry_body_reference_unavailable':
         return 'Wait: entry needs an eligible trade during the second after a completed 1s candle.'
     if reason == 'entry_body_not_broken':

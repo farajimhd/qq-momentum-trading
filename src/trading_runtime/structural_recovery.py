@@ -252,8 +252,15 @@ def evaluate(host, assignment, o, p, state):
     resistance = min(overhead,key=lambda l:l['lower'])
     target = floor((resistance['lower']-tick)/tick+1e-9)*tick
     cost = o.ask*s['cost_bps_per_side']*2/10000
-    ceiling = min(setup['confirmation_close']*(1+s['maximum_chase_bps']/10000),
-        (target+s['minimum_reward_risk']*stop-cost)/(1+s['minimum_reward_risk']))
+    chase_ceiling = setup['confirmation_close']*(1+s['maximum_chase_bps']/10000)
+    risk_ceiling = (target+s['minimum_reward_risk']*stop-cost)/(1+s['minimum_reward_risk'])
+    ceiling = min(chase_ceiling, risk_ceiling)
+    entry_checks = dict(valid_stop=0 < stop < o.bid, uncrossed_quote=o.bid <= o.ask,
+        reward_risk=o.ask <= risk_ceiling, chase=o.ask <= chase_ceiling)
+    evidence['entry_quality'] = dict(bid=o.bid, ask=o.ask, stop=stop, target=target,
+        cost_allowance=cost, reward_risk_ceiling=risk_ceiling, chase_ceiling=chase_ceiling,
+        maximum_buy_price=ceiling, checks=entry_checks,
+        failed=[key for key,passed in entry_checks.items() if not passed])
     if not 0 < stop < o.bid <= o.ask <= ceiling:
         return result('wait','structural_reward_risk_or_chase_failed',Status.WATCHING,
             metadata={'stop':stop,'target':target,'maximum_buy_price':ceiling})
