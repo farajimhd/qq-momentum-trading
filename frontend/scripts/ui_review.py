@@ -2553,7 +2553,8 @@ def capture(args: argparse.Namespace) -> int:
                                     const time=Number(node.dataset.time),x=scale.timeToCoordinate(time);
                                     const point=series.dataByIndex(scale.coordinateToLogical(x));
                                     if(x==null || !point || point.time!==time || node.style.visibility==='hidden')continue;
-                                    const y=series.priceToCoordinate(point.low)+5;
+                                    const above=/Short enter|Long exit/.test(node.textContent);
+                                    const y=above ? series.priceToCoordinate(point.high)-5-node.offsetHeight : series.priceToCoordinate(point.low)+5;
                                     const error=Math.max(Math.abs(parseFloat(node.style.left)-x),Math.abs(parseFloat(node.style.top)-y));
                                     maxError=Math.max(maxError,error);checks++;
                                 }

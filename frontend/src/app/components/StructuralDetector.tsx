@@ -104,6 +104,7 @@ type LabelField = keyof typeof labelFields;
 export type LabelRows = LabelField[][];
 const defaultRows: LabelRows = [['signal']];
 const entryExitActions = new Set(['long_enter','short_enter','long_exit','short_exit']);
+const aboveCandle = (row: StructuralState) => row.technical_signal?.action==='short_enter' || row.technical_signal?.action==='long_exit';
 const decisionActions = new Set([...entryExitActions,'long_hold','short_hold']);
 const price = (n: unknown) => typeof n==='number' ? n.toLocaleString('en-US',{maximumFractionDigits:6}) : '?';
 const eventText = (events: Event[]) => [...new Map(events.map(e => [e.state+':'+(e.band_id || JSON.stringify(e.level)),
@@ -256,7 +257,7 @@ export function useStructuralDetector(ticker: string, timeframe: string, candles
       <div className="structural-detector-settings-body">
         {checkbox}<p className="chart-settings-help" role="status">{status}</p>
         <section className="chart-settings-section"><h3>Candle labels</h3>
-          <p className="chart-settings-help">Only long/short entry and exit decisions appear below candles. The toolbar shows the current hold decision while a hypothetical position is active. No qualifying entry means no chart signal.</p>
+          <p className="chart-settings-help">Short entry and long exit appear above candles; long entry and short exit appear below. The toolbar shows the current hold decision while a hypothetical position is active. No qualifying entry means no chart signal.</p>
           <p className="chart-settings-help">Setup evidence remains internal and can be inspected on a candle. Add Signal reason for entry/exit explanations. Initial references stay fixed; confirmed structure can tighten protection for subsequent candles. Trade execution eligibility is not assessed.</p>
           <p className="chart-settings-help">Initiation, continuation and reversal entries use meaningful level zones and available room. Initial risk references remain recorded. Current protection can tighten after confirmed structure; accepted barriers advance to the next level. Open room is not a price forecast. Inspect a candle for entry rejections and management reasons.</p>
           <p className="chart-settings-help">New positions must follow through. Established positions can hold normal pullbacks; profitable progress activates a close-based protective floor. Strong rejection at important levels or a confirmed opposing reversal can close without a momentum flip. Re-entry requires the prior exit's structure to be repaired, its barrier accepted, or a new confirmed pullback base. R means initial reference risk, not realized profit.</p>
@@ -316,9 +317,10 @@ export class StructuralDetectorPrimitive implements ISeriesPrimitive<Time> {
     const occupied:{left:number;right:number;top:number;bottom:number}[]=[];
     boxes.sort((a,b)=>Number(b.node.dataset.priority)-Number(a.node.dataset.priority)).forEach(({node,point,width,height})=>{
       if (!point) {node.style.visibility='hidden';return;}
-      const rect={left:point.x-width/2,right:point.x+width/2,top:point.y,bottom:point.y+height};
+      const top=aboveCandle(point.row) ? point.y-height : point.y;
+      const rect={left:point.x-width/2,right:point.x+width/2,top,bottom:top+height};
       const overlap=occupied.some(r=>rect.left<r.right+2 && rect.right>r.left-2 && rect.top<r.bottom+2 && rect.bottom>r.top-2);
-      node.style.left=`${point.x}px`;node.style.top=`${point.y}px`;node.style.visibility=overlap?'hidden':'visible';
+      node.style.left=`${point.x}px`;node.style.top=`${top}px`;node.style.visibility=overlap?'hidden':'visible';
       if (!overlap) occupied.push(rect);
     });
   };
@@ -337,8 +339,9 @@ export class StructuralDetectorPrimitive implements ISeriesPrimitive<Time> {
         if (range && typeof range.from==='number' && row.time<range.from) continue;
         if (range && typeof range.to==='number' && row.time>range.to) break;
         if (!entryExitActions.has(row.technical_signal?.action || '')) continue;
-        const x=this.coordinate(row.time), y=this.series.priceToCoordinate(row.candle.low);
-        if (x!=null && y!=null && x>=0 && x<=mediaSize.width && y>=0 && y<mediaSize.height) labels.push({row,x,y:y+5});
+        const above=aboveCandle(row);
+        const x=this.coordinate(row.time), y=this.series.priceToCoordinate(above ? row.candle.high : row.candle.low);
+        if (x!=null && y!=null && x>=0 && x<=mediaSize.width && y>=0 && y<mediaSize.height) labels.push({row,x,y:y+(above ? -5 : 5)});
       }
       this.labels=labels;
       this.position();
@@ -363,7 +366,8 @@ export class StructuralDetectorPrimitive implements ISeriesPrimitive<Time> {
   paneViews() { return [this.view]; }
   autoscaleInfo() {
     if (!this.rows.length || !this.layout.some(fields => fields.length)) return null;
-    return { priceRange: null, margins: { above: 0, below: Math.min(180,this.layout.filter(fields=>fields.length).length*28) } };
+    const margin=Math.min(180,this.layout.filter(fields=>fields.length).length*28);
+    return { priceRange: null, margins: { above: margin, below: margin } };
   }
   setState(rows:StructuralState[],coordinate:(t:number)=>number|null,layout:LabelRows) { if(this.rows!==rows || this.layout!==layout)this.dirty=true; this.rows=rows; if(!rows.some(r=>r.time===this.selected))this.selected=null; this.coordinate=coordinate; this.layout=layout; this.update?.(); }
 }
