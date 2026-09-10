@@ -2554,20 +2554,20 @@ def capture(args: argparse.Namespace) -> int:
                         inspector.wait_for(state='hidden')
                         panel.get_by_role('button', name='Structural detector settings', exact=True).click()
                         dialog=page.get_by_role('dialog',name='Structural detector settings',exact=True)
-                        dialog.get_by_role('checkbox',name='Row 1: Important or changed',exact=True).uncheck()
-                        dialog.get_by_role('checkbox',name='Row 1: Every candle summary',exact=True).check()
+                        if not dialog.get_by_role('checkbox',name='Row 1: Technical signal',exact=True).is_checked():
+                            raise RuntimeError('Signal-only default missing')
                         dialog.get_by_role('button',name='Add row',exact=True).click()
-                        dialog.get_by_role('checkbox',name='Row 2: MACD context',exact=True).check()
+                        dialog.get_by_role('checkbox',name='Row 2: Signal reason',exact=True).check()
                         layout=page.evaluate("JSON.parse(localStorage.getItem('review.structural.structural-detector')).labelRows")
-                        if layout!=[['everySummary'],['macd']]:
+                        if layout!=[['signal'],['signalReason']]:
                             raise RuntimeError('Label row selections did not persist')
                         dialog.get_by_role('button',name='Done',exact=True).click()
-                        page.wait_for_function("[...document.querySelectorAll('.structural-label-layer .structural-candle-label')].some(n=>n.textContent.includes('MACD'))")
+                        page.wait_for_function("[...document.querySelectorAll('.structural-label-layer .structural-candle-label')].some(n=>n.textContent.includes('break acceptance retest momentum'))")
                         panel.get_by_role('button',name='Structural detector settings',exact=True).click()
-                        if not dialog.get_by_role('checkbox',name='Row 2: MACD context',exact=True).is_checked():
+                        if not dialog.get_by_role('checkbox',name='Row 2: Signal reason',exact=True).is_checked():
                             raise RuntimeError('Reopened configuration lost row settings')
                         dialog.get_by_role('button',name='Reset label rows',exact=True).click()
-                        dialog.get_by_role('checkbox',name='Row 1: Important or changed',exact=True).focus()
+                        dialog.get_by_role('checkbox',name='Row 1: Technical signal',exact=True).focus()
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__detector-details.png')),full_page=True)
                         dialog.get_by_role('button',name='Done',exact=True).click()
                         page.wait_for_timeout(300)

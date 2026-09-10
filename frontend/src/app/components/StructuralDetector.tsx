@@ -91,7 +91,7 @@ const labelFields = { summary: 'Important or changed', everySummary:'Every candl
   volume: 'Volume', volumeTrend: 'Volume progression', divergence: 'Volume divergence score', reversal: 'Reversal evidence progression', dayLevels: 'Observed HOD / LOD', rankedHighs: 'Ranked session highs', rankedLows: 'Ranked session lows', nearDayLevel: 'Session level interaction' };
 type LabelField = keyof typeof labelFields;
 export type LabelRows = LabelField[][];
-const defaultRows: LabelRows = [['summary']];
+const defaultRows: LabelRows = [['signal']];
 const price = (n: unknown) => typeof n==='number' ? n.toLocaleString('en-US',{maximumFractionDigits:6}) : '?';
 const eventText = (events: Event[]) => [...new Map(events.map(e => [e.state+':'+(e.band_id || JSON.stringify(e.level)),
   `${human(e.state)} ${e.level.lower!=null ? price(e.level.lower)+'–'+price(e.level.upper) : price(e.level.price)}${e.encounters ? ' #'+e.encounters : ''}${(e.rejection_closes || 0)>1 ? ' · '+e.rejection_closes+' rejection closes' : ''}`])).values()].join(' · ') || 'none';
@@ -102,7 +102,7 @@ export function structuralLabelRows(row: StructuralState, rows: LabelRows) {
     return focus ? eventText(focus.primary ? [focus.primary] : [])+(focus.other_bands ? ` · +${focus.other_bands} other bands` : '') : eventText(fallback);
   };
   const values: Record<LabelField,string> = { summary: row.summary?.text || human(row.state),everySummary:row.summary?.text || human(row.state), state: human(row.state), direction: row.direction || 'unknown',
-    signal:row.technical_signal ? human(row.technical_signal.action) : 'Signal unavailable',
+    signal:row.technical_signal ? human(row.technical_signal.action).replace(/^./, c=>c.toUpperCase()) : 'Signal unavailable',
     signalReason:row.technical_signal ? human(row.technical_signal.reason) : 'Signal unavailable',
     volume: v?.status==='available' ? `${price(v.volume)} vol · ${v.color} · ${v.relative_volume==null ? 'RV warming up' : v.relative_volume.toFixed(2)+'× RV'}` : 'Volume unavailable',
     volumeTrend: v?.status==='available' ? v.tags.map(volumeText).join(' · ') || 'Volume: no prior comparison' : 'Volume unavailable',
@@ -128,14 +128,14 @@ export function structuralLabelRows(row: StructuralState, rows: LabelRows) {
   return rows.filter(fields => fields.length).map(fields => fields.map(field => values[field]).join(' · '));
 }
 function readRows(value: unknown): LabelRows {
-  return Array.isArray(value) ? value.slice(0,10).map(row => Array.isArray(row) ? row.filter((key): key is LabelField => typeof key==='string' && key in labelFields) : []) : defaultRows;
+  return Array.isArray(value) ? value.slice(0,10).map(row => Array.isArray(row) ? row.filter((key): key is LabelField => key==='signal' || key==='signalReason') : []) : defaultRows;
 }
 /** The same label component is used on candles and in the settings preview. */
 export function StructuralCandleLabel({ row, layout, onInspect }: { row: StructuralState; layout: LabelRows; onInspect?:()=>void }) {
   if (!layout.some(fields => fields.length)) return null;
-  const compact=layout.length===1 && layout[0].length===1 && ['summary','everySummary'].includes(layout[0][0]);
+  const compact=layout.length===1 && layout[0].length===1 && layout[0][0]==='signal';
   return <button type="button" className="structural-candle-label" data-compact={compact} data-direction={row.direction} data-candle-time={row.time}
-    title={`${human(row.summary?.label || row.state)} · Click for candle evidence`} aria-label={`Inspect candle: ${human(row.summary?.label || row.state)}`} onClick={onInspect}>
+    title={`${human(row.technical_signal?.action || 'wait')} · Click for candle evidence`} aria-label={`Inspect candle: ${human(row.technical_signal?.action || 'wait')}`} onClick={onInspect}>
     {structuralLabelRows(row,layout).map((text,index) => <div className="structural-candle-label-row" key={index}>{text}</div>)}
   </button>;
 }
@@ -177,11 +177,11 @@ export function useStructuralDetector(ticker: string, timeframe: string, candles
   useEffect(() => {
     try {
       const value = JSON.parse(localStorage.getItem(storageKey+'.structural-detector') || '{}');
-      setStored({ key: storageKey, enabled: value.enabled === true, settings: { ...defaults, ...value.settings }, labelRows: value.labelVersion===2 ? readRows(value.labelRows) : defaultRows });
+      setStored({ key: storageKey, enabled: value.enabled === true, settings: { ...defaults, ...value.settings }, labelRows: value.labelVersion===3 ? readRows(value.labelRows) : defaultRows });
     } catch { setStored({ key: storageKey, enabled: false, settings: defaults, labelRows: defaultRows }); }
   }, [storageKey]);
   const enabled = stored.key === storageKey && stored.enabled;
-  const change = (next: typeof stored) => { setStored(next); localStorage.setItem(storageKey+'.structural-detector', JSON.stringify({...next,labelVersion:2})); };
+  const change = (next: typeof stored) => { setStored(next); localStorage.setItem(storageKey+'.structural-detector', JSON.stringify({...next,labelVersion:3})); };
   const [state, setState] = useState<{ identity: string; result?: Result; error?: string; busy?: boolean }>({ identity: '' });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const seconds = duration(timeframe);
@@ -234,14 +234,12 @@ export function useStructuralDetector(ticker: string, timeframe: string, candles
       <div className="structural-detector-settings-body">
         {checkbox}<p className="chart-settings-help" role="status">{status}</p>
         <section className="chart-settings-section"><h3>Candle labels</h3>
-          <p className="chart-settings-help">Technical signals follow a qualified break, acceptance and held retest with momentum agreement. Long and short entries/exits appear in compact summaries. Add Technical signal and Signal reason for every-candle state. Stops and targets are frozen references; trade execution eligibility is not assessed.</p>
-          <p className="chart-settings-help">One compact label below the candle shows its most important event or a changed state. Click any completed candle or label for every family and its evidence. Zoom in to separate labels. Choose Every candle summary to also show repeated states, or customize the rows.</p>
-          <p className="chart-settings-help">Add Progression or Recovery cycle to an existing layout to see the new sequence evidence. Band # is the independent encounter number. Local/global rows show the primary band and count other bands; select All band details for the complete list. Retained history includes distant levels, not current tests.</p>
-          <p className="chart-settings-help">Volume and session-level fields can be added to any row. Green/red describes candle direction, not buy/sell order flow. Divergence scores measure heuristic evidence, not reversal probability. HOD/LOD and ranked confirmed swings cover only loaded candles, reset by New York date, and are not certified full-day extremes.</p>
+          <p className="chart-settings-help">Technical signals follow a qualified break, acceptance and held retest with momentum agreement. Long and short signal transitions appear below candles. Add Signal reason for explanations. Stops and targets are frozen references; trade execution eligibility is not assessed.</p>
+          <p className="chart-settings-help">Only changed technical signals appear below candles. Repeated states and idle candles are hidden. Structural labels remain in the candle inspector. Existing chart layouts have been switched to signals only.</p>
           <p className="chart-settings-help">A reversal candidate requires divergence near an extreme or structural rejection. A later close must cross its candle boundary with a matching structural break to confirm. Candidates expire or invalidate on volume-supported continuation; past labels stay unchanged.</p>
           {stored.labelRows.map((row,index) => <fieldset className="structural-label-row-config" key={index}>
             <legend>Row {index+1}</legend>
-            <div className="structural-label-fields">{Object.entries(labelFields).map(([key,label]) => <label className="chart-setting-toggle" key={key}>
+            <div className="structural-label-fields">{Object.entries(labelFields).filter(([key])=>key==='signal' || key==='signalReason').map(([key,label]) => <label className="chart-setting-toggle" key={key}>
               <input type="checkbox" aria-label={`Row ${index+1}: ${label}`} checked={row.includes(key as LabelField)} onChange={e => change({ ...stored,
                 labelRows: stored.labelRows.map((current,i) => i!==index ? current : e.target.checked ? [...current,key as LabelField] : current.filter(v => v!==key)) })} />{label}
             </label>)}</div>
@@ -291,7 +289,7 @@ export class StructuralDetectorPrimitive implements ISeriesPrimitive<Time> {
       for (const row of this.rows) {
         if (range && typeof range.from==='number' && row.time<range.from) continue;
         if (range && typeof range.to==='number' && row.time>range.to) break;
-        if (this.layout.length===1 && this.layout[0].length===1 && this.layout[0][0]==='summary' && row.summary && !row.summary.changed && row.summary.priority<65) continue;
+        if (!row.technical_signal || !row.technical_signal.changed || row.technical_signal.action==='wait') continue;
         const x=this.coordinate(row.time), y=this.series.priceToCoordinate(row.candle.low);
         if (x!=null && y!=null && x>=0 && x<=mediaSize.width && y>=0 && y<mediaSize.height) labels.push({row,x,y:y+5});
       }
