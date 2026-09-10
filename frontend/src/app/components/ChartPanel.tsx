@@ -4,6 +4,7 @@ import { HindsightPrimitive, useHindsightPositions } from "./HindsightPositions"
 import { SwingStructurePrimitive, useSwingStructure } from "./SwingStructure";
 import { StructureGapPrimitive, useStructureGaps } from "./StructureGaps";
 import { StructuralDetectorPrimitive, useStructuralDetector } from "./StructuralDetector";
+import {SupertrendRenderer,useSupertrend} from './SupertrendIndicator';
 import { structureTimeCoordinate } from "./structureTimeCoordinate";
 import { STRATEGY_ENTRY_REFERENCE_BACKING, STRATEGY_ENTRY_REFERENCE_COLOR } from "../theme";
 import {
@@ -981,6 +982,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const structuralDetector = useStructuralDetector(ticker, timeframe, payload?.candles ?? [], indicatorAsOf,
     settingsStorageKey || 'chart.structural-detector', indicatorSplitAdjusted, payload?.volume);
   const structuralDetectorRef = useRef(structuralDetector);
+  const supertrendIndicator=useSupertrend(settingsStorageKey || 'chart',timeframe,payload?.candles ?? [],indicatorAsOf);
+  const supertrendRendererRef=useRef<SupertrendRenderer|null>(null);
   structuralDetectorRef.current = structuralDetector;
   const structuralDetectorPrimitiveRef = useRef<StructuralDetectorPrimitive | null>(null);
   useEffect(() => { drawCurrentRegions(); }, [structuralDetector.rows, structuralDetector.labelRows]);
@@ -1528,6 +1531,15 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     fitTradeAnnotationPriceScale();
   }, [referenceKey, timeframe]);
 
+  useEffect(()=>{
+    if (!priceChartRef.current) return;
+    if (!supertrendIndicator.enabled) {
+      supertrendRendererRef.current?.remove();supertrendRendererRef.current=null;return;
+    }
+    supertrendRendererRef.current ??= new SupertrendRenderer(priceChartRef.current);
+    supertrendRendererRef.current.update(supertrendIndicator.points,effectiveChartSettings.upColor,effectiveChartSettings.downColor);
+  },[supertrendIndicator.enabled,supertrendIndicator.points,effectiveChartSettings.upColor,effectiveChartSettings.downColor,themeSignature]);
+
   useEffect(() => {
     if (!priceChartRef.current) return;
     updatePriceOverlaySeries(displayedOverlaySeries);
@@ -1943,6 +1955,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     swingStructurePrimitiveRef.current = null;
     if (structuralDetectorPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(structuralDetectorPrimitiveRef.current);
     structuralDetectorPrimitiveRef.current = null;
+    supertrendRendererRef.current = null; // Native chart removal owns its series.
     if (structureGapPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(structureGapPrimitiveRef.current);
     structureGapPrimitiveRef.current = null;
     if (livePositionPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(livePositionPrimitiveRef.current);
@@ -2102,8 +2115,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             <span className="toolbar-divider" />
             {showIndicatorControls ? (
               <IndicatorFeatureSelect
-                additionalIndicators={structuralDetector.checkbox}
-                additionalSelectedCount={Number(structuralDetector.enabled)}
+                additionalIndicators={<>{structuralDetector.checkbox}{supertrendIndicator.checkbox}</>}
+                additionalSelectedCount={Number(structuralDetector.enabled)+Number(supertrendIndicator.enabled)}
                 catalogColumns={catalogColumns}
                 displayItemOptions={displayItemOptions}
                 featureOptions={featureOptions}
@@ -2175,6 +2188,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         {swingStructure.controls}
         {structureGaps.controls}
         {structuralDetector.controls}
+        {supertrendIndicator.controls}
         <button
           className="toolbar-button"
           data-chart-settings-trigger="true"

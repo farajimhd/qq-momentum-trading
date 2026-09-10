@@ -1,0 +1,25 @@
+.toolbar-button.supertrend-toolbar {
+  width: auto;
+  flex: 0 0 auto;
+  padding-inline: .5rem;
+  white-space: nowrap;
+}
+.supertrend-settings {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  min-width: 0;
+}
+.supertrend-settings p { margin: 0; line-height: 1.45; }
+.supertrend-settings input[type="number"] {
+  box-sizing: border-box;
+  width: 7rem;
+  min-width: 0;
+  height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--control-bg, var(--surface));
+  color: var(--foreground);
+  font: inherit;
+}
