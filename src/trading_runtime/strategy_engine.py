@@ -217,6 +217,8 @@ def _rule_stage_timeframes(stage: dict[str, Any]) -> set[str]:
 def strategy_rule_timeframes(parameters: dict[str, Any]) -> set[str]:
     """Return every derived-data timeframe referenced by active lifecycle rules."""
 
+    if parameters.get('macd_threshold_contract'):
+        return {'100ms', '1s'}  # 1s produces rolling liquidity; MACD uses only 100ms.
     timeframes: set[str] = {'100ms', '1s'} if parameters.get('macd_hod_contract') else set()
     for stage in dict(parameters.get("entry_rules") or {}).values():
         if isinstance(stage, dict):
@@ -875,6 +877,15 @@ def resolve_long_momentum_parameters(
     if parameters.get('macd_hod_contract'):
         from .macd_hod import configure
         configure(parameters)
+    if parameters.get('macd_threshold_contract'):
+        from .macd_threshold import CONTRACT, settings
+        if parameters['macd_threshold_contract'] != CONTRACT:
+            raise ValueError('Unknown MACD threshold contract')
+        parameters['macd_threshold']=settings(parameters)
+        parameters['structural_entry']['enabled']=False
+        parameters['entry_candle_confirmation']['enabled']=False
+        parameters['protection']['profit_ladder']['enabled']=False
+        parameters['protection']['trailing']['enabled']=False
     execution = dict(parameters.get("execution") or {})
     slope_policy = parameters["momentum_management"].get("histogram_slope_exit")
     if slope_policy is not None:
@@ -2677,6 +2688,13 @@ class LongMomentumStrategyEngine:
         self.revision = revision
 
     def evaluate(self, assignment: StrategyAssignment, observation: StrategyObservation) -> StrategyEngineResult:
+        if assignment.parameters.get('macd_threshold_contract'):
+            from .macd_threshold import CONTRACT, evaluate
+            if assignment.parameters['macd_threshold_contract'] != CONTRACT:
+                raise ValueError('Unknown MACD threshold contract')
+            if assignment.strategy_revision != self.revision or assignment.ticker.upper()!=observation.ticker.upper():
+                raise ValueError('Strategy observation identity mismatch')
+            return evaluate(assignment,observation)
         result = self._evaluate(assignment, observation)
         # Episode v2 uses these gates only to start acquisition. Once approved,
         # the persistent ask-following order is cancelled by an exit, not by

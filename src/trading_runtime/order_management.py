@@ -2836,6 +2836,12 @@ class OrderManagementEngine:
         return snapshot
 
     async def reconcile_protection(self, group: _ManagedOrderGroup) -> dict[str, Any]:
+        # Portfolio grants this capability only to the isolated threshold backtest.
+        # Its contract deliberately has no stop or target to reconcile.
+        if (group.intent.metadata.get("unprotected_backtest_authorized") is True
+                and group.intent.metadata.get("contract") == "macd-threshold-100ms-1"):
+            return {"required": 0.0, "coverage": 0.0,
+                    "status": "authorized_unprotected_backtest"}
         if group.protection_delegated:
             return {
                 "required_quantity": 0.0,

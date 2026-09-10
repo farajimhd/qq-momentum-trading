@@ -209,6 +209,13 @@ class TradingRuntime:
             portfolio.allocation_identity = config.run_plan_id or config.strategy_id
             portfolio.bind_control_plane(self.control_plane)
         self.portfolio = portfolio
+        # Explicit capability for a pure MACD backtest; never enabled by an
+        # order's metadata alone and never available in live/paper execution.
+        assignments = strategy.assignments() if hasattr(strategy,'assignments') else ()
+        self.portfolio.unprotected_backtest_contracts = (
+            frozenset({'macd-threshold-100ms-1'}) if config.mode == RunMode.BACKTEST
+            and assignments and all(a.parameters.get('macd_threshold_contract')=='macd-threshold-100ms-1'
+                                    for a in assignments) else frozenset())
         self.execution_market_data = ExecutionMarketDataProvider()
         self.order_manager = (
             OrderManagementEngine(

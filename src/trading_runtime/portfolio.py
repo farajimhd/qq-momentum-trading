@@ -365,6 +365,7 @@ class PortfolioManagementEngine:
         self.strategy_id = strategy_id
         self.strategy_revision = strategy_revision
         self.allocation_identity = allocation_identity or strategy_id
+        self.unprotected_backtest_contracts: frozenset[str] = frozenset()
         self.states = {profile.account_id: PortfolioAccountState(profile=profile) for profile in profiles}
         if len(self.states) != len(profiles):
             raise ValueError("Portfolio broker account ids must be unique")
@@ -1006,7 +1007,7 @@ class PortfolioManagementEngine:
         protection_profile = intent.resolved_protection_profile()
         if entry and not _policy_allows(policy.allowed_execution_policies, execution_policy.identity, execution_policy.name.value):
             reasons.append("execution_policy_not_allowed")
-        if entry and protection_profile is None:
+        if entry and protection_profile is None and intent.metadata.get('contract') not in self.unprotected_backtest_contracts:
             reasons.append("protection_profile_required")
         if protection_profile is not None:
             if not _policy_allows(
@@ -1211,6 +1212,7 @@ class PortfolioManagementEngine:
                 **intent.metadata,
                 "portfolio_account_key": state.profile.account_key,
                 "portfolio_decision_id": decision.decision_id,
+                "unprotected_backtest_authorized": intent.metadata.get('contract') in self.unprotected_backtest_contracts,
                 "portfolio_policy": policy.identity,
                 "portfolio_reservation_id": reservation_id,
                 "requested_quantity": requested,

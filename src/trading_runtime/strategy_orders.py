@@ -137,6 +137,9 @@ class IbkrStrategyOrderPlanner:
         )
         profile = intent.resolved_protection_profile()
         if profile is None:
+            if intent.metadata.get('unprotected_backtest_authorized') and intent.metadata.get('contract')=='macd-threshold-100ms-1':
+                return StrategyOrderPlan(orders=(_order(account_id,instrument,f'{prefix}-entry',entry_side,
+                    entry_type,quantity,intent,price=entry_price),))
             raise ValueError("Entry and add intents require a broker-held protection profile")
         volatility = float(intent.metadata.get("volatility") or 0)
         slice_quantities = _slice_quantities(quantity, tuple(item.quantity_fraction for item in profile.slices))

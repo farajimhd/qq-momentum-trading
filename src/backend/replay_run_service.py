@@ -2231,7 +2231,8 @@ class ReplayRunController:
             await self._publish(force=True)
             frame_source = await self._load_strategy_frames()
             frame_iterator = iter(frame_source)
-            if self.definition.debug_fixture is None and not self.definition.experimental_structure_book:
+            threshold_only = self.definition.configuration_revision['payload'].get('strategy',{}).get('parameters',{}).get('macd_threshold_contract')
+            if self.definition.debug_fixture is None and not self.definition.experimental_structure_book and not threshold_only:
                 self._historical_structure_frame_iterator = iter(frame_source)
                 self._schedule_historical_structure_prefetch()
             next_frame = next(frame_iterator, None)
@@ -3794,6 +3795,8 @@ class ReplayRunController:
         # here previously missed real entries and silently skipped structural
         # checkpoint enrichment.
         for assignment in ticker_assignments:
+            if assignment.parameters.get('macd_threshold_contract'):
+                continue
             if assignment.status == AssignmentStatus.MANAGING:
                 return True
             if assignment.status not in {
@@ -5290,7 +5293,8 @@ class ReplayRunController:
         )
         structural_recovery = bool(self.definition.configuration_revision["payload"].get(
             "strategy", {}).get("parameters", {}).get("structural_recovery_contract") or self.definition.configuration_revision["payload"].get(
-            "strategy", {}).get("parameters", {}).get("macd_hod_contract"))
+            "strategy", {}).get("parameters", {}).get("macd_hod_contract") or self.definition.configuration_revision["payload"].get(
+            "strategy", {}).get("parameters", {}).get("macd_threshold_contract"))
         # Both paths already own their causal signal stream. Structural
         # recovery gets structure exclusively from the selected V6 book.
         prepared_activation = source_native_only or structural_recovery
@@ -8103,7 +8107,7 @@ def _structural_recovery_projection_tickers(
     configuration: dict[str, Any], tickers: tuple[str, ...],
 ) -> list[str] | None:
     parameters = configuration.get("strategy", {}).get("parameters", {})
-    if not (parameters.get("structural_recovery_contract") or parameters.get("macd_hod_contract")):
+    if not (parameters.get("structural_recovery_contract") or parameters.get("macd_hod_contract") or parameters.get("macd_threshold_contract")):
         return None
     selected = sorted({ticker.strip().upper() for ticker in tickers if ticker.strip()})
     if not selected:
