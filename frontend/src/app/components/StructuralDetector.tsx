@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { IChartApi, ISeriesApi, ISeriesPrimitive, IPrimitivePaneView, Time, MouseEventParams } from 'lightweight-charts';
 import { api } from '../../api/client';
 import { createRoot, type Root } from 'react-dom/client';
@@ -134,9 +134,15 @@ function readRows(value: unknown): LabelRows {
 export function StructuralCandleLabel({ row, layout, onInspect }: { row: StructuralState; layout: LabelRows; onInspect?:()=>void }) {
   if (!layout.some(fields => fields.length)) return null;
   const compact=layout.length===1 && layout[0].length===1 && layout[0][0]==='signal';
-  return <button type="button" className="structural-candle-label" data-compact={compact} data-direction={row.direction} data-candle-time={row.time}
+  const action=row.technical_signal?.action || 'wait';
+  const kind=action.endsWith('_exit') ? 'exit' : action==='cancel_setup' ? 'cancel' : action.endsWith('_watch') ? 'watch' : action.startsWith('long_') ? 'long' : action.startsWith('short_') ? 'short' : 'neutral';
+  const buy=action==='long_enter' || action==='short_exit';
+  const sell=action==='short_enter' || action==='long_exit';
+  return <button type="button" className="structural-candle-label" data-compact={compact} data-signal-tone={kind} data-candle-time={row.time}
     title={`${human(row.technical_signal?.action || 'wait')} · Click for candle evidence`} aria-label={`Inspect candle: ${human(row.technical_signal?.action || 'wait')}`} onClick={onInspect}>
-    {structuralLabelRows(row,layout).map((text,index) => <div className="structural-candle-label-row" key={index}>{text}</div>)}
+    {buy && <span className="structural-signal-marker" data-placement="above" aria-hidden="true">▲</span>}
+    <div className="structural-signal-label-body">{structuralLabelRows(row,layout).map((text,index) => <div className="structural-candle-label-row" key={index}>{text}</div>)}</div>
+    {sell && <span className="structural-signal-marker" data-placement="below" aria-hidden="true">▼</span>}
   </button>;
 }
 
@@ -236,6 +242,7 @@ export function useStructuralDetector(ticker: string, timeframe: string, candles
         <section className="chart-settings-section"><h3>Candle labels</h3>
           <p className="chart-settings-help">Technical signals follow a qualified break, acceptance and held retest with momentum agreement. Long and short signal transitions appear below candles. Add Signal reason for explanations. Stops and targets are frozen references; trade execution eligibility is not assessed.</p>
           <p className="chart-settings-help">Only changed technical signals appear below candles. Repeated states and idle candles are hidden. Structural labels remain in the candle inspector. Existing chart layouts have been switched to signals only.</p>
+          <p className="chart-settings-help">Entry/exit markers sit outside the text box: ▲ above long entry and short exit; ▼ below short entry and long exit. Long signals use positive color, shorts negative color; watch and exit use caution color. Text always identifies direction.</p>
           <p className="chart-settings-help">A reversal candidate requires divergence near an extreme or structural rejection. A later close must cross its candle boundary with a matching structural break to confirm. Candidates expire or invalidate on volume-supported continuation; past labels stay unchanged.</p>
           {stored.labelRows.map((row,index) => <fieldset className="structural-label-row-config" key={index}>
             <legend>Row {index+1}</legend>
@@ -262,7 +269,12 @@ export function useStructuralDetector(ticker: string, timeframe: string, candles
   return { rows, checkbox, controls, enabled, status, labelRows: stored.labelRows };
 }
 
-/** Chart primitive supplies coordinates; React owns the reusable label component. */
+function LabelCommit({onCommit,children}:{onCommit:()=>void;children:ReactNode}) {
+  useLayoutEffect(onCommit);
+  return <>{children}</>;
+}
+
+/** Geometry follows every chart draw; React updates content only. */
 export class StructuralDetectorPrimitive implements ISeriesPrimitive<Time> {
   private series: ISeriesApi<'Candlestick'> | null = null;
   private chart: IChartApi | null = null;
@@ -273,8 +285,25 @@ export class StructuralDetectorPrimitive implements ISeriesPrimitive<Time> {
   private host?: HTMLDivElement;
   private root?: Root;
   private frame = 0;
+  private labels: {row:StructuralState;x:number;y:number}[]=[];
+  private signature='';
+  private dirty=true;
   private selected: number | null = null;
-  private inspect = (row:StructuralState) => {this.selected=row.time;this.update?.();};
+  private inspect = (row:StructuralState) => {this.selected=row.time;this.dirty=true;this.update?.();};
+  private position = () => {
+    if (!this.host) return;
+    const coordinates=new Map(this.labels.map(label=>[label.row.time,label]));
+    const boxes=Array.from(this.host.querySelectorAll<HTMLElement>('.structural-label-anchor'),node=>({node,
+      point:coordinates.get(Number(node.dataset.time)),width:node.offsetWidth,height:node.offsetHeight}));
+    const occupied:{left:number;right:number;top:number;bottom:number}[]=[];
+    boxes.sort((a,b)=>Number(b.node.dataset.priority)-Number(a.node.dataset.priority)).forEach(({node,point,width,height})=>{
+      if (!point) {node.style.visibility='hidden';return;}
+      const rect={left:point.x-width/2,right:point.x+width/2,top:point.y,bottom:point.y+height};
+      const overlap=occupied.some(r=>rect.left<r.right+2 && rect.right>r.left-2 && rect.top<r.bottom+2 && rect.bottom>r.top-2);
+      node.style.left=`${point.x}px`;node.style.top=`${point.y}px`;node.style.visibility=overlap?'hidden':'visible';
+      if (!overlap) occupied.push(rect);
+    });
+  };
   private click = (event:MouseEventParams<Time>) => { const row=this.rows.find(r=>r.time===event.time);if(row)this.inspect(row); };
   private readonly view: IPrimitivePaneView = { zOrder: () => 'top', renderer: () => ({ draw: target => {
     target.useMediaCoordinateSpace(({mediaSize}) => {
@@ -293,30 +322,16 @@ export class StructuralDetectorPrimitive implements ISeriesPrimitive<Time> {
         const x=this.coordinate(row.time), y=this.series.priceToCoordinate(row.candle.low);
         if (x!=null && y!=null && x>=0 && x<=mediaSize.width && y>=0 && y<mediaSize.height) labels.push({row,x,y:y+5});
       }
-      cancelAnimationFrame(this.frame);
-      this.frame=requestAnimationFrame(() => {
+      this.labels=labels;
+      this.position();
+      const signature=labels.map(label=>label.row.time).join(',');
+      if (signature!==this.signature) {this.signature=signature;this.dirty=true;}
+      // Do not cancel pending content commits during continuous interaction.
+      if (this.dirty && !this.frame) this.frame=requestAnimationFrame(() => {
+        this.frame=0;this.dirty=false;
         const selectedIndex=this.rows.findIndex(row=>row.time===this.selected), selected=this.rows[selectedIndex];
-        this.root?.render(<>{labels.map(({row,x,y}) => <div className="structural-label-anchor" data-priority={row.summary?.priority || 0} key={row.time} style={{left:x,top:y}}><StructuralCandleLabel row={row} layout={this.layout} onInspect={()=>this.inspect(row)} /></div>)}
-          {selected ? <CandleInspector row={selected} hasPrevious={selectedIndex>0} hasNext={selectedIndex<this.rows.length-1} onClose={()=>{this.selected=null;this.update?.();}} onMove={step=>this.inspect(this.rows[selectedIndex+step])} /> : null}</>);
-        // React commits before the next frame. Cull overlapping cards only;
-        // all candle decisions remain retained and become visible on zoom.
-        this.frame=requestAnimationFrame(() => {
-          if (!this.host) return;
-          const width=this.host.clientWidth;
-          // Batch layout reads before writes; dragging must not force one
-          // browser layout per candle. All coordinates honor the app zoom.
-          const boxes=Array.from(this.host.querySelectorAll<HTMLElement>('.structural-label-anchor'),node =>
-            ({node,width:node.offsetWidth,height:node.offsetHeight,x:parseFloat(node.style.left),y:parseFloat(node.style.top)}));
-          const occupied: {left:number;right:number;top:number;bottom:number}[]=[];
-          boxes.sort((a,b)=>Number(b.node.dataset.priority)-Number(a.node.dataset.priority)).forEach(box => {
-            const x=Math.max(box.width/2,Math.min(width-box.width/2,box.x));
-            const rect={left:x-box.width/2,right:x+box.width/2,top:box.y,bottom:box.y+box.height};
-            const overlap=occupied.some(r => rect.left<r.right+2 && rect.right>r.left-2 && rect.top<r.bottom+2 && rect.bottom>r.top-2);
-            box.node.style.left=`${x}px`;
-            box.node.style.visibility=overlap?'hidden':'visible';
-            if (!overlap) occupied.push(rect);
-          });
-        });
+        this.root?.render(<LabelCommit onCommit={this.position}>{this.labels.map(({row,x,y}) => <div className="structural-label-anchor" data-time={row.time} data-priority={row.technical_signal?.action.endsWith('_enter') || row.technical_signal?.action.endsWith('_exit') ? 100 : 20} key={row.time} style={{left:x,top:y}}><StructuralCandleLabel row={row} layout={this.layout} onInspect={()=>this.inspect(row)} /></div>)}
+          {selected ? <CandleInspector row={selected} hasPrevious={selectedIndex>0} hasNext={selectedIndex<this.rows.length-1} onClose={()=>{this.selected=null;this.dirty=true;this.update?.();}} onMove={step=>this.inspect(this.rows[selectedIndex+step])} /> : null}</LabelCommit>);
       });
     });
   } }) };
@@ -326,11 +341,11 @@ export class StructuralDetectorPrimitive implements ISeriesPrimitive<Time> {
     chart.chartElement().appendChild(this.host); this.root=createRoot(this.host);
     chart.subscribeClick(this.click);
   }
-  detached() { this.chart?.unsubscribeClick(this.click); cancelAnimationFrame(this.frame); this.root?.unmount(); this.host?.remove(); this.root=undefined; this.host=undefined; this.series=null; this.chart=null; this.update=undefined; }
+  detached() { this.chart?.unsubscribeClick(this.click); cancelAnimationFrame(this.frame); this.frame=0;this.dirty=true;this.signature=''; this.root?.unmount(); this.host?.remove(); this.root=undefined; this.host=undefined; this.series=null; this.chart=null; this.update=undefined; }
   paneViews() { return [this.view]; }
   autoscaleInfo() {
     if (!this.rows.length || !this.layout.some(fields => fields.length)) return null;
     return { priceRange: null, margins: { above: 0, below: Math.min(180,this.layout.filter(fields=>fields.length).length*28) } };
   }
-  setState(rows:StructuralState[],coordinate:(t:number)=>number|null,layout:LabelRows) { this.rows=rows; if(!rows.some(r=>r.time===this.selected))this.selected=null; this.coordinate=coordinate; this.layout=layout; this.update?.(); }
+  setState(rows:StructuralState[],coordinate:(t:number)=>number|null,layout:LabelRows) { if(this.rows!==rows || this.layout!==layout)this.dirty=true; this.rows=rows; if(!rows.some(r=>r.time===this.selected))this.selected=null; this.coordinate=coordinate; this.layout=layout; this.update?.(); }
 }

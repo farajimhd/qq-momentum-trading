@@ -16,9 +16,14 @@
 .structural-candle-label { width: max-content; max-width: 10rem; background: var(--surface); color: var(--foreground); border: 1px solid var(--border); border-radius: .3rem; font-size: .65rem; line-height: 1.25; }
 .structural-candle-label-row { padding: .1rem .3rem; overflow-wrap: anywhere; }
 .structural-candle-label-row + .structural-candle-label-row { border-top: 1px solid var(--border); }
-.structural-candle-label[data-direction="bullish"] { border-top-color: var(--success); }
-.structural-candle-label[data-direction="bearish"] { border-top-color: var(--danger); }
-.structural-candle-label { padding: 0; font-family: inherit; text-align: left; pointer-events: auto; cursor: pointer; }
+.structural-candle-label[data-signal-tone="long"] { color: var(--semantic-positive); --signal-border: var(--semantic-positive); --signal-bg: var(--semantic-positive-bg); }
+.structural-candle-label[data-signal-tone="short"] { color: var(--semantic-negative); --signal-border: var(--semantic-negative); --signal-bg: var(--semantic-negative-bg); }
+.structural-candle-label[data-signal-tone="watch"], .structural-candle-label[data-signal-tone="exit"] { color: var(--badge-warning-fg); --signal-border: var(--badge-warning-border); --signal-bg: var(--badge-warning-bg); }
+.structural-candle-label[data-signal-tone="cancel"] { color: var(--text-muted); }
+.structural-candle-label[data-signal-tone="cancel"] .structural-signal-label-body { border-style: dashed; }
+.structural-signal-label-body { border: 1px solid var(--signal-border, var(--border)); background: var(--signal-bg, var(--surface)); border-radius: .2rem; }
+.structural-signal-marker { display: block; text-align: center; font-weight: 700; font-size: .65rem; line-height: 1; }
+.structural-candle-label { padding: 0; border: 0; background: transparent; font-family: inherit; text-align: left; pointer-events: auto; cursor: pointer; }
 .structural-candle-label[data-compact="true"] { max-width: 6.5rem; border-radius: .2rem; }
 .structural-candle-label[data-compact="true"] .structural-candle-label-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: .05rem .2rem; }
 .structural-candle-label:focus-visible { outline: 2px solid var(--foreground); outline-offset: 2px; }

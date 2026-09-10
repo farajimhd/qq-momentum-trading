@@ -2497,6 +2497,14 @@ def capture(args: argparse.Namespace) -> int:
                                 'rows': selected, 'global_available_count': sum(r['global_status']=='available' for r in selected)}))
                         page.route('**/api/indicators/structural-detector', detector_response)
                         page.evaluate("""async ({rows,scale}) => {
+                            await import('/src/app/components/ChartPanel.tsx');
+                            const moduleUrl=performance.getEntriesByType('resource').map(r=>r.name).filter(name=>name.includes('/src/app/components/StructuralDetector.tsx')).at(-1);
+                            const {StructuralDetectorPrimitive}=await import(moduleUrl || '/src/app/components/StructuralDetector.tsx');
+                            const attached=StructuralDetectorPrimitive.prototype.attached;
+                            StructuralDetectorPrimitive.prototype.attached=function(args) {
+                                window.__signalReview={chart:args.chart,series:args.series};
+                                return attached.call(this,args);
+                            };
                             const {default:React}=await import('/node_modules/.vite/deps/react.js');
                             const {default:ReactDOM}=await import('/node_modules/.vite/deps/react-dom_client.js');const {createRoot}=ReactDOM;
                             const {ChartPanel}=await import('/src/app/components/ChartPanel.tsx');
@@ -2525,6 +2533,31 @@ def capture(args: argparse.Namespace) -> int:
                         panel.get_by_role('button', name='Structural detector', exact=True).click()
                         page.wait_for_function("document.querySelectorAll('.structural-label-layer .structural-candle-label').length>0", timeout=args.timeout_ms)
                         page.wait_for_timeout(300)
+                        motion=page.evaluate("""async () => {
+                            const {chart,series}=window.__signalReview;
+                            const scale=chart.timeScale(),initial=scale.getVisibleLogicalRange();
+                            const priceScale=series.priceScale(),prices=priceScale.getVisibleRange();
+                            const frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
+                            let checks=0,maxError=0;
+                            for(let i=0;i<36;i++) {
+                                const shift=Math.sin(i/6)*2,zoom=1+Math.sin(i/8)*.08;
+                                scale.setVisibleLogicalRange({from:initial.from+shift,to:initial.from+(initial.to-initial.from)*zoom+shift});
+                                if(prices)priceScale.setVisibleRange({from:prices.from+Math.sin(i/7)*.025,to:prices.to+Math.sin(i/7)*.025});
+                                await frame();
+                                for(const node of document.querySelectorAll('.structural-label-anchor')) {
+                                    const time=Number(node.dataset.time),x=scale.timeToCoordinate(time);
+                                    const point=series.dataByIndex(scale.coordinateToLogical(x));
+                                    if(x==null || !point || point.time!==time || node.style.visibility==='hidden')continue;
+                                    const y=series.priceToCoordinate(point.low)+5;
+                                    const error=Math.max(Math.abs(parseFloat(node.style.left)-x),Math.abs(parseFloat(node.style.top)-y));
+                                    maxError=Math.max(maxError,error);checks++;
+                                }
+                            }
+                            scale.setVisibleLogicalRange(initial);priceScale.applyOptions({autoScale:true});await frame();await frame();
+                            if(checks<20 || maxError>1)throw Error(`Signal motion failed: checks=${checks}, error=${maxError}`);
+                            return {checks,maxError};
+                        }""")
+                        result['signal_motion']=motion
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__labels.png')),full_page=True)
                         visible_label=panel.locator('.structural-candle-label:visible').first
                         if evidence.get('contract')=='structural-candle-detector-7':
