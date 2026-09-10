@@ -12,6 +12,7 @@ from src.market_engine.swing_book_v6 import StreamingSwingBookV6, VERSION
 LEGACY_BUILDERS = (
     '04e4895f5b928e53abd7716fd67d2979087123fea02cc5e69d3ec45d4152ecc5',
     '139e61ebb6447f418c52a2c6b68b1cb611c8793298a91919d29b393a13ee0671',
+    '2afee112036c500021b78de743eb6374044b5fb4e3f1c23d8e284472aa263003',
 )
 LEGACY_CONTROLLERS = (
     '79cb1d19ed4f07a02ac4e09d08d1a95c25ba91856a4e0ffccb564c84bc6fc1c9',

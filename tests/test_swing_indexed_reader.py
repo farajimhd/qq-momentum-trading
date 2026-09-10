@@ -100,10 +100,11 @@ def test_http_limit_is_expanded_only_for_bounded_session_aggregation(tmp_path):
 
 
 @pytest.mark.parametrize('separator',['/','\\'])
-def test_legacy_build_identity_keeps_old_fingerprint_only_for_known_reader_upgrade(separator):
+@pytest.mark.parametrize('legacy_hash',upgrade.LEGACY_BUILDERS)
+def test_legacy_build_identity_keeps_old_fingerprint_only_for_known_reader_upgrade(separator,legacy_hash):
     hashes={'scripts/build_swing_structure_book.py':'new','src/market_engine/swing_book_v6.py':'engine',
         **{p:'new' for p in upgrade.UPGRADE_PATHS}}
-    old={'scripts/build_swing_structure_book.py':upgrade.LEGACY_BUILDERS[0],
+    old={'scripts/build_swing_structure_book.py':legacy_hash,
         'src/market_engine/swing_book_v6.py':'engine'}
     hashes={k.replace('/',separator):v for k,v in hashes.items()}
     old={k.replace('/',separator):v for k,v in old.items()}
