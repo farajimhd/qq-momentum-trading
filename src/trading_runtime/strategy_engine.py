@@ -217,7 +217,7 @@ def _rule_stage_timeframes(stage: dict[str, Any]) -> set[str]:
 def strategy_rule_timeframes(parameters: dict[str, Any]) -> set[str]:
     """Return every derived-data timeframe referenced by active lifecycle rules."""
 
-    if parameters.get('macd_threshold_contract'):
+    if parameters.get('macd_threshold_contract') or parameters.get('macd_r3_contract'):
         return {'100ms', '1s'}  # 1s produces rolling liquidity; MACD uses only 100ms.
     timeframes: set[str] = {'100ms', '1s'} if parameters.get('macd_hod_contract') else set()
     for stage in dict(parameters.get("entry_rules") or {}).values():
@@ -886,6 +886,16 @@ def resolve_long_momentum_parameters(
         parameters['entry_candle_confirmation']['enabled']=False
         parameters['protection']['profit_ladder']['enabled']=False
         parameters['protection']['trailing']['enabled']=False
+    if parameters.get('macd_r3_contract'):
+        from .macd_r3 import CONTRACT
+        from .macd_threshold import settings
+        if parameters['macd_r3_contract'] != CONTRACT:
+            raise ValueError('Unknown MACD R3 contract')
+        parameters['macd_r3'] = settings({'macd_threshold': parameters.get('macd_r3', {})})
+        parameters['structural_entry']['enabled'] = False
+        parameters['entry_candle_confirmation']['enabled'] = False
+        parameters['protection']['profit_ladder']['enabled'] = False
+        parameters['protection']['trailing']['enabled'] = False
     execution = dict(parameters.get("execution") or {})
     slope_policy = parameters["momentum_management"].get("histogram_slope_exit")
     if slope_policy is not None:
@@ -2688,6 +2698,13 @@ class LongMomentumStrategyEngine:
         self.revision = revision
 
     def evaluate(self, assignment: StrategyAssignment, observation: StrategyObservation) -> StrategyEngineResult:
+        if assignment.parameters.get('macd_r3_contract'):
+            from .macd_r3 import CONTRACT, evaluate
+            if assignment.parameters['macd_r3_contract'] != CONTRACT:
+                raise ValueError('Unknown MACD R3 contract')
+            if assignment.strategy_revision != self.revision or assignment.ticker.upper() != observation.ticker.upper():
+                raise ValueError('Strategy observation identity mismatch')
+            return evaluate(assignment, observation)
         if assignment.parameters.get('macd_threshold_contract'):
             from .macd_threshold import CONTRACT, evaluate
             if assignment.parameters['macd_threshold_contract'] != CONTRACT:
@@ -6315,6 +6332,8 @@ class AssignedLongMomentumStrategy:
                 return
             if action in {"enter_long", "add_long", "enter_short", "add_short"}:
                 if action == 'enter_long' and incremental_fill > 0:
+                    if assignment.parameters.get('macd_r3_contract'):
+                        state['r3_ever_filled'] = True
                     episode = (state.get('v5_entry_selection') or {}).get('episode_started_at')
                     if episode is not None:
                         # Only an actual acquisition qualifies a later entry as

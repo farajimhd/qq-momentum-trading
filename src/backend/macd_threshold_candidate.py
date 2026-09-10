@@ -6,7 +6,9 @@ PROFILE_ID='macd-threshold-100ms'
 LABEL='100ms MACD thresholds - enter -5 / exit -10 bps'
 
 
-def build(base):
+def build(base, *, profile_id=PROFILE_ID, label=LABEL, parameters=None):
+    # Shared declaration plumbing; each saved candidate owns its policy parameters.
+    PROFILE_ID, LABEL = profile_id, label
     payload=deepcopy(base)
     canvas=payload.pop('canvas')
     rules=[]
@@ -41,7 +43,7 @@ def build(base):
     profile=dict(profile_id=PROFILE_ID,name=LABEL,revision=1,definition_id='long-momentum-campaign',
         definition_revision=47,derived_from_profile_id='',description=LABEL,enabled=True,origin='user',
         editable=True,protected=False,publication_status='draft',action_policy_ids=[],lifecycle=lifecycle,
-        parameters=dict(macd_threshold_contract=CONTRACT,macd_threshold=dict(DEFAULTS)))
+        parameters=deepcopy(parameters) if parameters is not None else dict(macd_threshold_contract=CONTRACT,macd_threshold=dict(DEFAULTS)))
     payload['strategy']['profiles'].append(profile)
     payload['strategy']['active_profile_id']=PROFILE_ID
     watch_id=PROFILE_ID+'-universe'

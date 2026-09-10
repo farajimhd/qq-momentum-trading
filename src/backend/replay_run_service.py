@@ -424,6 +424,7 @@ class ReplayRunDefinition:
         recovery = (self.configuration_revision.get('payload', {}).get('strategy', {})
                     .get('parameters', {}).get('structural_recovery_contract'))
         recovery = recovery or self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('macd_hod_contract')
+        recovery = recovery or self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('macd_r3_contract')
         if recovery and not self.experimental_structure_book:
             raise ValueError('Structural recovery requires an explicitly selected certified V6 swing book')
         if self.experimental_structure_book:
@@ -5294,7 +5295,8 @@ class ReplayRunController:
         structural_recovery = bool(self.definition.configuration_revision["payload"].get(
             "strategy", {}).get("parameters", {}).get("structural_recovery_contract") or self.definition.configuration_revision["payload"].get(
             "strategy", {}).get("parameters", {}).get("macd_hod_contract") or self.definition.configuration_revision["payload"].get(
-            "strategy", {}).get("parameters", {}).get("macd_threshold_contract"))
+            "strategy", {}).get("parameters", {}).get("macd_threshold_contract") or self.definition.configuration_revision["payload"].get(
+            "strategy", {}).get("parameters", {}).get("macd_r3_contract"))
         # Both paths already own their causal signal stream. Structural
         # recovery gets structure exclusively from the selected V6 book.
         prepared_activation = source_native_only or structural_recovery
@@ -8107,7 +8109,7 @@ def _structural_recovery_projection_tickers(
     configuration: dict[str, Any], tickers: tuple[str, ...],
 ) -> list[str] | None:
     parameters = configuration.get("strategy", {}).get("parameters", {})
-    if not (parameters.get("structural_recovery_contract") or parameters.get("macd_hod_contract") or parameters.get("macd_threshold_contract")):
+    if not (parameters.get("structural_recovery_contract") or parameters.get("macd_hod_contract") or parameters.get("macd_threshold_contract") or parameters.get("macd_r3_contract")):
         return None
     selected = sorted({ticker.strip().upper() for ticker in tickers if ticker.strip()})
     if not selected:
