@@ -105,6 +105,42 @@ identity and completed checkpoints, and pins the new execution fingerprint.
 Completed tickers remain skipped; failed tickers require `--retry-failed`.
 Subsequent resumes use the ordinary `run` command.
 
+## Connection-failure recovery
+
+The transport reuses a bounded pool of HTTP connections (up to eight per client,
+normally one for a campaign worker). Failed reads retry up to six attempts with
+exponential backoff and jitter. Writes are never automatically replayed after an
+uncertain response: the worker fails, and the next explicit resume verifies its
+certified prefix before repeating deterministic unfinished-session work.
+
+The controller stops dispatch after four transport failures in one invocation,
+requests active workers to stop at session boundaries, and preserves queued work.
+The manifest records the stop reason. Fix the connection problem before retrying;
+do not repeatedly restart against an unavailable server.
+
+After the validated transport repair is synced, run this in workstation
+PowerShell from the synced code directory, with the Python environment active:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE = '1'
+$campaign = '\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\structure-validation\v6-all-df562ae5'
+python -B scripts/build_swing_book_campaign.py run --runtime $campaign --upgrade-transport --retry-failed --workers 8 --threads 2 --progress-seconds 1 --env-file 'D:\TradingML\secrets\.env'
+```
+
+`--workers` and `--threads` now override and persist the saved concurrency on
+resume. Omitted values preserve it; planning defaults remain four workers and
+two query threads. The startup line reports the effective values and retried
+ticker count. Eight workers is a conservative starting point, not a measured
+optimal setting.
+
+The explicit upgrade accepts only the known prior transport/controller hashes
+with unchanged engine and source files. It retains existing book fingerprints
+and requires reference-reader and saved-checkpoint parity. Completed tickers
+remain completed; failed/interrupted tickers retain their previous attempt
+summary and resume from verified daily checkpoints. Identity-deferred tickers
+remain deferred. The controller clears the STOP marker only after identity and
+exclusive-worker-lock checks. Do not re-plan, delete the runtime, or edit hashes.
+
 Before any new book/session writes, each indexed worker compares reference and
 indexed candles for the last completed and next unfinished session. It also
 reproduces the last completed V6 state, including intervening splits, and checks

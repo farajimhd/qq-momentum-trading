@@ -89,10 +89,10 @@ def test_http_limit_is_expanded_only_for_bounded_session_aggregation(tmp_path):
     env=tmp_path/'test.env';env.write_text('CLICKHOUSE_URL=http://example.invalid')
     client=storage.Client(env,threads=1)
     urls=[]
-    def respond(request,**kwargs):
-        urls.append(parse_qs(urlsplit(request.full_url).query))
-        return BytesIO(b'')
-    with patch.object(storage.urllib.request,'urlopen',respond):
+    def respond(url,*args):
+        urls.append(parse_qs(urlsplit(url).query))
+        return b''
+    with patch.object(client,'_response',respond):
         client.query('SELECT 1','causal_bars')
         client.query('SELECT 1','causal_session_bars')
     assert [q['max_result_rows'] for q in urls]==[['10000'],['57600']]

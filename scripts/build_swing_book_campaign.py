@@ -22,7 +22,7 @@ import prototype_structure_book_clickhouse as P
 from build_swing_structure_book import policy
 from swing_book_paths import WORKSTATION_ENV_FILE, validate_runtime_root
 from swing_campaign_dashboard import Dashboard
-from swing_reader_upgrade import UPGRADE_PATHS, legacy_hash_matches
+from swing_reader_upgrade import UPGRADE_PATHS, legacy_hash_matches, transport_hash_matches
 
 MAX_WORKERS=64
 MAX_QUERY_THREADS=128
@@ -64,7 +64,7 @@ def reader_for_manifest(m):
         return reader
     hashes={p:sha256((ROOT/p).read_bytes()).hexdigest() for p in TRACKED}
     upgrade=m.get('reader_upgrade') or {}
-    if (legacy_hash_matches(m['code_hash'],hashes,campaign=True)
+    if ((legacy_hash_matches(m['code_hash'],hashes,campaign=True) or transport_hash_matches(m['code_hash'],hashes))
             and upgrade.get('execution_code_hash')==code_hash()
             and upgrade.get('prior_code_hash')==m['code_hash']
             and upgrade.get('reader')=='indexed'):
@@ -98,6 +98,21 @@ def exclusive(path):
 def save(root, manifest):
     manifest['updated_at']=now()
     P.save(root/'manifest.json',manifest)
+
+
+def read_json(path):
+    # SMB atomic replacement may briefly deny readers. Never accept partial JSON.
+    deadline=time.monotonic()+5
+    while True:
+        try:return json.loads(path.read_text())
+        except PermissionError:
+            if time.monotonic()>=deadline:raise
+            time.sleep(.1)
+
+
+def transport_failure(reason):
+    return any(token in reason for token in ('10048','10054','10061','10053','10060',
+        'RemoteDisconnected','Remote end closed','Connection reset','Connection refused','timed out'))
 
 
 def duration(seconds):
@@ -182,7 +197,7 @@ def worker(args):
     from research.mlops.env import load_env_files
     load_env_files([args.env_file],verbose=False)
     import build_swing_structure_book as builder
-    m=json.loads((args.runtime/'manifest.json').read_text())
+    m=read_json(args.runtime/'manifest.json')
     if m.get('schema_version')!=2 or m.get('book_version')!='causal-swing-closing-book-6':raise ValueError('Not a V6 campaign plan')
     reader=reader_for_manifest(m)
     row=next(r for r in m['rows'] if r['ticker']==args.ticker)
@@ -209,12 +224,17 @@ def worker(args):
 
 
 def run(args):
-    root=args.runtime;m=json.loads((root/'manifest.json').read_text())
+    root=args.runtime;m=read_json(root/'manifest.json')
+    workers=getattr(args,'workers',None)
+    threads=getattr(args,'threads',None)
+    if workers is not None:m['workers']=workers
+    if threads is not None:m['threads']=threads
     validate_concurrency(m['workers'],m['threads'])
     if m.get('schema_version')!=2 or m.get('book_version')!='causal-swing-closing-book-6':raise ValueError('Not a V6 campaign plan')
-    if getattr(args,'upgrade_reader',False):
+    upgrading=getattr(args,'upgrade_reader',False) or getattr(args,'upgrade_transport',False)
+    if upgrading:
         hashes={p:sha256((ROOT/p).read_bytes()).hexdigest() for p in TRACKED}
-        if not legacy_hash_matches(m['code_hash'],hashes,campaign=True):
+        if not (legacy_hash_matches(m['code_hash'],hashes,campaign=True) or transport_hash_matches(m['code_hash'],hashes) or m['code_hash']==code_hash()):
             raise ValueError('Unsupported reader migration; frozen engine/source files must match')
         m['reader_upgrade']=dict(prior_code_hash=m['code_hash'],execution_code_hash=code_hash(),
             reader='indexed',requested_at=now(),verification='required_per_worker_before_new_sessions')
@@ -226,13 +246,20 @@ def run(args):
         lock=Path(row['progress_file']).parent/'worker.lock'
         if lock.exists():
             with exclusive(lock):pass
-    if getattr(args,'upgrade_reader',False):
+    if upgrading:
         save(root,m)
         print('Indexed reader upgrade requested: each worker must pass candle and checkpoint parity before new session writes.',flush=True)
     (root/'STOP').unlink(missing_ok=True)
+    retried=0
     for row in m['rows']:
-        if row['status'] in ('active','interrupted') or args.retry_failed and row['status']=='failed':row['status']='queued'
-    active={};last=0.;stopping=False
+        if row['status'] in ('active','interrupted') or args.retry_failed and row['status']=='failed':
+            row['previous_attempt']={k:row[k] for k in ('status','reason','exit_code','elapsed_seconds') if k in row}
+            row['retry_count']=row.get('retry_count',0)+1
+            row['status']='queued';retried+=1
+    m.pop('stop_reason',None)
+    save(root,m)
+    print(f'Resume: workers={m["workers"]}, threads/worker={m["threads"]}, retried tickers={retried}; completed books retained.',flush=True)
+    active={};last=0.;stopping=False;network_failures=0
     dashboard=Dashboard(m)
     dashboard.start()
     try:
@@ -254,11 +281,18 @@ def run(args):
                 result=process.poll()
                 if result is None:continue
                 log.close();p=Path(row['progress_file'])
-                progress=json.loads(p.read_text()) if p.exists() else {}
+                progress=read_json(p) if p.exists() else {}
                 status='completed' if result==0 and progress.get('stage')=='completed' else 'interrupted' if result==130 else 'failed'
                 row.update(status=status,elapsed_seconds=time.time()-row['started_epoch'],exit_code=result,
                     reason=progress.get('error','' if status=='completed' else 'See worker.log'),database=progress.get('database'))
                 active.pop(pid);save(root,m)
+                if status=='failed' and transport_failure(row['reason']):
+                    network_failures+=1
+                    if network_failures>=4 and not stopping:
+                        stopping=True
+                        m['stop_reason']='Four transport failures in this run; stopped dispatch to protect remaining tickers. Check connectivity and resume with fewer workers.'
+                        (root/'STOP').touch()
+                        dashboard.event(m['stop_reason'])
                 dashboard.event(f'{row["ticker"]}: {status} | {duration(row["elapsed_seconds"])} | {row["reason"]}')
             if time.monotonic()-last>=args.progress_seconds:
                 # State transitions already persist the manifest. A display
@@ -283,9 +317,11 @@ def parser():
     p.add_argument('action',choices=('plan','run','status','stop','worker'))
     p.add_argument('--runtime',type=Path,required=True)
     p.add_argument('--start',default='2025-01-01');p.add_argument('--end',default=date.today().isoformat())
-    p.add_argument('--workers',type=int,default=4);p.add_argument('--threads',type=int,default=2)
+    p.add_argument('--workers',type=int,default=None,help='plan default 4; run overrides saved concurrency')
+    p.add_argument('--threads',type=int,default=None,help='plan default 2; run overrides saved query threads')
     p.add_argument('--progress-seconds',type=int,default=1);p.add_argument('--retry-failed',action='store_true')
     p.add_argument('--upgrade-reader',action='store_true',help='explicitly migrate a stopped legacy V6 campaign; verify reference candles and saved state before new writes')
+    p.add_argument('--upgrade-transport',action='store_true',help='accept the exact supported transport revision; reverify reader and checkpoint parity')
     p.add_argument('--ticker')
     p.add_argument('--tickers',nargs='+',help='Explicit subset for a pilot; omitted means every published tradable ticker')
     p.add_argument('--env-file',type=Path,default=WORKSTATION_ENV_FILE)
@@ -295,10 +331,13 @@ def parser():
 def main():
     p=parser()
     args=p.parse_args()
-    if args.upgrade_reader and args.action!='run':p.error('--upgrade-reader applies only to run')
+    if (args.upgrade_reader or args.upgrade_transport) and args.action!='run':p.error('Upgrade flags apply only to run')
+    if args.action=='plan':
+        args.workers=4 if args.workers is None else args.workers
+        args.threads=2 if args.threads is None else args.threads
     try:args.runtime=validate_runtime_root(args.runtime)
     except ValueError as exc:p.error(str(exc))
-    try:validate_concurrency(args.workers,args.threads)
+    try:validate_concurrency(args.workers if args.workers is not None else 4,args.threads if args.threads is not None else 2)
     except ValueError as exc:p.error(str(exc))
     if args.progress_seconds<1 or date.fromisoformat(args.start)>date.fromisoformat(args.end):p.error('Invalid dates or progress interval')
     args.runtime.mkdir(parents=True,exist_ok=True)

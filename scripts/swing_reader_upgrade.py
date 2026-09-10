@@ -2,6 +2,7 @@
 import json
 from math import prod
 from hashlib import sha256
+from itertools import product
 
 from src.backend.swing_book_source import read_session as legacy_read, session_bounds, HISTORICAL_POLICY
 from src.backend.swing_book_indexed_source import read_session as indexed_read, READER_VERSION
@@ -25,6 +26,28 @@ UPGRADE_PATHS = (
     'scripts/swing_reader_upgrade.py',
     'scripts/prototype_structure_book_clickhouse.py',
 )
+
+# Exact pre-transport-fix files, LF/CRLF. All algorithm, reader and source
+# identities outside this small set must match; daily parity remains mandatory.
+TRANSPORT_BASELINE = {
+    'scripts/prototype_structure_book_clickhouse.py': (
+        '3aef19d9c77ca5e905e33a53d9c5e77bef9a7f3abffa2ae088d39e29ee6e1224',
+        '6768743f8b019dd5a7b89c51dcc2fa502c70548407b07fa72929d2988b6019bb'),
+    'scripts/build_swing_book_campaign.py': (
+        '96545eb1b3e40eedd58c43caaca5998f9ac6bd7d3ea9348ddccb79509ad6d60e',
+        '41a4d6f388604f0b686bb64286b60e9cf34c7aa9348e93b058e0a4765ab29a5f'),
+    'scripts/swing_reader_upgrade.py': (
+        '296b429f0c06dfbaabf3fdeec6535451d5a49bf328f948b522fbb0b5b57cfdee',
+        '7e81f939695acc5c4967e0a4efee6d28205582da0eed9d845f1bba9191f11737'),
+}
+
+
+def transport_hash_matches(value, hashes):
+    keys = [k for k in hashes if k.replace('\\','/') in TRANSPORT_BASELINE]
+    for values in product(*(TRANSPORT_BASELINE[k.replace('\\','/')] for k in keys)):
+        if digest(dict(hashes, **dict(zip(keys, values)))) == value:
+            return True
+    return False
 
 
 def digest(value):
@@ -51,7 +74,7 @@ def build_identity(hashes, previous, *, indexed):
     prior = previous.get('code_hash')
     if prior is None or prior == current:
         return current
-    if indexed and legacy_hash_matches(prior,hashes):
+    if indexed and (legacy_hash_matches(prior,hashes) or transport_hash_matches(prior,hashes)):
         # Retain the database/source fingerprint. The caller MUST run verify()
         # before any new book/session writes, even on subsequent resumptions.
         return prior

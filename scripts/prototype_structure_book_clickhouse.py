@@ -11,6 +11,9 @@ import argparse
 import concurrent.futures as futures
 import datetime as dt
 import hashlib
+import http.client
+import queue
+import random
 import json
 import os
 from pathlib import Path
@@ -81,16 +84,55 @@ class Client:
             raise ValueError('Missing ClickHouse endpoint')
         self.threads, self.profiles, self.active = threads, [], set()
         self.lock = threading.Lock()
+        self._pool = queue.LifoQueue(maxsize=8)
+        self._slots = threading.BoundedSemaphore(8)
+
+    def close(self):
+        while True:
+            try:self._pool.get_nowait().close()
+            except queue.Empty:break
+
+    def __del__(self):
+        if hasattr(self, '_pool'):self.close()
+
+    def _response(self, url, body, headers, timeout):
+        """Bounded reusable HTTP connections; never replay a write internally."""
+        endpoint = urllib.parse.urlsplit(url)
+        if endpoint.scheme not in ('http', 'https') or not endpoint.hostname:
+            raise ValueError('Invalid ClickHouse HTTP endpoint')
+        with self._slots:
+            try:connection = self._pool.get_nowait()
+            except queue.Empty:
+                kind = http.client.HTTPSConnection if endpoint.scheme == 'https' else http.client.HTTPConnection
+                connection = kind(endpoint.hostname, endpoint.port, timeout=timeout)
+            reusable = False
+            try:
+                connection.timeout = timeout
+                if connection.sock is not None:connection.sock.settimeout(timeout)
+                connection.request('POST', urllib.parse.urlunsplit(('', '', endpoint.path or '/', endpoint.query, '')),
+                                   body=body, headers=headers)
+                response = connection.getresponse()
+                data = response.read(8000001)
+                if len(data)>8000000:raise RuntimeError('Metadata response exceeded bound')
+                reusable = not response.will_close
+                if response.status >= 300:
+                    from io import BytesIO
+                    raise urllib.error.HTTPError(url,response.status,response.reason,response.headers,BytesIO(data))
+                return data
+            finally:
+                if reusable:self._pool.put_nowait(connection)
+                else:connection.close()
 
     def query(self, sql, label, read=True, seconds=120):
-        for attempt in range(3 if read else 1):
+        for attempt in range(6 if read else 1):
             try:
                 return self._query(sql,label,read,seconds)
-            except (ConnectionError,TimeoutError,urllib.error.URLError):
-                if not read or attempt==2:
+            except (OSError,http.client.HTTPException):
+                if not read or attempt==5:
                     raise
-                print(f'Retrying read | {label} | attempt={attempt+2}/3',flush=True)
-                time.sleep(.25*(attempt+1))
+                delay=min(8.,2.**attempt)+random.uniform(0,.5)
+                print(f'Retrying read | {label} | attempt={attempt+2}/6 | backoff={delay:.1f}s',flush=True)
+                time.sleep(delay)
 
     def _query(self, sql, label, read=True, seconds=120):
         query_id = 'structure-feasibility-' + uuid.uuid4().hex
@@ -109,10 +151,7 @@ class Client:
             self.active.add(query_id)
         status = 'failed'
         try:
-            with urllib.request.urlopen(request, timeout=seconds+15) as response:
-                body = response.read(8000001)
-                if len(body)>8000000:
-                    raise RuntimeError('Metadata response exceeded bound')
+            body = self._response(url,request.data,dict(request.header_items()),seconds+15)
             rows = [json.loads(line) for line in body.splitlines()] if read else []
             if not read and body.strip() and label!='cancel':
                 raise RuntimeError('Unexpected INSERT/DDL response')
